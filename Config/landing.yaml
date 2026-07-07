@@ -1,0 +1,63 @@
+analysis:
+  
+  name: Fixed Wing Landing
+  version: 1.0
+  aircraft: ArduPlane
+  
+messages:
+  - MODE
+  - LAND
+  - RFND
+  - TECS
+  - TEC2
+  - TEC3
+  - ARSP
+  - ATT
+  - AETR
+
+parameter_groups:
+
+  geometry:
+    - LAND_FLARE_ALT
+    - LAND_FLARE_SEC
+    - LAND_PF_ALT
+    - LAND_SLOPE_RCALC
+
+  speed:
+    - LAND_PF_ARSPD
+    - AIRSPEED_CRUISE
+    - AIRSPEED_MIN
+    - AIRSPEED_STALL
+
+  rangefinder:
+    - RNGFND1_MAX
+    - RNGFND1_MIN
+
+  tecs:
+    - TECS_SPDWEIGHT
+
+metrics:
+  - glide_slope
+  - approach_speed
+  - flare
+  - touchdown
+
+plots:
+  - altitude
+  - airspeed
+  - throttle
+  - landing_stage
+
+derived_events:
+
+  - landing_start
+  - final_approach
+  - flare
+  - touchdown
+  - rollout
+
+parameter_file:
+
+  required: false
+  match: basename
+
