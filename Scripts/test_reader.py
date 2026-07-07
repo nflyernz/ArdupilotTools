@@ -40,3 +40,16 @@ print("-" * 60)
 
 for key, value in flight.metadata.items():
     print(f"{key:20} {value}")
+
+print("\nQuick Checks")
+print("-" * 60)
+
+print("Has TECS :", flight.has("TECS"))
+print("Has LAND :", flight.has("LAND"))
+print("Has RFND :", flight.has("RFND"))
+
+print()
+
+print("LAND_FLARE_ALT :", flight.param("LAND_FLARE_ALT"))
+print("LAND_PF_ARSPD  :", flight.param("LAND_PF_ARSPD"))
+print("RNGFND1_MAX    :", flight.param("RNGFND1_MAX"))
