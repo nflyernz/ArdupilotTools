@@ -1,3 +1,7 @@
+"""
+ArduPlane flight mode definitions.
+"""
+
 PLANE_MODES = {
 
     0: "MANUAL",
@@ -36,3 +40,19 @@ PLANE_MODES = {
 
     19: "QLAND",
 }
+
+
+def mode_name(mode_number):
+    """
+    Return the ArduPlane mode name for a mode number.
+    """
+
+    try:
+        mode_number = int(mode_number)
+    except (TypeError, ValueError):
+        return "UNKNOWN"
+
+    return PLANE_MODES.get(
+        mode_number,
+        f"UNKNOWN({mode_number})"
+    )
