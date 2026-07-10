@@ -1,24 +1,34 @@
 from core.reader import FlightReader
+from core.landwindow import LandingWindows
 from core.timeline import LandingTimeline
 
 
 flight = FlightReader(
-    "Logs/log_19_2026-7-5-09-43-10.bin"
+    "Logs/log_17_2026-6-28-10-05-44.bin"
 ).read()
 
-timeline = LandingTimeline(flight)
+windows = LandingWindows(flight).find()
 
-events = timeline.build()
+if not windows:
+
+    print("No landing windows found.")
+
+    raise SystemExit
+
+timeline = LandingTimeline(
+    flight,
+    windows[0],
+).build()
 
 print()
 
 print("Landing Timeline")
 print("-" * 70)
 
-t0 = events[0].time_us
+for event in timeline:
 
-for e in events:
-
-    t = (e.time_us - t0) / 1e6
-
-    print(f"{t:8.3f}  {e.event:15} {e.value}")
+    print(
+        f"{event.time_us / 1e6:9.3f}  "
+        f"{event.event.value:<20}"
+        f"{event.detail}"
+    )

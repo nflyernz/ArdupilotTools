@@ -6,6 +6,7 @@ analysis:
   
 messages:
   - MODE
+  - ARM
   - LAND
   - RFND
   - TECS

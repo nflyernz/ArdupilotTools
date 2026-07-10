@@ -17,11 +17,13 @@ for i, w in enumerate(windows, start=1):
 
     print(f"Landing {i}")
 
-    print(f"  Start        : {w.start_us}")
+    print(f"  Start        : {w.start_us / 1e6:.3f} s")
 
-    print(f"  End          : {w.end_us}")
+    print(f"  End          : {w.end_us / 1e6:.3f} s")
 
-    print(f"  Duration     : {(w.end_us - w.start_us)/1e6:.2f} s")
+    print(f"  Duration     : {w.duration_s:.2f} s")
+
+    print(f"  Long         : {w.is_long}")
 
     print(f"  Closed       : {w.closed}")
 

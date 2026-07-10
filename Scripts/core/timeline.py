@@ -1,112 +1,159 @@
 from dataclasses import dataclass
+from enum import Enum
+
+#from core.rangefinder import RangefinderEvents
 
 
-@dataclass
+class EventType(Enum):
+
+    LAND_STAGE = "LAND_STAGE"
+
+    MODE = "MODE"
+
+    ARM = "ARM"
+
+    RANGEFINDER_FIRST_DATA = "RFND_FIRST_DATA"
+
+    RANGEFINDER_IN_RANGE = "RFND_IN_RANGE"
+
+    TOUCHDOWN = "TOUCHDOWN"
+
+    GPS_STOPPED = "GPS_STOPPED"
+
+
+@dataclass(order=True)
 class TimelineEvent:
 
     time_us: int
-    event: str
-    value: object = None
+
+    event: EventType
+
+    detail: str = ""
 
 
 class LandingTimeline:
+    """
+    Build a chronological timeline for one landing window.
+    """
 
-    def __init__(self, flight):
+    def __init__(self, flight, window):
 
         self.flight = flight
+        self.window = window
 
     def build(self):
 
         events = []
 
-        events.extend(self._mode_events())
-
-        events.extend(self._land_stage_events())
-
-        events.extend(self._rangefinder_events())
-
-        events.sort(key=lambda e: e.time_us)
-
-        return events
-
-    def _mode_events(self):
-
-        events = []
-
-        mode = self.flight.get("MODE")
-
-        if mode.empty:
-            return events
-
-        for _, row in mode.iterrows():
-
-            events.append(
-                TimelineEvent(
-                    int(row.TimeUS),
-                    "MODE",
-                    row.Mode
-                )
-            )
-
-        return events
-
-    def _land_stage_events(self):
-
-        events = []
-
+        #
+        # LAND.stage transitions
+        #
         land = self.flight.get("LAND")
 
-        if land.empty:
-            return events
+        if not land.empty:
 
-        previous = None
+            land = land[
+                (land.TimeUS >= self.window.start_us)
+                &
+                (land.TimeUS <= self.window.end_us)
+            ]
 
-        for _, row in land.iterrows():
+            previous = None
 
-            stage = int(row.stage)
+            for _, row in land.iterrows():
 
-            if stage != previous:
+                stage = int(row.stage)
+
+                if stage != previous:
+
+                    events.append(
+
+                        TimelineEvent(
+
+                            int(row.TimeUS),
+
+                            EventType.LAND_STAGE,
+
+                            str(stage),
+                        )
+                    )
+
+                    previous = stage
+
+        #
+        # MODE transitions
+        #
+        mode = self.flight.get("MODE")
+
+        if not mode.empty:
+
+            mode = mode[
+                (mode.TimeUS >= self.window.start_us)
+                &
+                (mode.TimeUS <= self.window.end_us)
+            ]
+
+            for _, row in mode.iterrows():
 
                 events.append(
+
                     TimelineEvent(
+
                         int(row.TimeUS),
-                        "LAND_STAGE",
-                        stage
+
+                        EventType.MODE,
+
+                        str(row.Mode),
                     )
                 )
 
-                previous = stage
+        #
+        # ARM transitions
+        #
+        arm = self.flight.get("ARM")
 
-        return events
+        if not arm.empty:
 
-    def _rangefinder_events(self):
+            arm = arm[
+                (arm.TimeUS >= self.window.start_us)
+                &
+                (arm.TimeUS <= self.window.end_us)
+            ]
 
-        events = []
+            for _, row in arm.iterrows():
 
-        rfnd = self.flight.get("RFND")
-
-        if rfnd.empty:
-            return events
-
-        valid = False
-
-        max_range = self.flight.param("RNGFND1_MAX")
-
-        if max_range is None:
-            return events
-
-        for _, row in rfnd.iterrows():
-
-            if not valid and row.Dist <= max_range:
+                state = "ARMED" if row.ArmState else "DISARMED"
 
                 events.append(
+
                     TimelineEvent(
+
                         int(row.TimeUS),
-                        "RFND_VALID",
-                        row.Dist
+
+                        EventType.ARM,
+
+                        state,
                     )
                 )
 
-                valid = True
+        #
+        # Rangefinder-derived events
+        #
+ #       events.extend(
+#
+ #           RangefinderEvents(
+#
+ #               self.flight,
+#
+ #               self.window,
+#
+ #           ).build()
+#
+ #       )
+
+        #
+        # Chronological order
+        #
+        events.sort()
 
         return events

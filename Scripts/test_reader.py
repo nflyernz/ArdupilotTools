@@ -53,3 +53,18 @@ print()
 print("LAND_FLARE_ALT :", flight.param("LAND_FLARE_ALT"))
 print("LAND_PF_ARSPD  :", flight.param("LAND_PF_ARSPD"))
 print("RNGFND1_MAX    :", flight.param("RNGFND1_MAX"))
+
+print()
+
+print("ARM Events")
+print("-" * 60)
+
+if flight.has("ARM"):
+
+    arm = flight.get("ARM")
+
+    print(arm[["TimeUS", "ArmState"]])
+
+else:
+
+    print("No ARM messages found.")
