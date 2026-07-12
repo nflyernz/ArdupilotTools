@@ -1,9 +1,9 @@
 analysis:
-  
+
   name: Fixed Wing Landing
   version: 1.0
   aircraft: ArduPlane
-  
+
 messages:
   - MODE
   - ARM
@@ -62,3 +62,10 @@ parameter_file:
   required: false
   match: basename
 
+rangefinder:
+
+  zero_threshold: 0.05
+
+  continuous_seconds: 1.0
+
+  max_gap_ms: 100

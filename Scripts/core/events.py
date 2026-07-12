@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 
@@ -10,9 +10,11 @@ class EventType(Enum):
 
     ARM = "ARM"
 
-    RANGEFINDER_FIRST_DATA = "RFND_FIRST_DATA"
+    RFND_FIRST_NONZERO = "RFND_FIRST_NONZERO"
 
-    RANGEFINDER_IN_RANGE = "RFND_IN_RANGE"
+    RFND_FIRST_IN_RANGE = "RFND_FIRST_IN_RANGE"
+
+    RFND_CONTINUOUS = "RFND_CONTINUOUS"
 
     TOUCHDOWN = "TOUCHDOWN"
 
@@ -24,6 +26,6 @@ class TimelineEvent:
 
     time_us: int
 
-    event: EventType
+    event: EventType = field(compare=False)
 
-    detail: str = ""
+    detail: str = field(default="", compare=False)

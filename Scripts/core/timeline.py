@@ -1,4 +1,5 @@
 from core.events import TimelineEvent, EventType
+from core.rangefinder import RangefinderEvents
 
 
 class LandingTimeline:
@@ -45,7 +46,9 @@ class LandingTimeline:
                             EventType.LAND_STAGE,
 
                             str(stage),
+
                         )
+
                     )
 
                     previous = stage
@@ -74,7 +77,9 @@ class LandingTimeline:
                         EventType.MODE,
 
                         str(row.Mode),
+
                     )
+
                 )
 
         #
@@ -92,8 +97,6 @@ class LandingTimeline:
 
             for _, row in arm.iterrows():
 
-                state = "ARMED" if row.ArmState else "DISARMED"
-
                 events.append(
 
                     TimelineEvent(
@@ -102,22 +105,29 @@ class LandingTimeline:
 
                         EventType.ARM,
 
-                        state,
+                        "ARMED" if row.ArmState else "DISARMED",
+
                     )
+
                 )
 
         #
-        # Future detectors go here
+        # Rangefinder events
         #
-        # events.extend(
-        #     RangefinderEvents(
-        #         self.flight,
-        #         self.window,
-        #     ).build()
-        # )
+        events.extend(
+
+            RangefinderEvents(
+
+                self.flight,
+
+                self.window,
+
+            ).build()
+
+        )
 
         #
-        # Chronological order
+        # Sort chronologically
         #
         events.sort()
 

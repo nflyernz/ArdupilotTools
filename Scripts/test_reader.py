@@ -28,43 +28,15 @@ else:
     print("No parameter file loaded.")
 
 
-print("\nFlight Mode Segments")
+print()
+
+print("RFND Columns")
 print("-" * 60)
 
-for seg in flight.segments:
-    print(seg)
+rfnd = flight.get("RFND")
 
-
-print("\nMetadata")
-print("-" * 60)
-
-for key, value in flight.metadata.items():
-    print(f"{key:20} {value}")
-
-print("\nQuick Checks")
-print("-" * 60)
-
-print("Has TECS :", flight.has("TECS"))
-print("Has LAND :", flight.has("LAND"))
-print("Has RFND :", flight.has("RFND"))
+print(rfnd.columns)
 
 print()
 
-print("LAND_FLARE_ALT :", flight.param("LAND_FLARE_ALT"))
-print("LAND_PF_ARSPD  :", flight.param("LAND_PF_ARSPD"))
-print("RNGFND1_MAX    :", flight.param("RNGFND1_MAX"))
-
-print()
-
-print("ARM Events")
-print("-" * 60)
-
-if flight.has("ARM"):
-
-    arm = flight.get("ARM")
-
-    print(arm[["TimeUS", "ArmState"]])
-
-else:
-
-    print("No ARM messages found.")
+print(rfnd.head())

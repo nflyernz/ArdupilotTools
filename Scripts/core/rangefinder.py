@@ -1,77 +1,219 @@
-from core.timeline import TimelineEvent, EventType
+from core.events import TimelineEvent, EventType
 
 
 class RangefinderEvents:
     """
-    Generate rangefinder timeline events.
+    Detect significant rangefinder events during the landing window.
+
+    Published events
+
+        RFND_FIRST_NONZERO
+
+        RFND_FIRST_IN_RANGE
+
+        RFND_CONTINUOUS
     """
 
-    def __init__(self, flight, window):
+    def __init__(self, flight, window, config):
 
         self.flight = flight
         self.window = window
+        self.config = config
+
+    def publish(self, events, time_us, event, detail=""):
+
+        events.append(
+
+            TimelineEvent(
+
+                int(time_us),
+
+                event,
+
+                detail,
+
+            )
+
+        )
+
+    def estimate_sample_rate(self, rfnd):
+
+        if len(rfnd) < 2:
+
+            return None
+
+        dt = rfnd["TimeUS"].diff().dropna()
+
+        if dt.empty:
+
+            return None
+
+        median_us = dt.median()
+
+        if median_us <= 0:
+
+            return None
+
+        return 1e6 / median_us
 
     def build(self):
 
         events = []
 
         if not self.flight.has("RFND"):
+
             return events
 
         rfnd = self.flight.get("RFND")
 
         rfnd = rfnd[
-            (rfnd.TimeUS >= self.window.start_us)
+            (rfnd["TimeUS"] >= self.window.start_us)
             &
-            (rfnd.TimeUS <= self.window.end_us)
+            (rfnd["TimeUS"] <= self.window.end_us)
         ]
 
         if rfnd.empty:
+
             return events
 
-        #
-        # Parameter
-        #
-        max_range = self.flight.params.get("RNGFND1_MAX")
+        cfg = self.config.get("rangefinder", {})
 
-        #
-        # First RFND message
-        #
-        first = rfnd.iloc[0]
+        zero_threshold = cfg.get("zero_threshold", 0.05)
 
-        events.append(
+        continuous_seconds = cfg.get("continuous_seconds", 1.0)
 
-            TimelineEvent(
+        sample_rate = self.estimate_sample_rate(rfnd)
 
-                int(first.TimeUS),
+        if sample_rate is None:
 
-                EventType.RANGEFINDER_FIRST_DATA,
+            required_samples = 1
 
-                f"{first.Dist:.2f} m",
+        else:
+
+            required_samples = max(
+
+                1,
+
+                round(sample_rate * continuous_seconds)
+
             )
-        )
 
-        #
-        # First sample inside configured range
-        #
-        if max_range is not None:
+        max_range = None
 
-            inside = rfnd[rfnd.Dist < max_range]
+        if self.flight.has_param("RNGFND1_MAX"):
 
-            if not inside.empty:
+            max_range = self.flight.param("RNGFND1_MAX")
 
-                row = inside.iloc[0]
+        found_nonzero = False
 
-                events.append(
+        found_in_range = False
 
-                    TimelineEvent(
+        found_continuous = False
 
-                        int(row.TimeUS),
+        run_start_time = None
 
-                        EventType.RANGEFINDER_IN_RANGE,
+        run_samples = 0
 
-                        f"{row.Dist:.2f} m",
-                    )
+        for _, row in rfnd.iterrows():
+
+            dist = float(row["Dist"])
+
+            time_us = int(row["TimeUS"])
+
+            #
+            # Zero reading
+            #
+
+            if dist <= zero_threshold:
+
+                run_samples = 0
+
+                run_start_time = None
+
+                continue
+
+            #
+            # First non-zero sample
+            #
+
+            if not found_nonzero:
+
+                found_nonzero = True
+
+                self.publish(
+
+                    events,
+
+                    time_us,
+
+                    EventType.RFND_FIRST_NONZERO,
+
+                    f"{dist:.2f} m",
+
+                )
+
+            #
+            # First sample inside configured range
+            #
+
+            if (
+
+                not found_in_range
+
+                and max_range is not None
+
+                and dist <= max_range
+
+            ):
+
+                found_in_range = True
+
+                self.publish(
+
+                    events,
+
+                    time_us,
+
+                    EventType.RFND_FIRST_IN_RANGE,
+
+                    f"{dist:.2f} / {max_range:.2f} m",
+
+                )
+
+            #
+            # Continuous valid measurements
+            #
+
+            if run_samples == 0:
+
+                run_start_time = time_us
+
+                run_samples = 1
+
+            else:
+
+                run_samples += 1
+
+            if (
+
+                not found_continuous
+
+                and run_samples >= required_samples
+
+            ):
+
+                found_continuous = True
+
+                self.publish(
+
+                    events,
+
+                    run_start_time,
+
+                    EventType.RFND_CONTINUOUS,
+
+                    f"{run_samples} samples",
+
                 )
 
         return events
