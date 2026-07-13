@@ -27,6 +27,10 @@ class ParameterReader:
         """
         Read a MAVLink parameter export (.param/.params) and return only
         the parameters requested by the configuration.
+
+        Older ArduPlane firmware versions may use different parameter
+        names and/or units. These are normalised here so the rest of
+        the framework sees a consistent API.
         """
 
         wanted = self.wanted_parameters()
@@ -60,6 +64,16 @@ class ParameterReader:
                     value = float(parts[3])
                 except ValueError:
                     value = parts[3]
+
+                #
+                # Firmware compatibility
+                #
+
+                # ArduPlane 4.6.x
+                # RNGFND1_MAX_CM (cm)
+                if name == "RNGFND1_MAX_CM":
+                    name = "RNGFND1_MAX"
+                    value = value / 100.0
 
                 if name in wanted:
                     params[name] = value

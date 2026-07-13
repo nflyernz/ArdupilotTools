@@ -5,7 +5,7 @@ from core.rangefinder import RangefinderEvents
 
 
 flight = FlightReader(
-    "Logs/log_6_2026-3-22-10-13-50.bin"
+    "Logs/log_1_2026-2-22-09-40-34.bin"
 ).read()
 
 config = Config("Config/landing.yaml")

@@ -9,6 +9,7 @@ messages:
   - ARM
   - LAND
   - RFND
+  - BARO
   - TECS
   - TEC2
   - TEC3
@@ -69,3 +70,17 @@ rangefinder:
   continuous_seconds: 1.0
 
   max_gap_ms: 100
+
+barometer:
+
+  altitude_field: Alt
+
+  smoothing_samples: 25
+
+  derivative_samples: 10
+
+  descent_threshold: -0.30
+
+  climb_threshold: 0.30
+
+  level_threshold: 0.10

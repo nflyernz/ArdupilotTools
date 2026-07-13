@@ -175,3 +175,22 @@ No duplicated code.
 Every function should be testable.
 
 Every report should be reproducible.
+
+
+The framework presents a normalized parameter interface to detectors.
+
+Firmware-specific parameter names and units are resolved in
+`ParameterReader` so that detectors remain firmware-independent.
+
+Example:
+
+| Firmware | Native Parameter | Normalized |
+|----------|------------------|------------|
+| 4.6.x | RNGFND1_MAX_CM (cm) | RNGFND1_MAX (m) |
+| 4.7.x | RNGFND1_MAX (m) | RNGFND1_MAX (m) |
+
+Detectors always request:
+
+    flight.param("RNGFND1_MAX")
+
+They are never responsible for firmware compatibility.

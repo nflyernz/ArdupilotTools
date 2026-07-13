@@ -33,3 +33,9 @@ Status: IN PROGRESS
 
 - What triggers each `LAND.stage` transition internally?
 - Which sensors (baro, rangefinder, airspeed, etc.) are used?
+
+
+### 2026-07-13
+
+- Verified compatibility with ArduPlane 4.6.3 parameter export.
+- Added normalization of `RNGFND1_MAX_CM` to `RNGFND1_MAX`.
