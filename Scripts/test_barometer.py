@@ -1,78 +1,139 @@
 from core.reader import FlightReader
-from core.config import Config
-from core.landwindow import LandingWindows
-from core.barometer import BarometerEvents
+from core.barometer import BarometerProcessor
 
 
-flight = FlightReader(
-    "Logs/log_19_2026-7-5-09-43-10.bin"
-).read()
+# ---------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------
 
-config = Config("Config/landing.yaml")
+LOG = "Logs/log_9_2026-5-3-10-43-02.bin"
 
-windows = LandingWindows(flight).find()
+START = "11:57.000"
 
-if not windows:
+DURATION = "05:00.000"
 
-    print("No landing windows found.")
-    raise SystemExit
+SAMPLE_PERIOD = 1.0
 
-window = windows[0]
 
-events = BarometerEvents(
+# ---------------------------------------------------------------------
+# Window
+# ---------------------------------------------------------------------
+
+class Window:
+
+    def __init__(self, start_us, end_us):
+
+        self.start_us = start_us
+        self.end_us = end_us
+
+
+# ---------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------
+
+def parse_time(text):
+
+    minutes, seconds = text.split(":")
+
+    return int(
+        (
+            int(minutes) * 60
+            + float(seconds)
+        )
+        * 1_000_000
+    )
+
+
+def format_time(time_us):
+
+    seconds = time_us / 1_000_000
+
+    minutes = int(seconds // 60)
+
+    seconds -= minutes * 60
+
+    return f"{minutes:02}:{seconds:06.3f}"
+
+
+# ---------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------
+
+start_us = parse_time(START)
+
+end_us = start_us + parse_time(DURATION)
+
+window = Window(
+    start_us,
+    end_us,
+)
+
+flight = FlightReader(LOG).read()
+
+analysis = BarometerProcessor(
     flight,
     window,
-    config
-).find()
-
-baro = flight.get("BARO")
-
-baro = baro[
-    (baro.TimeUS >= window.start_us)
-    &
-    (baro.TimeUS <= window.end_us)
-]
-
-rate = 0.0
-
-if len(baro) > 1:
-
-    dt = (
-        baro.TimeUS.iloc[-1]
-        - baro.TimeUS.iloc[0]
-    ) / 1e6
-
-    rate = len(baro) / dt
+    sample_period=SAMPLE_PERIOD,
+).run()
 
 print()
-print("Barometer Events")
+
+print("Barometer Analysis")
 print("-" * 70)
 
 print(
-    f"Landing Start : "
-    f"{window.start_us/1e6:.1f} s"
+    f"Window Start     : {format_time(analysis.start_us)}"
 )
 
 print(
-    f"Landing End   : "
-    f"{window.end_us/1e6:.1f} s"
+    f"Window End       : {format_time(analysis.end_us)}"
 )
 
 print()
 
 print(
-    f"BARO Rate     : "
-    f"{rate:.1f} Hz"
+    f"Native Rate      : {analysis.native_rate:.1f} Hz"
+)
+
+print(
+    f"Requested Rate   : {analysis.requested_rate:.1f} Hz"
 )
 
 print()
 
-print("Published Events")
+print(
+    f"Start Altitude   : {analysis.start_alt:.2f} m"
+)
+
+print(
+    f"End Altitude     : {analysis.end_alt:.2f} m"
+)
+
+print(
+    f"Altitude Change  : {analysis.altitude_change:.2f} m"
+)
+
+print(
+    f"Mean Rate        : {analysis.mean_rate:.2f} m/s"
+)
+
+print()
+
+print("Altitude Profile")
 print("-" * 70)
 
-for event in events:
+print(
+    f"{'Time':12}"
+    f"{'Altitude':>12}"
+)
+
+print(
+    "-" * 24
+)
+
+for row in analysis.profile.itertuples():
 
     print(
-        f"{event.time_us/1e6:10.3f}  "
-        f"{event.name}"
+        f"{format_time(row.TimeUS):12}"
+        f"{row.Alt:10.2f} m"
     )

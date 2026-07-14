@@ -10,6 +10,7 @@ messages:
   - LAND
   - RFND
   - BARO
+  - GPS
   - TECS
   - TEC2
   - TEC3

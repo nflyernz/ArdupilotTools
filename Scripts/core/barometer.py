@@ -2,37 +2,49 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from .time import native_rate
+
 
 @dataclass
-class BarometerEvent:
+class BarometerAnalysis:
 
-    time_us: int
-    name: str
+    start_us: int
+    end_us: int
+
+    native_rate: float
+    requested_rate: float
+
+    start_alt: float
+    end_alt: float
+
+    altitude_change: float
+    mean_rate: float
+
+    profile: pd.DataFrame
 
 
-class BarometerEvents:
+class BarometerProcessor:
 
-    LEVEL = 0
-    DESCENDING = 1
-    CLIMBING = 2
-
-    def __init__(self, flight, window, config):
+    def __init__(
+        self,
+        flight,
+        window,
+        sample_period=1.0,
+    ):
 
         self.flight = flight
         self.window = window
-        self.config = config
+        self.sample_period = sample_period
 
-        self.events = []
-
-    def find(self):
+    def run(self):
 
         baro = self.flight.get("BARO")
 
         if baro is None or baro.empty:
-            return []
+            return None
 
         #
-        # Restrict to landing window
+        # Restrict to requested window.
         #
 
         baro = baro[
@@ -42,150 +54,89 @@ class BarometerEvents:
         ].copy()
 
         if len(baro) < 2:
-            return []
+            return None
 
         #
-        # Configuration
+        # Native sample rate.
         #
 
-        samples = int(
-            self.config.get(
-                "barometer.smoothing_samples"
+        rate = native_rate(
+            baro.TimeUS
+        )
+
+        #
+        # Down sample.
+        #
+
+        bucket_us = int(
+            self.sample_period * 1_000_000
+        )
+
+        profile = (
+            baro
+            .assign(
+                Bucket=lambda df:
+                (
+                    (df.TimeUS - df.TimeUS.iloc[0])
+                    // bucket_us
+                )
             )
-        )
-
-        derivative = int(
-            self.config.get(
-                "barometer.derivative_samples"
+            .groupby("Bucket")
+            .agg(
+                TimeUS=("TimeUS", "first"),
+                Alt=("Alt", "mean"),
             )
+            .reset_index(drop=True)
         )
 
-        descent = float(
-            self.config.get(
-                "barometer.descent_threshold"
+        #
+        # Summary based on the displayed profile.
+        #
+
+        start_alt = float(
+            profile.Alt.iloc[0]
+        )
+
+        end_alt = float(
+            profile.Alt.iloc[-1]
+        )
+
+        altitude_change = (
+            end_alt - start_alt
+        )
+
+        duration = (
+            profile.TimeUS.iloc[-1]
+            - profile.TimeUS.iloc[0]
+        ) / 1_000_000
+
+        if duration > 0:
+
+            mean_rate = (
+                altitude_change / duration
             )
+
+        else:
+
+            mean_rate = 0.0
+
+        return BarometerAnalysis(
+
+            start_us=self.window.start_us,
+
+            end_us=self.window.end_us,
+
+            native_rate=rate,
+
+            requested_rate=1.0 / self.sample_period,
+
+            start_alt=start_alt,
+
+            end_alt=end_alt,
+
+            altitude_change=altitude_change,
+
+            mean_rate=mean_rate,
+
+            profile=profile,
         )
-
-        climb = float(
-            self.config.get(
-                "barometer.climb_threshold"
-            )
-        )
-
-        level = float(
-            self.config.get(
-                "barometer.level_threshold"
-            )
-        )
-
-        #
-        # Smooth altitude
-        #
-
-        baro["AltSmooth"] = (
-            baro["Alt"]
-            .rolling(
-                window=samples,
-                center=True,
-                min_periods=1,
-            )
-            .mean()
-        )
-
-        #
-        # Vertical rate (m/s)
-        #
-
-        dt = (
-            baro["TimeUS"].diff(derivative)
-            / 1e6
-        )
-
-        dz = (
-            baro["AltSmooth"].diff(derivative)
-        )
-
-        baro["Rate"] = dz / dt
-
-        #
-        # State machine
-        #
-
-        state = self.LEVEL
-
-        for row in baro.itertuples():
-
-            if pd.isna(row.Rate):
-                continue
-
-            #
-            # LEVEL
-            #
-
-            if state == self.LEVEL:
-
-                if row.Rate < descent:
-
-                    self.events.append(
-                        BarometerEvent(
-                            row.TimeUS,
-                            "BARO_DESCENT_START",
-                        )
-                    )
-
-                    state = self.DESCENDING
-
-                    continue
-
-                if row.Rate > climb:
-
-                    self.events.append(
-                        BarometerEvent(
-                            row.TimeUS,
-                            "BARO_CLIMB_START",
-                        )
-                    )
-
-                    state = self.CLIMBING
-
-                    continue
-
-            #
-            # DESCENDING
-            #
-
-            elif state == self.DESCENDING:
-
-                if abs(row.Rate) < level:
-
-                    self.events.append(
-                        BarometerEvent(
-                            row.TimeUS,
-                            "BARO_LEVEL",
-                        )
-                    )
-
-                    state = self.LEVEL
-
-                    continue
-
-            #
-            # CLIMBING
-            #
-
-            elif state == self.CLIMBING:
-
-                if abs(row.Rate) < level:
-
-                    self.events.append(
-                        BarometerEvent(
-                            row.TimeUS,
-                            "BARO_LEVEL",
-                        )
-                    )
-
-                    state = self.LEVEL
-
-                    continue
-
-        return self.events
