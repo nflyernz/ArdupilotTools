@@ -1,0 +1,184 @@
+#
+# Sensor configuration
+#
+
+barometer:
+
+  message: BARO
+
+  field: Alt
+
+  sample_period: 1.0
+
+  validation:
+
+    enabled: true
+
+    missing_samples:
+
+      enabled: true
+
+    missing_values:
+
+      enabled: true
+
+    timestamp_order:
+
+      enabled: true
+
+    sample_gap:
+
+      enabled: true
+
+      maximum_ms: 200
+
+
+gps:
+
+  message: GPS
+
+  sample_period: 1.0
+
+  fields:
+
+    latitude: Lat
+
+    longitude: Lng
+
+    altitude: Alt
+
+    speed: Spd
+
+    vertical_speed: VZ
+
+    hdop: HDop
+
+    satellites: NSats
+
+  validation:
+
+    enabled: true
+
+    missing_samples:
+
+      enabled: true
+
+    missing_values:
+
+      enabled: true
+
+    timestamp_order:
+
+      enabled: true
+
+    sample_gap:
+
+      enabled: true
+
+      maximum_ms: 300
+
+    hdop:
+
+      enabled: true
+
+      maximum: 2.5
+
+    satellites:
+
+      enabled: true
+
+      minimum: 8
+
+
+airspeed:
+
+  message: ARSP
+
+  field: Airspeed
+
+  sample_period: 1.0
+
+  validation:
+
+    enabled: true
+
+    missing_samples:
+
+      enabled: true
+
+    missing_values:
+
+      enabled: true
+
+    timestamp_order:
+
+      enabled: true
+
+    sample_gap:
+
+      enabled: true
+
+      maximum_ms: 200
+
+    negative_values:
+
+      enabled: true
+
+    step_change:
+
+      enabled: true
+
+      threshold: 5.0    # m/s change
+
+      interval_ms: 100  # elapsed time between compared samples
+
+    low_speed:
+
+      enabled: true
+
+      threshold: 1.0
+
+      maximum_duration: 2.0
+rangefinder:
+
+  message: RFND
+
+  field: Dist
+
+  sample_period: 0.25
+
+  validation:
+
+    enabled: true
+
+    missing_samples:
+
+      enabled: true
+
+    missing_values:
+
+      enabled: true
+
+    timestamp_order:
+
+      enabled: true
+
+    sample_gap:
+
+      enabled: true
+
+      maximum_ms: 100
+
+    zero_distance:
+
+      enabled: true
+
+      maximum_duration: 1.0
+
+    step_change:
+
+      enabled: true
+
+      threshold: 1.0
+
+      interval_ms: 100
