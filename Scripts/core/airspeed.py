@@ -45,7 +45,7 @@ class AirspeedValidationFailure:
 
             lines.append(
 
-                f"Start TimeUS   : {self.start_us}"
+                f"Start Time     : {self.start_us / 1_000_000:.3f} s"
 
             )
 
@@ -53,7 +53,7 @@ class AirspeedValidationFailure:
 
             lines.append(
 
-                f"End TimeUS     : {self.end_us}"
+                f"End Time       : {self.end_us / 1_000_000:.3f} s"
 
             )
 
@@ -110,13 +110,11 @@ class AirspeedProcessor:
     def __init__(
         self,
         flight,
-        window,
-        sample_period: float = 1.0,
-        config_file: str = "Config/sensors.yaml",
+        sample_period=1.0,
+        config_file="Config/sensors.yaml",
     ):
 
         self.flight = flight
-        self.window = window
         self.sample_period = sample_period
 
         with open(config_file, "r") as fp:
@@ -126,43 +124,61 @@ class AirspeedProcessor:
 
     # --------------------------------------------------------
 
-    def run(self):
+    def health(self):
 
         arsp = self.flight.get("ARSP")
 
         if arsp is None or arsp.empty:
             return None
-
-        arsp = arsp[
-            (arsp.TimeUS >= self.window.start_us)
-            &
-            (arsp.TimeUS <= self.window.end_us)
-        ].copy()
-
-        if len(arsp) < 2:
-            return None
-
-        native = native_rate(arsp.TimeUS)
-
+    
+        native_rate(arsp.TimeUS)
+    
         summary = self._build_summary(arsp)
-
         validation = self._validate(arsp)
-
         profile = self._build_profile(arsp)
-
+    
         return AirspeedAnalysis(
-
-            start_us=self.window.start_us,
-            end_us=self.window.end_us,
-
-            native_rate=native,
+            start_us=int(arsp.TimeUS.iloc[0]),
+            end_us=int(arsp.TimeUS.iloc[-1]),
+            native_rate=native_rate,
             requested_rate=1.0 / self.sample_period,
-
             summary=summary,
             profile=profile,
             validation=validation,
         )
+        
+    def analyse(self, window):
 
+        arsp = self.flight.get("ARSP")
+    
+        if arsp is None or arsp.empty:
+            return None
+    
+        arsp = arsp[
+            (arsp.TimeUS >= window.start_us)
+            &
+            (arsp.TimeUS <= window.end_us)
+        ].copy()
+    
+        if arsp.empty:
+            return None
+    
+        native_rate(arsp.TimeUS)
+    
+        summary = self._build_summary(arsp)
+        validation = self._validate(arsp)
+        profile = self._build_profile(arsp)
+    
+        return AirspeedAnalysis(
+            start_us=int(arsp.TimeUS.iloc[0]),
+            end_us=int(arsp.TimeUS.iloc[-1]),
+            native_rate=native_rate,
+            requested_rate=1.0 / self.sample_period,
+            summary=summary,
+            profile=profile,
+            validation=validation,
+        )
+        
     # --------------------------------------------------------
 
     def _build_summary(

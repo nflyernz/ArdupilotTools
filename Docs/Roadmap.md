@@ -187,3 +187,107 @@ Running the toolkit on the same log must always produce the same result, regardl
 ⬜ Landing Analyzer
 
 ⬜ Landing Report
+
+
+### Format Validation Event Times
+
+Display validation event start/end times as MM:SS.sss instead of raw TimeUS values. Retain TimeUS internally for calculations and cross-referencing between sensors.
+
+### Design Principle
+
+### Adopt Analysis-Centric Architecture
+
+The application will be organised around analysis workflows rather than individual sensor modules.
+
+Each analysis (e.g. Landing Analysis, Cruise Analysis, Sensor Diagnostics) will orchestrate the required processing pipeline:
+
+1. Select log(s)
+2. Load telemetry
+3. Determine the analysis window
+4. Execute the required processors
+5. Generate structured results
+6. Present reports (CLI, regression runner, or GUI)
+
+Sensor processors are independent, reusable components responsible only for analysing their own data and reporting results. They remain unaware of the calling workflow or presentation layer.
+
+The same analysis engine will be shared by:
+- Command-line interface
+- Regression runner
+- Future GUI
+
+This ensures a single source of analysis logic while allowing multiple front ends.
+
+### Transition to Analysis-Driven Execution
+
+The current `test_<processor>.py` scripts are development harnesses used while implementing and debugging individual processors.
+
+As the project matures, all execution paths will converge on the analysis engine. The test scripts will become lightweight wrappers that invoke the same analysis classes used by the regression runner and future GUI.
+
+Target architecture:
+
+    test_*.py
+         │
+    regression.py
+         │
+        GUI
+         │
+         ▼
+    Analysis Engine
+         │
+         ▼
+    Sensor Processors
+         │
+         ▼
+    Analysis Results
+
+This establishes a single execution path for all processing. New functionality is implemented once in the analysis engine and is immediately available to developer tests, regression testing, command-line execution, and the GUI without duplication.
+
+Status: Planned
+Priority: High
+
+### Structure
+
+Analyse/
+│
+├── analyse.py          ← application entry point
+│
+├── analyses/
+│   ├── landing.py
+│   ├── cruise.py
+│   ├── diagnostics.py
+│   └── summary.py
+│
+├── core/
+│   ├── reader.py
+│   ├── airspeed.py
+│   ├── gps.py
+│   └── barometer.py
+│
+└── tests/
+    ├── test_airspeed.py
+    ├── test_gps.py
+    └── ...
+    
+    ### Output Formatting
+
+Consolidate all human-readable time formatting into a shared utility.
+
+Current status:
+- Time formatting exists in multiple locations (e.g. landing.py, test scripts).
+- Internal processing uses TimeUS (microseconds).
+- User-facing reports should consistently display MM:SS.mmm.
+
+Planned:
+- Create a shared `core.time.format_time_us()` helper.
+- Use it throughout all analyses, reports, diagnostics, and tests.
+- Keep all internal calculations in TimeUS and only format at presentation time.
+
+Benefit:
+- Single implementation.
+- Consistent output across CLI, regression tests, and future GUI.
+- Avoid duplicated formatting logic.
+
+
+
+
+

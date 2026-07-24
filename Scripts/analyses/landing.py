@@ -5,6 +5,7 @@ Landing analysis workflow.
 from pathlib import Path
 
 from analyses.result import AnalysisResult
+from core.airspeed import AirspeedProcessor
 from core.landing_window_detector import LandingWindowDetector
 from core.reader import FlightReader
 
@@ -16,9 +17,10 @@ class LandingAnalysis:
     Workflow:
         1. Select log(s)
         2. Load telemetry
-        3. Determine landing window
-        4. Run processors
-        5. Generate report
+        3. Check sensor health
+        4. Determine landing window
+        5. Run processors
+        6. Generate report
     """
 
     def run(self):
@@ -43,6 +45,43 @@ class LandingAnalysis:
 
                 telemetry = self.load_telemetry(log_path)
 
+                print("  ✓ Loaded")
+
+                airspeed = AirspeedProcessor(telemetry)
+
+                health = airspeed.health()
+
+                if health is None:
+
+                    print("  ✗ Airspeed : No ARSP data")
+                
+                elif health.validation.valid:
+                
+                    print("  ✓ Airspeed : PASS")
+                
+                else:
+                
+                    print("  ✗ Airspeed : FAIL")
+                
+                    grouped = {}
+                
+                    for failure in health.validation.failures:
+                
+                        grouped.setdefault(
+                            failure.rule,
+                            []
+                        ).append(failure)
+                
+                    for rule, failures in grouped.items():
+                
+                        first = failures[0]
+                
+                        print(
+                            f"      {rule:<12}"
+                            f"x{len(failures):<2}  "
+                            f"first {self.format_time(first.start_us)}"
+                        )
+
                 window = LandingWindowDetector().detect(telemetry)
 
                 AnalysisResult(
@@ -51,9 +90,8 @@ class LandingAnalysis:
                     window=window,
                 )
 
-                print("  ✓ Loaded")
                 print(
-                    f"  ✓ Window : "
+                    f"  ✓ Window    : "
                     f"{self.format_time(window.start_us)} - "
                     f"{self.format_time(window.end_us)}"
                 )
