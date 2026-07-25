@@ -291,3 +291,91 @@ Benefit:
 
 
 
+## Sensor Health vs Analysis
+
+The first implementation of `AirspeedProcessor.health()` demonstrated that not all existing validation rules are appropriate for sensor health.
+
+### Sensor Health
+
+Health answers:
+
+> "Can this sensor be trusted?"
+
+Typical rules:
+
+- Missing sensor
+- Missing values
+- Timestamp ordering
+- Sample gaps
+- Impossible values
+- Corrupt data
+
+Health is normally evaluated over the entire flight.
+
+### Analysis
+
+Analysis answers:
+
+> "What happened during this phase of flight?"
+
+Typical rules:
+
+- Low airspeed
+- Excessive airspeed change
+- Landing performance
+- Flare behaviour
+- Sink rate
+- Energy management
+
+Analysis is performed over a selected flight window.
+
+### Design Principle
+
+Health and analysis are separate responsibilities.
+
+A processor may expose both:
+
+```python
+processor.health()
+processor.analyse(window)
+
+
+
+## Next Refactor: Sensor Health Window
+
+The first implementation of sensor health highlighted that evaluating health over the entire flight log produces false positives. Examples include low airspeed before takeoff and after landing, and possible logging artefacts while the aircraft is stationary.
+
+The next refactor will introduce a common **Sensor Health Window** that defines the period over which sensor health is evaluated.
+
+### Sensor Health Window
+
+The window will be derived from GPS groundspeed.
+
+Preconditions:
+
+- GPS data must be present.
+- GPS quality (HDOP) must be within the configured limit.
+- If either condition fails, sensor health analysis is aborted.
+
+Window definition:
+
+- Start when:
+
+      groundspeed > max(0.5 × AIRSPEED_STALL, 5 m/s)
+
+- End when groundspeed falls below the same threshold.
+
+If `AIRSPEED_STALL` is unavailable, a default threshold of **5 m/s** is used.
+
+### Benefits
+
+- Evaluates sensors only during meaningful flight.
+- Removes expected false positives while stationary.
+- Uses GPS as an independent reference.
+- Provides a common evaluation window for multiple sensor processors.
+
+### Scope
+
+This refactor changes **where** health is evaluated, not **how** individual validation rules work.
+
+Existing airspeed validation rules will remain unchanged until they are re-evaluated using the new Sensor Health Window.

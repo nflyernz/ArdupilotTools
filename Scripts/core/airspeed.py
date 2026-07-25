@@ -124,9 +124,14 @@ class AirspeedProcessor:
 
     # --------------------------------------------------------
 
-    def health(self):
+    def health(self, window):
 
         arsp = self.flight.get("ARSP")
+
+        arsp = arsp[
+            (arsp["TimeUS"] >= window.start_us) &
+            (arsp["TimeUS"] <= window.end_us)
+        ]
 
         if arsp is None or arsp.empty:
             return None

@@ -8,6 +8,7 @@ from analyses.result import AnalysisResult
 from core.airspeed import AirspeedProcessor
 from core.landing_window_detector import LandingWindowDetector
 from core.reader import FlightReader
+from core.sensor_health_window import SensorHealthWindowDetector
 
 
 class LandingAnalysis:
@@ -30,8 +31,8 @@ class LandingAnalysis:
         if not logs:
             return
 
-        success = 0
-        failed = 0
+        processed = 0
+        framework_errors = 0
 
         print("\nLanding Analysis")
         print("----------------")
@@ -46,10 +47,18 @@ class LandingAnalysis:
                 telemetry = self.load_telemetry(log_path)
 
                 print("  ✓ Loaded")
+                
+                health_window = SensorHealthWindowDetector().detect(telemetry)
+
+                print(
+                    f"  ✓ Health    : "
+                    f"{self.format_time(health_window.start_us)} - "
+                    f"{self.format_time(health_window.end_us)}"
+                )
 
                 airspeed = AirspeedProcessor(telemetry)
 
-                health = airspeed.health()
+                health = airspeed.health(health_window)
 
                 if health is None:
 
@@ -96,21 +105,20 @@ class LandingAnalysis:
                     f"{self.format_time(window.end_us)}"
                 )
 
-                success += 1
+                processed += 1
 
             except Exception as ex:
 
                 print(f"  ✗ {ex}")
-                failed += 1
+                framework_errors += 1
 
             print()
 
         print("Summary")
         print("-------")
-        print(f"Processed : {len(logs)}")
-        print(f"Succeeded : {success}")
-        print(f"Failed    : {failed}")
-
+        print(f"Logs            : {len(logs)}")
+        print(f"Processed       : {processed}")
+        print(f"Framework Errors: {framework_errors}")
     def select_logs(self):
 
         entry = input("\nLog file or directory: ").strip()
