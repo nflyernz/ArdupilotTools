@@ -21,6 +21,7 @@ messages:
   - CTUN
   - NTUN
   - XKF1
+  - MSG
 
 #
 # Parameter groups required

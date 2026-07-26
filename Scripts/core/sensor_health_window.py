@@ -15,6 +15,7 @@ class SensorHealthWindowDetector:
 
     DEFAULT_THRESHOLD = 5.0
     MIN_SAMPLES = 5
+    TRIM_US = 2_000_000      # 2 seconds
 
     def detect(self, flight):
 
@@ -42,9 +43,17 @@ class SensorHealthWindowDetector:
 
         end = self._find_end(flying)
 
+        start_us = int(gps.iloc[start]["TimeUS"]) + self.TRIM_US
+        end_us = int(gps.iloc[end]["TimeUS"]) - self.TRIM_US
+
+        if start_us >= end_us:
+            raise ValueError(
+                "Sensor health window is too short."
+            )
+
         return SensorHealthWindow(
-            start_us=int(gps.iloc[start]["TimeUS"]),
-            end_us=int(gps.iloc[end]["TimeUS"]),
+            start_us=start_us,
+            end_us=end_us,
         )
 
     def _find_start(self, flying):
@@ -77,4 +86,4 @@ class SensorHealthWindowDetector:
             else:
                 count = 0
 
-        return None
+        return Nonea

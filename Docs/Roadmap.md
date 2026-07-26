@@ -379,3 +379,140 @@ If `AIRSPEED_STALL` is unavailable, a default threshold of **5 m/s** is used.
 This refactor changes **where** health is evaluated, not **how** individual validation rules work.
 
 Existing airspeed validation rules will remain unchanged until they are re-evaluated using the new Sensor Health Window.
+
+# Sensor health window
+
+Support multiple sensor health windows for logs containing multiple flights or touch-and-go operations.
+
+## Sensor Health Window
+
+### Completed
+
+- GPS-speed based detector
+- Sensor validation restricted to the health window
+- Eliminated pre-flight and post-flight false positives
+
+### Remaining
+
+- Support multiple health windows within a log.
+- Split windows after an extended ground period.
+- Continue using the existing GPS speed threshold.
+- Add configurable minimum ground time before ending a window.
+- Return multiple `SensorHealthWindow` objects rather than a single longest window.
+
+---
+
+## Landing Analysis Window
+
+### Planned
+
+Create a separate `LandingWindow` for AUTO landings.
+
+Derived from firmware `MSG` events:
+
+Start:
+- Landing approach start
+  (or `Mission: 3 Land`)
+
+End:
+- Throttle disarmed
+- Landing aborted via throttle
+
+The landing analyser will operate on `LandingWindow`, not `SensorHealthWindow`.
+
+Multiple landing windows are supported naturally for aborted landings and retries.
+
+Manual takeoffs and manual landings are intentionally out of scope.
+
+## Flight Windows
+
+### ✓ Completed
+
+- GPS-based `SensorHealthWindow`
+- Sensor validation restricted to the health window
+- False positives from pre-flight and post-flight largely eliminated
+
+---
+
+## Event Timeline
+
+### ✓ Completed
+
+- `MSG` records successfully loaded from BIN logs.
+- `TimelineEvent` extended to support `EventType.MSG`.
+- Firmware messages exposed as timestamped events.
+
+This exposes information not available in UAV Log Viewer, including:
+
+- AUTO trigger
+- Takeoff
+- Landing approach
+- Glide slope
+- Flare
+- Landing abort
+- Autotune
+- Airspeed warnings
+- Mission progress
+
+---
+
+## Sensor Health Window
+
+Purpose:
+
+Determine when sensor validation is meaningful.
+
+Current implementation:
+
+- GPS-speed based
+- Single continuous window
+- Independent of flight mode
+
+This window is used only for sensor health validation.
+
+---
+
+## Landing Analysis Window
+
+Purpose:
+
+Define the period over which AUTO landing analysis is performed.
+
+Unlike the Sensor Health Window, this window is firmware-driven.
+
+Candidate boundaries:
+
+Start:
+- `Mission: 3 Land`
+  or
+- `Landing approach start`
+
+End:
+- `Throttle disarmed`
+- `Landing aborted via throttle`
+
+This allows multiple landing windows within a single flight (go-arounds).
+
+Only AUTO landings will be analysed.
+
+Manual takeoffs and manual landings are intentionally outside the scope of landing analysis.
+
+---
+
+## Planned
+
+### EventExtractor
+
+Extract `TimelineEvent`s from `MSG`.
+
+### LandingWindowDetector
+
+Construct one or more `LandingWindow`s from firmware events.
+
+### Landing Analysis
+
+Operate on `LandingWindow` rather than `SensorHealthWindow`.
+
+### Future
+
+Integrate derived events (touchdown, rangefinder, GPS stop) with firmware events into a single chronological timeline.
