@@ -394,7 +394,7 @@ Support multiple sensor health windows for logs containing multiple flights or t
 
 ### Remaining
 
-- Support multiple health windows within a log.
+- Support multiple `SensorHealthWindow`s within a log by splitting flights after extended ground periods.
 - Split windows after an extended ground period.
 - Continue using the existing GPS speed threshold.
 - Add configurable minimum ground time before ending a window.
@@ -516,3 +516,68 @@ Operate on `LandingWindow` rather than `SensorHealthWindow`.
 ### Future
 
 Integrate derived events (touchdown, rangefinder, GPS stop) with firmware events into a single chronological timeline.
+
+### architectural target
+
+FlightReader
+    │
+    ▼
+FlightLog
+    ├── Messages
+    ├── Parameters
+    ├── Events
+    └── FlightWindow(s)
+             │
+             ├── SensorHealthWindow
+             ├── LandingWindow(s)
+             ├── CruiseWindow(s)
+             ├── AutotuneWindow(s)
+             ├── RTLWindow(s)
+             └── ...
+             
+ Architecture
+
+FlightReader is responsible only for decoding the log into a FlightLog. Analysis-specific window detectors progressively enrich each FlightWindow, allowing new analyses to be added without modifying the reader. This provides a scalable framework supporting multiple flights and multiple analysis windows per flight.
+
+## Flight Framework
+
+### Objective
+
+Introduce `FlightWindow` as the primary organisational unit within a flight log. All analysis-specific windows will be scoped to an individual flight, allowing multiple flights to be represented within a single log.
+
+### Planned
+
+- Add `FlightWindow` to the core model.
+- Add `flight.flights` to `FlightLog`.
+- Implement `FlightWindowDetector`.
+- Populate `FlightLog.flights` during log loading.
+- Refactor `SensorHealthWindowDetector` to operate on a `FlightWindow`.
+- Refactor `LandingWindowDetector` to operate on a `FlightWindow`.
+
+### Target Architecture
+
+```text
+reader.py
+    │
+    ▼
+FlightLog
+    ├── Messages
+    ├── Parameters
+    ├── Events
+    ├── Segments
+    └── FlightWindow(s)
+             │
+             ├── SensorHealthWindow
+             ├── LandingWindow(s)
+             ├── CruiseWindow(s)
+             ├── AutotuneWindow(s)
+             ├── RTLWindow(s)
+             └── ...
+```
+
+### Notes
+
+- `reader.py` remains responsible solely for decoding the log into a `FlightLog`.
+- `FlightWindowDetector` identifies individual flights within the log.
+- Analysis-specific window detectors progressively enrich each `FlightWindow`.
+- This architecture supports multiple flights per log and multiple analysis windows per flight while keeping responsibilities clearly separated.

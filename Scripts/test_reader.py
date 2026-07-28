@@ -1,42 +1,61 @@
 from core.reader import FlightReader
+from core.sensor_health_window import SensorHealthWindowDetector
 
 
-reader = FlightReader(
-    "Logs/log_19_2026-7-5-09-43-10.bin"
-)
+flight = FlightReader("Logs/log_17.bin").read()
 
-flight = reader.read()
-
-
-print("\nAvailable Messages")
-print("-" * 60)
-
-for name in flight.message_types():
-    df = flight.get(name)
-    print(f"{name:6} {len(df):8} records")
-
-
-print("\nParameters")
-print("-" * 60)
-
-if flight.parameters:
-
-    for name in sorted(flight.parameters):
-        print(f"{name:20} {flight.parameters[name]}")
-
-else:
-    print("No parameter file loaded.")
-
+print(f"Messages   : {len(flight.messages)}")
+print(f"Parameters : {len(flight.parameters)}")
+print(f"Flights    : {len(flight.flights)}")
+print(f"Segments   : {len(flight.segments)}")
 
 print()
 
-print("RFND Columns")
-print("-" * 60)
+for i, flight_window in enumerate(flight.flights, start=1):
 
-rfnd = flight.get("RFND")
+    sensor_window = SensorHealthWindowDetector().detect(
+        flight_window
+    )
 
-print(rfnd.columns)
+    duration = (
+        flight_window.end_us - flight_window.start_us
+    ) / 1e6
 
-print()
+    #
+    # Include every segment that overlaps this flight.
+    #
+    segments = [
+        s for s in flight.segments
+        if (
+            s.end_us >= flight_window.start_us
+            and
+            s.start_us <= flight_window.end_us
+        )
+    ]
 
-print(rfnd.head())
+    print(f"Flight {i}")
+    print(f"  Duration : {duration:.1f}s")
+    print(f"  Segments : {len(segments)}")
+    print(f"  Flight   : {flight_window.start_us:,} -> {flight_window.end_us:,}")
+    print(f"  Sensor   : {sensor_window.start_us:,} -> {sensor_window.end_us:,}")
+
+    print("  Modes")
+
+    for s in segments:
+
+        rel_start = (
+            s.start_us - flight_window.start_us
+        ) / 1e6
+
+        rel_end = (
+            s.end_us - flight_window.start_us
+        ) / 1e6
+
+        print(
+            f"    {s.mode:<10}"
+            f"{rel_start:8.1f}s"
+            f" -> "
+            f"{rel_end:8.1f}s"
+        )
+
+    print()

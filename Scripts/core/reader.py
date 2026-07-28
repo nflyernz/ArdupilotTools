@@ -7,6 +7,7 @@ from .config import Config
 from .model import FlightLog
 from .params import ParameterReader
 from .segmentation import FlightSegmenter
+from .flight_window_detector import FlightWindowDetector
 
 
 class FlightReader:
@@ -24,6 +25,10 @@ class FlightReader:
 
         self._read_parameters(flight)
 
+        #
+        # Build derived model objects
+        #
+        self._build_flights(flight)
         self._build_segments(flight)
 
         flight.metadata["log_file"] = str(self.filename)
@@ -72,12 +77,16 @@ class FlightReader:
 
         reader = ParameterReader(
             paramfile,
-            self.config
+            self.config,
         )
 
         flight.parameters = reader.read()
 
         flight.metadata["parameter_file"] = str(paramfile)
+
+    def _build_flights(self, flight):
+
+        flight.flights = FlightWindowDetector().detect(flight)
 
     def _build_segments(self, flight):
 

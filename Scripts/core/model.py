@@ -3,11 +3,13 @@ from typing import Dict, List, Any
 
 import pandas as pd
 
+from .flight_window import FlightWindow
+
 
 @dataclass
 class FlightLog:
     """
-    Container for a decoded ArduPilot flight.
+    Container for a decoded ArduPilot flight log.
 
     This is the central object passed to all analyzers.
     """
@@ -17,6 +19,9 @@ class FlightLog:
 
     # Loaded from matching .params file
     parameters: Dict[str, Any] = field(default_factory=dict)
+
+    # Individual flights detected within the log
+    flights: List[FlightWindow] = field(default_factory=list)
 
     # Derived from MODE messages
     segments: List = field(default_factory=list)
@@ -31,14 +36,12 @@ class FlightLog:
         """
         Return a message dataframe.
         """
-
         return self.messages.get(name, pd.DataFrame())
 
     def has(self, name: str) -> bool:
         """
         True if the message exists and contains rows.
         """
-
         return (
             name in self.messages
             and not self.messages[name].empty
@@ -48,14 +51,12 @@ class FlightLog:
         """
         Return sorted list of available message types.
         """
-
         return sorted(self.messages.keys())
 
     def seconds(self, name: str):
         """
         Return message time in seconds from the first sample.
         """
-
         df = self.get(name)
 
         if df.empty:
@@ -67,12 +68,10 @@ class FlightLog:
         """
         Return a parameter value.
         """
-
         return self.parameters.get(name, default)
 
     def has_param(self, name: str) -> bool:
         """
         True if a parameter exists.
         """
-
         return name in self.parameters
