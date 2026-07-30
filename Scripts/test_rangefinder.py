@@ -1,16 +1,28 @@
 from core.reader import FlightReader
 from core.config import Config
-from core.landwindow import LandingWindows
+from core.landing_window_detector import LandingWindowDetector
 from core.rangefinder import RangefinderEvents
 
 
 flight = FlightReader(
-    "Logs/log_1_2026-2-22-09-40-34.bin"
+    "Logs/log_17.bin"
 ).read()
 
 config = Config("Config/landing.yaml")
 
-windows = LandingWindows(flight).find()
+if not flight.flights:
+
+    print("No flight windows found.")
+    raise SystemExit
+
+flight_window = flight.flights[0]
+
+detector = LandingWindowDetector()
+
+windows = detector.detect(
+    flight,
+    flight_window,
+)
 
 if not windows:
 
@@ -39,6 +51,10 @@ print(
 
 print(
     f"Landing End   : {window.end_us / 1e6:.3f} s"
+)
+
+print(
+    f"Duration      : {(window.end_us - window.start_us) / 1e6:.2f} s"
 )
 
 print()
@@ -83,11 +99,7 @@ else:
     for event in events:
 
         print(
-
             f"{event.time_us / 1e6:10.3f}  "
-
             f"{event.event.value:<24}"
-
             f"{event.detail}"
-
         )

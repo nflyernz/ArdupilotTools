@@ -1,12 +1,22 @@
 from core.reader import FlightReader
-from core.landwindow import LandingWindows
+from core.landing_window_detector import LandingWindowDetector
 
 
 flight = FlightReader(
-    "Logs/log_17_2026-6-28-10-05-44.bin"
+    "Logs/log_17.bin"
 ).read()
 
-windows = LandingWindows(flight).find()
+if not flight.flights:
+
+    print("No flight windows found.")
+    raise SystemExit
+
+flight_window = flight.flights[0]
+
+windows = LandingWindowDetector().detect(
+    flight,
+    flight_window,
+)
 
 print()
 
@@ -21,12 +31,8 @@ for i, w in enumerate(windows, start=1):
 
     print(f"  End          : {w.end_us / 1e6:.3f} s")
 
-    print(f"  Duration     : {w.duration_s:.2f} s")
+    duration_s = (w.end_us - w.start_us) / 1e6
 
-    print(f"  Long         : {w.is_long}")
-
-    print(f"  Closed       : {w.closed}")
-
-    print(f"  Close reason : {w.close_reason}")
+    print(f"  Duration     : {duration_s:.2f} s")
 
     print()

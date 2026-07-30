@@ -1,13 +1,29 @@
 from core.reader import FlightReader
-from core.landwindow import LandingWindows
+from core.landing_window_detector import LandingWindowDetector
 from core.timeline import LandingTimeline
+from core.config import Config
+
+config = Config("Config/landing.yaml")
 
 
 flight = FlightReader(
-    "Logs/log_17_2026-6-28-10-05-44.bin"
+    "Logs/log_17.bin"
 ).read()
 
-windows = LandingWindows(flight).find()
+if not flight.flights:
+
+    print("No flight windows found.")
+
+    raise SystemExit
+
+flight_window = flight.flights[0]
+
+detector = LandingWindowDetector()
+
+windows = detector.detect(
+    flight,
+    flight_window,
+)
 
 if not windows:
 
@@ -18,12 +34,23 @@ if not windows:
 timeline = LandingTimeline(
     flight,
     windows[0],
+    config,
 ).build()
 
 print()
 
 print("Landing Timeline")
 print("-" * 70)
+
+print(
+    f"Landing Start : {windows[0].start_us / 1e6:.3f} s"
+)
+
+print(
+    f"Landing End   : {windows[0].end_us / 1e6:.3f} s"
+)
+
+print()
 
 for event in timeline:
 

@@ -7,10 +7,11 @@ class LandingTimeline:
     Build a chronological timeline for one landing window.
     """
 
-    def __init__(self, flight, window):
+    def __init__(self, flight, window, config):
 
         self.flight = flight
         self.window = window
+        self.config = config
 
     def build(self):
 
@@ -119,8 +120,8 @@ class LandingTimeline:
             RangefinderEvents(
 
                 self.flight,
-
                 self.window,
+                self.config,
 
             ).build()
 
