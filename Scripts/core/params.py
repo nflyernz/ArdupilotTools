@@ -1,3 +1,4 @@
+from fnmatch import fnmatch
 from pathlib import Path
 
 
@@ -10,51 +11,72 @@ class ParameterReader:
 
     def wanted_parameters(self):
         """
-        Return a set of parameter names requested by the YAML configuration.
+        Return the parameter patterns requested by the YAML configuration.
         """
 
-        wanted = set()
+        return set(self.config.get("parameters", []))
 
-        groups = self.config.get("parameter_groups", {})
+    def normalize_parameter(self, name, value):
+        """
+        Normalise firmware-specific parameter names and units so the rest
+        of the framework sees a consistent parameter interface.
+        """
 
-        for group in groups.values():
-            for parameter in group:
-                wanted.add(parameter)
+        #
+        # ArduPlane 4.6.x
+        #
 
-        return wanted
+        if name == "RNGFND1_MAX_CM":
+            name = "RNGFND1_MAX"
+            value = value / 100.0
+
+        return name, value
+
+    @staticmethod
+    def matches(name, patterns):
+        """
+        Return True if the parameter name matches any configured pattern.
+        Supports both exact names and shell-style wildcards.
+        """
+
+        for pattern in patterns:
+            if fnmatch(name, pattern):
+                return True
+
+        return False
 
     def read(self):
         """
         Read a MAVLink parameter export (.param/.params) and return only
         the parameters requested by the configuration.
 
-        Older ArduPlane firmware versions may use different parameter
-        names and/or units. These are normalised here so the rest of
-        the framework sees a consistent API.
+        Firmware-specific parameter names and units are normalised before
+        filtering so detectors always receive a consistent API.
         """
 
-        wanted = self.wanted_parameters()
+        patterns = self.wanted_parameters()
 
         params = {}
 
-        with open(self.filename, "r") as f:
+        with self.filename.open("r") as f:
 
             for line in f:
 
                 line = line.strip()
 
-                # Skip blank lines
                 if not line:
                     continue
 
-                # Skip comments
                 if line.startswith("#"):
                     continue
 
                 parts = line.split()
 
+                #
                 # Expected format:
                 # VehicleID ComponentID Name Value Type
+                #
+
                 if len(parts) < 5:
                     continue
 
@@ -69,13 +91,13 @@ class ParameterReader:
                 # Firmware compatibility
                 #
 
-                # ArduPlane 4.6.x
-                # RNGFND1_MAX_CM (cm)
-                if name == "RNGFND1_MAX_CM":
-                    name = "RNGFND1_MAX"
-                    value = value / 100.0
+                name, value = self.normalize_parameter(name, value)
 
-                if name in wanted:
+                #
+                # Configuration filtering
+                #
+
+                if self.matches(name, patterns):
                     params[name] = value
 
         return params

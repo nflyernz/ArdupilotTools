@@ -581,3 +581,345 @@ FlightLog
 - `FlightWindowDetector` identifies individual flights within the log.
 - Analysis-specific window detectors progressively enrich each `FlightWindow`.
 - This architecture supports multiple flights per log and multiple analysis windows per flight while keeping responsibilities clearly separated.
+
+# Roadmap
+
+## Flight Framework ✅
+
+### Objective
+
+Introduce `FlightWindow` as the primary organisational unit within a flight log. All subsequent analysis is performed within one or more `FlightWindow` instances, allowing a single log to contain multiple independent flights.
+
+### Completed
+
+- Added `FlightWindow` model.
+- Added `FlightWindowDetector`.
+- Added `FlightLog.flights`.
+- Populated flight windows during log loading.
+- Refactored `SensorHealthWindowDetector` to operate on a `FlightWindow`.
+- Preserved existing mode segmentation.
+- Validated against logs containing multiple flights and go-arounds.
+
+### Current Architecture
+
+```text
+reader.py
+    │
+    ▼
+FlightLog
+    ├── Messages
+    ├── Parameters
+    ├── FlightWindow(s)
+    ├── Mode Segments
+    ├── Events
+    └── Metadata
+```
+
+Each `FlightWindow` now defines the scope for all subsequent analyses.
+
+```text
+FlightWindow
+    ├── SensorHealthWindow
+    ├── LandingWindow(s)
+    ├── CruiseWindow(s)
+    ├── AutotuneWindow(s)
+    ├── RTLWindow(s)
+    └── ...
+```
+
+---
+
+# Next Milestone
+
+## Landing Framework
+
+### Objective
+
+Refactor landing detection to operate within a `FlightWindow` rather than across an entire log.
+
+### Planned
+
+- Refactor `LandingWindowDetector` to accept a `FlightWindow`.
+- Detect multiple landing attempts within a flight.
+- Support go-arounds and aborted approaches.
+- Use firmware `MSG` events where available to identify:
+  - Landing approach
+  - Landing abort
+  - Restarted landing
+  - Flare
+- Fall back to inference when `MSG` events are unavailable.
+- Return one or more `LandingWindow` objects per flight.
+
+### Target Architecture
+
+```text
+FlightLog
+└── FlightWindow
+    ├── SensorHealthWindow
+    ├── LandingWindow #1
+    ├── LandingWindow #2
+    ├── LandingWindow #3
+    └── ...
+```
+
+A continuous flight may therefore contain multiple landing attempts while remaining a single `FlightWindow`.
+
+---
+
+# Future Work
+
+## Analysis Modules
+
+Each analysis becomes independent and operates on its own window.
+
+Planned modules include:
+
+- Landing analysis
+- Airspeed analysis
+- TECS analysis
+- Cruise analysis
+- Autotune analysis
+- RTL analysis
+- Power system analysis
+
+Each module follows the same pattern:
+
+```text
+FlightWindow
+        │
+        ▼
+Window Detector
+        │
+        ▼
+Analyzer
+        │
+        ▼
+Result
+```
+
+This keeps responsibilities clearly separated and allows new analyses to be added without modifying the core framework.
+
+---
+
+## Long-term Goals
+
+- Support logs containing multiple flights.
+- Support multiple landing attempts per flight.
+- Keep `reader.py` responsible only for decoding and model construction.
+- Minimise coupling between detectors and analysers.
+- Build a modular flight-analysis framework rather than a landing-specific application.
+
+# ArduPlane Analyzer Roadmap
+
+## Vision
+
+Build a modular engineering tool for objectively analysing ArduPilot fixed-wing flight logs.
+
+The objective is to explain observed aircraft behaviour from logged telemetry, beginning with landing analysis, while providing a reusable framework for future analyses such as TECS, cruise performance, RTL, power systems, and autotune.
+
+---
+
+# Design Principles
+
+- **FlightLog** is the sole owner of decoded telemetry, parameters, events, and mode segments.
+- **FlightWindow** represents a single flight within a log.
+- Every analysis operates on a selected **FlightWindow**.
+- Processors and detectors receive both the **FlightLog** and the selected **FlightWindow**.
+- Analysis-specific windows (LandingWindow, SensorHealthWindow, etc.) are derived from a parent FlightWindow.
+- The analysis orchestrator is responsible for selecting windows and validating relationships between them.
+
+---
+
+# v0.1 — Core Framework ✅
+
+## Log Reader
+- [x] Read BIN logs
+- [x] Decode configured MAVLink messages
+- [x] Load matching parameter files
+- [x] Build FlightLog model
+
+## Flight Detection
+- [x] Introduce FlightWindow
+- [x] Detect multiple flights within a log
+- [x] GPS ground-speed based flight detection
+- [x] Support multiple flights and go-arounds
+
+## Segmentation
+- [x] Generate MODE segments
+- [x] Store log-wide mode timeline
+
+## Sensor Framework
+- [x] Airspeed processor
+- [x] GPS processor
+- [x] Barometer processor
+- [x] Sensor health window
+
+---
+
+# v0.2 — FlightWindow Integration 🚧
+
+**Objective**
+
+Complete the transition from log-level analyses to per-flight analyses.
+
+## Analysis orchestration
+- [ ] Iterate FlightLog.flights
+- [ ] Execute analyses independently for each FlightWindow
+- [ ] Produce one AnalysisResult per FlightWindow
+
+## Landing framework
+- [ ] Refactor LandingWindowDetector
+- [ ] Input: FlightLog + FlightWindow
+- [ ] Output: LandingWindow(s) within parent FlightWindow
+- [ ] Remove fixed development landing window
+
+## Analysis model
+- [ ] AnalysisResult references parent FlightWindow
+- [ ] Consolidate duplicate LandingWindow models
+
+## Flight scoping
+- [ ] Scope LAND processing to FlightWindow
+- [ ] Scope ARM processing to FlightWindow
+- [ ] Scope MSG event extraction to FlightWindow
+- [ ] Scope timelines to FlightWindow
+
+## Utilities
+- [ ] Segment filtering helper
+- [ ] Update documentation
+- [ ] Update development harnesses
+
+---
+
+# v0.3 — Analysis Framework
+
+**Objective**
+
+Standardise every processor, detector, and analysis around a common API.
+
+## Analysis API
+- [ ] Define standard processor interface
+- [ ] Define standard detector interface
+- [ ] Define standard analysis interface
+- [ ] Standardise result models
+
+## Sensor processors
+- [ ] Refactor AirspeedProcessor
+- [ ] Refactor GPSProcessor
+- [ ] Refactor BarometerProcessor
+- [ ] Refactor RangefinderProcessor
+
+## Event processors
+- [ ] Refactor EventExtractor
+- [ ] Refactor ArmCycleFinder
+- [ ] Refactor LandingTimeline
+
+## Common conventions
+- [ ] FlightLog remains telemetry owner
+- [ ] FlightWindow defines parent analysis scope
+- [ ] Child windows derived from FlightWindow
+- [ ] Consistent validation responsibilities
+- [ ] Shared helper utilities
+
+---
+
+# v0.4 — Landing Detection
+
+**Objective**
+
+Detect real landing attempts from telemetry.
+
+## Landing detection
+- [ ] Detect approach
+- [ ] Detect flare
+- [ ] Detect touchdown
+- [ ] Detect rollout
+- [ ] Detect aborted landings
+- [ ] Detect multiple landing attempts
+- [ ] Support go-arounds
+
+## Detection sources
+- [ ] LAND messages
+- [ ] Firmware MSG events
+- [ ] MODE transitions
+- [ ] Rangefinder
+- [ ] Airspeed
+- [ ] Barometer
+
+---
+
+# v0.5 — Landing Analysis
+
+**Objective**
+
+Measure landing quality using the detected landing window.
+
+## Metrics
+- [ ] Glide slope
+- [ ] Sink rate
+- [ ] Airspeed tracking
+- [ ] Flare timing
+- [ ] Flare height
+- [ ] Touchdown speed
+- [ ] Touchdown location
+- [ ] Energy management
+
+## Sensor validation
+- [ ] Airspeed quality
+- [ ] GPS quality
+- [ ] Barometer quality
+- [ ] Rangefinder quality
+
+## Scoring
+- [ ] Landing score
+- [ ] Confidence score
+- [ ] Warning generation
+
+---
+
+# v0.6 — Reporting
+
+## Reports
+- [ ] Landing summary
+- [ ] Timeline
+- [ ] Metrics report
+- [ ] Sensor validation report
+- [ ] Recommendations
+
+## Output
+- [ ] Console summary
+- [ ] HTML report
+- [ ] PDF report
+- [ ] JSON export
+
+---
+
+# Future Analyses
+
+The architecture should support additional analyses without changes to the core framework.
+
+Potential modules include:
+
+- TECS
+- Cruise performance
+- RTL
+- Autotune
+- Airspeed calibration
+- Power system
+- Battery performance
+- Wind estimation
+- Navigation accuracy
+- Mission analysis
+
+All future analyses should follow the same execution pattern:
+
+```
+FlightLog
+    ↓
+FlightWindow
+    ↓
+Analysis
+    ↓
+Result
+    ↓
+Report
+```
