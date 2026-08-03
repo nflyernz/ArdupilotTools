@@ -11,6 +11,9 @@ start and end.
 
 from dataclasses import dataclass
 
+from core.model import FlightLog
+from core.flight_window import FlightWindow
+
 
 @dataclass(slots=True)
 class SensorHealthWindow:
@@ -26,6 +29,9 @@ class SensorHealthWindowDetector:
     """
     Create a sensor health window from a FlightWindow.
 
+    FlightLog remains the owner of telemetry. FlightWindow defines
+    the flight being analysed.
+
     A small amount of time is trimmed from the start and end of
     the flight to remove transient behaviour during takeoff and
     landing.
@@ -33,10 +39,29 @@ class SensorHealthWindowDetector:
 
     TRIM_US = 2_000_000      # 2 seconds
 
-    def detect(self, flight_window):
+    def detect(
+        self,
+        flight_log: FlightLog,
+        flight_window: FlightWindow,
+    ) -> SensorHealthWindow:
+        """
+        Create a sensor-health window for one FlightWindow.
+        """
 
-        start_us = flight_window.start_us + self.TRIM_US
-        end_us = flight_window.end_us - self.TRIM_US
+        if flight_window not in flight_log.flights:
+            raise ValueError(
+                "FlightWindow does not belong to FlightLog"
+            )
+
+        start_us = (
+            flight_window.start_us
+            + self.TRIM_US
+        )
+
+        end_us = (
+            flight_window.end_us
+            - self.TRIM_US
+        )
 
         if start_us >= end_us:
             raise ValueError(

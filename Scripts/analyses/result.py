@@ -1,17 +1,14 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+
+from core.flight_window import FlightWindow
 
 
-@dataclass
+@dataclass(slots=True)
 class AnalysisResult:
-
     log_path: Path
+    flight_window: FlightWindow
 
-    telemetry: Any = None
-
-    window: Any = None
-
-    sensor_health: Any = None
-
-    report: Any = None
+    telemetry: object | None = None
+    sensor_health: object | None = None
+    report: object | None = None

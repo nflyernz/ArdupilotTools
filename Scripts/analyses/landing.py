@@ -18,10 +18,10 @@ class LandingAnalysis:
     Workflow:
         1. Select log(s)
         2. Load telemetry
-        3. Check sensor health
-        4. Determine landing window
-        5. Run processors
-        6. Generate report
+        3. Select each FlightWindow
+        4. Check sensor health
+        5. Determine landing window(s)
+        6. Generate one AnalysisResult per FlightWindow
     """
 
     def run(self):
@@ -29,83 +29,165 @@ class LandingAnalysis:
         logs = self.select_logs()
 
         if not logs:
-            return
+            return []
 
-        processed = 0
+        results = []
         framework_errors = 0
 
         print("\nLanding Analysis")
         print("----------------")
         print(f"Found {len(logs)} log(s)\n")
 
-        for index, log_path in enumerate(logs, start=1):
+        for log_index, log_path in enumerate(logs, start=1):
 
-            print(f"[{index:>3}/{len(logs)}] {log_path.name}")
+            print(
+                f"[{log_index:>3}/{len(logs)}] "
+                f"{log_path.name}"
+            )
 
             try:
 
-                telemetry = self.load_telemetry(log_path)
-
-                print("  ✓ Loaded")
-                
-                health_window = SensorHealthWindowDetector().detect(telemetry)
+                flight_log = self.load_telemetry(log_path)
 
                 print(
-                    f"  ✓ Health    : "
-                    f"{self.format_time(health_window.start_us)} - "
-                    f"{self.format_time(health_window.end_us)}"
+                    f"  ✓ Loaded     : "
+                    f"{len(flight_log.flights)} flight(s)"
                 )
 
-                airspeed = AirspeedProcessor(telemetry)
+                if not flight_log.flights:
 
-                health = airspeed.health(health_window)
+                    print("  ✗ No flights detected")
+                    print()
+                    continue
 
-                if health is None:
+                for flight_index, flight_window in enumerate(
+                    flight_log.flights,
+                    start=1,
+                ):
 
-                    print("  ✗ Airspeed : No ARSP data")
-                
-                elif health.validation.valid:
-                
-                    print("  ✓ Airspeed : PASS")
-                
-                else:
-                
-                    print("  ✗ Airspeed : FAIL")
-                
-                    grouped = {}
-                
-                    for failure in health.validation.failures:
-                
-                        grouped.setdefault(
-                            failure.rule,
-                            []
-                        ).append(failure)
-                
-                    for rule, failures in grouped.items():
-                
-                        first = failures[0]
-                
+                    print()
+                    print(
+                        f"  Flight {flight_index}"
+                    )
+
+                    print(
+                        f"    Window     : "
+                        f"{self.format_time(flight_window.start_us)} - "
+                        f"{self.format_time(flight_window.end_us)}"
+                    )
+
+                    #
+                    # Sensor health window
+                    #
+                    health_window = (
+                        SensorHealthWindowDetector().detect(
+                            flight_log,
+                            flight_window,
+                        )
+                    )
+
+                    health = None
+
+                    if health_window is None:
+
                         print(
-                            f"      {rule:<12}"
-                            f"x{len(failures):<2}  "
-                            f"first {self.format_time(first.start_us)}"
+                            "    ✗ Health    : "
+                            "No valid sensor-health window"
                         )
 
-                window = LandingWindowDetector().detect(telemetry)
+                    else:
 
-                AnalysisResult(
-                    log_path=log_path,
-                    telemetry=telemetry,
-                    window=window,
-                )
+                        print(
+                            f"    ✓ Health    : "
+                            f"{self.format_time(health_window.start_us)} - "
+                            f"{self.format_time(health_window.end_us)}"
+                        )
 
-                print(
-                    f"  ✓ Window    : "
-                    f"{self.format_time(window.start_us)} - "
-                    f"{self.format_time(window.end_us)}"
-                )
+                        #
+                        # Airspeed health
+                        #
+                        airspeed = AirspeedProcessor(flight_log)
 
-                processed += 1
+                        health = airspeed.health(
+                            health_window
+                        )
+
+                        if health is None:
+
+                            print(
+                                "    ✗ Airspeed  : "
+                                "No ARSP data"
+                            )
+
+                        elif health.validation.valid:
+
+                            print(
+                                "    ✓ Airspeed  : PASS"
+                            )
+
+                        else:
+
+                            print(
+                                "    ✗ Airspeed  : FAIL"
+                            )
+
+                            grouped = {}
+
+                            for failure in health.validation.failures:
+
+                                grouped.setdefault(
+                                    failure.rule,
+                                    [],
+                                ).append(failure)
+
+                            for rule, failures in grouped.items():
+
+                                first = failures[0]
+
+                                print(
+                                    f"        {rule:<12}"
+                                    f"x{len(failures):<2}  "
+                                    f"first "
+                                    f"{self.format_time(first.start_us)}"
+                                )
+
+                    #
+                    # Landing windows
+                    #
+                    landing_windows = (
+                        LandingWindowDetector().detect(
+                            flight_log,
+                            flight_window,
+                        )
+                    )
+
+                    print(
+                        f"    Landing windows : "
+                        f"{len(landing_windows)}"
+                    )
+
+                    for landing_index, landing_window in enumerate(
+                        landing_windows,
+                        start=1,
+                    ):
+
+                        print(
+                            f"      {landing_index}: "
+                            f"{self.format_time(landing_window.start_us)} - "
+                            f"{self.format_time(landing_window.end_us)}"
+                        )
+
+                    #
+                    # One result per FlightWindow.
+                    #
+                    result = AnalysisResult(
+                        log_path=log_path,
+                        flight_window=flight_window,
+                        telemetry=flight_log,
+                        sensor_health=health,
+                    )
+
+                    results.append(result)
 
             except Exception as ex:
 
@@ -117,47 +199,84 @@ class LandingAnalysis:
         print("Summary")
         print("-------")
         print(f"Logs            : {len(logs)}")
-        print(f"Processed       : {processed}")
+        print(f"Flight Results  : {len(results)}")
         print(f"Framework Errors: {framework_errors}")
+
+        return results
+
     def select_logs(self):
 
-        entry = input("\nLog file or directory: ").strip()
+        entry = input(
+            "\nLog file or directory: "
+        ).strip()
 
         if not entry:
+
             print("No log selected.")
             return []
 
         path = Path(entry)
 
         if not path.exists():
+
             print("Path not found.")
             return []
 
         if path.is_file():
+
             return [path]
 
-        logs = sorted(path.glob("*.BIN"))
-        logs.extend(sorted(path.glob("*.bin")))
+        logs = sorted(
+            path.glob("*.BIN")
+        )
+
+        logs.extend(
+            sorted(
+                path.glob("*.bin")
+            )
+        )
 
         if not logs:
+
             print("No log files found.")
             return []
 
         return logs
 
-    def load_telemetry(self, log_path):
+    def load_telemetry(
+        self,
+        log_path,
+    ):
 
-        reader = FlightReader(log_path)
+        reader = FlightReader(
+            log_path
+        )
 
         return reader.read()
 
     @staticmethod
-    def format_time(time_us):
+    def format_time(
+        time_us,
+    ):
 
-        total_ms = time_us // 1000
+        total_ms = (
+            time_us // 1000
+        )
 
-        minutes = total_ms // 60000
-        seconds = (total_ms % 60000) // 1000
-        milliseconds = total_ms % 1000
+        minutes = (
+            total_ms // 60000
+        )
 
-        return f"{minutes:02}:{seconds:02}.{milliseconds:03}"
+        seconds = (
+            total_ms % 60000
+        ) // 1000
+
+        milliseconds = (
+            total_ms % 1000
+        )
+
+        return (
+            f"{minutes:02}:"
+            f"{seconds:02}."
+            f"{milliseconds:03}"
+        )

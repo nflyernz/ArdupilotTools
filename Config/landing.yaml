@@ -22,6 +22,8 @@ messages:
   - NTUN
   - XKF1
   - MSG
+  - LAND
+  - ARM
 
 #
 # Parameter groups required

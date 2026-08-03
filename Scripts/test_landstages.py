@@ -1,26 +1,55 @@
 from core.reader import FlightReader
 
-flight = FlightReader(
-    "Logs/log_17_2026-6-28-10-05-44.bin"
+
+flight_log = FlightReader(
+    "Logs/log_17.bin"
 ).read()
 
-land = flight.get("LAND")
+land = flight_log.get("LAND")
 
 print()
-print("LAND.stage transitions")
+print("Flight-scoped LAND.stage transitions")
 print("-" * 70)
 
-previous = None
+if not flight_log.flights:
 
-for _, row in land.iterrows():
+    print("No flight windows found.")
+    raise SystemExit
 
-    stage = int(row.stage)
 
-    if stage != previous:
+for i, flight_window in enumerate(flight_log.flights, start=1):
 
-        print(
-            f"{row.TimeUS/1e6:10.3f} s   "
-            f"{previous} -> {stage}"
-        )
+    flight_land = land[
+        (land["TimeUS"] >= flight_window.start_us)
+        & (land["TimeUS"] <= flight_window.end_us)
+    ]
 
-        previous = stage
+    print()
+    print(f"Flight {i}")
+    print(
+        f"  Window : "
+        f"{flight_window.start_us / 1e6:.3f} -> "
+        f"{flight_window.end_us / 1e6:.3f} s"
+    )
+    print(f"  LAND records : {len(flight_land)}")
+    print()
+
+    if flight_land.empty:
+
+        print("    No LAND records.")
+        continue
+
+    previous = None
+
+    for _, row in flight_land.iterrows():
+
+        stage = int(row["stage"])
+
+        if stage != previous:
+
+            print(
+                f"    {row['TimeUS'] / 1e6:9.3f} s   "
+                f"{previous} -> {stage}"
+            )
+
+            previous = stage

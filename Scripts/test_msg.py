@@ -1,13 +1,44 @@
 from core.event_extractor import EventExtractor
 from core.reader import FlightReader
 
-flight = FlightReader(
-    "Logs/log_17_2026-6-28-10-05-44.bin"
+
+flight_log = FlightReader(
+    "Logs/log_17.bin"
 ).read()
 
-events = EventExtractor().extract(flight)
+extractor = EventExtractor()
 
-print(f"{len(events)} events\n")
+print()
+print("Flight-scoped MSG Events")
+print("-" * 70)
 
-for e in events:
-    print(f"{e.time_us/1e6:8.3f}  {e.event.value:12}  {e.detail}")
+if not flight_log.flights:
+
+    print("No flight windows found.")
+    raise SystemExit
+
+
+for i, flight_window in enumerate(flight_log.flights, start=1):
+
+    events = extractor.extract(
+        flight_log,
+        flight_window,
+    )
+
+    print()
+    print(f"Flight {i}")
+    print(
+        f"  Window : "
+        f"{flight_window.start_us / 1e6:.3f} -> "
+        f"{flight_window.end_us / 1e6:.3f} s"
+    )
+    print(f"  Events : {len(events)}")
+    print()
+
+    for event in events:
+
+        print(
+            f"    {event.time_us / 1e6:9.3f}  "
+            f"{event.event.value:12}  "
+            f"{event.detail}"
+        )

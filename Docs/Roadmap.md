@@ -768,25 +768,25 @@ Complete the transition from log-level analyses to per-flight analyses.
 - [ ] Produce one AnalysisResult per FlightWindow
 
 ## Landing framework
-- [ ] Refactor LandingWindowDetector
-- [ ] Input: FlightLog + FlightWindow
+- [x] Refactor LandingWindowDetector
+- [x] Input: FlightLog + FlightWindow
 - [ ] Output: LandingWindow(s) within parent FlightWindow
-- [ ] Remove fixed development landing window
+- [x] Remove fixed development landing window
 
 ## Analysis model
-- [ ] AnalysisResult references parent FlightWindow
-- [ ] Consolidate duplicate LandingWindow models
+- [x] AnalysisResult references parent FlightWindow
+- [x] Consolidate duplicate LandingWindow models
 
-## Flight scoping
+## FlightWindow integration
+
 - [ ] Scope LAND processing to FlightWindow
-- [ ] Scope ARM processing to FlightWindow
-- [ ] Scope MSG event extraction to FlightWindow
-- [ ] Scope timelines to FlightWindow
+- [ ] Scope MSG extraction to FlightWindow
+- [ ] Scope timeline event sources to FlightWindow
 
 ## Utilities
 - [ ] Segment filtering helper
 - [ ] Update documentation
-- [ ] Update development harnesses
+- [x] Update development harnesses
 
 ---
 
@@ -922,4 +922,55 @@ Analysis
 Result
     ↓
 Report
+
+Architecture status
+
+- [x] FlightLog owns decoded telemetry
+- [x] FlightWindow defines analysis scope
+- [x] AnalysisResult references parent FlightWindow
+- [ ] Analysis orchestrator executes one analysis per FlightWindow
+
+# v0.2 — FlightWindow Integration 🚧
+
+**Objective**
+
+Complete the transition from log-level analyses to per-flight analyses.
+
+## Flight detection
+- [x] GPS groundspeed based FlightWindow detection
+- [ ] Make flight speed threshold configurable (default 5 m/s)
+- [ ] Require threshold state to persist for 2 seconds
+- [x] Support multiple flights within one log
+
+## Analysis orchestration
+- [x] Iterate FlightLog.flights
+- [x] Execute analyses independently for each FlightWindow
+- [x] Produce one AnalysisResult per FlightWindow
+
+## Landing framework
+- [x] Refactor LandingWindowDetector
+- [x] Input: FlightLog + FlightWindow
+- [ ] Output: LandingWindow(s) within parent FlightWindow
+- [x] Remove fixed development landing window
+
+## Analysis model
+- [x] AnalysisResult references parent FlightWindow
+- [x] Consolidate duplicate LandingWindow models
+
+## FlightWindow integration
+- [x] Scope LAND processing to FlightWindow
+- [x] Scope MSG extraction to FlightWindow
+- [x] Scope timeline event sources to FlightWindow
+
+## Utilities
+- [x] Segment filtering helper
+- [ ] Update documentation
+- [x] Update development harnesses
+
+## Architecture status
+
+- [x] FlightLog owns decoded telemetry
+- [x] FlightWindow defines analysis scope
+- [x] AnalysisResult references parent FlightWindow
+- [ ] Analysis orchestrator executes one analysis per FlightWindow
 ```
