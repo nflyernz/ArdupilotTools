@@ -1,714 +1,3 @@
-# Version 0.1
-
-✓ Read BIN
-
-✓ Extract messages
-
-✓ Export CSV
-
-✓ Dashboard
-
----
-
-# Version 0.2
-
-Landing segmentation
-
-Landing metrics
-
-Landing report
-
----
-
-# Version 0.3
-
-Landing scorecard
-
-HTML report
-
-PDF report
-
----
-
-# Version 0.4
-
-Parameter integration
-
-Multiple aircraft profiles
-
----
-
-# Version 0.5
-
-Flight comparison
-
-Parameter comparison
-
-Firmware comparison
-
----
-
-# Version 0.6
-
-Launch module
-
----
-
-# Version 1.0
-
-Public release
-
-
-## v0.2.1 – ArduPlane 4.6 Compatibility
-
-### Investigate
-
-- [ ] Parameter loading
-  - Compare 4.6.3 and 4.7 `.params` formats.
-  - Determine why 4.6 parameters are not loading.
-
-- [ ] LAND messages
-  - Compare LAND message sequences between 4.6.3 and 4.7.
-  - Identify any behavioural changes.
-
-- [ ] Landing window detection
-  - Investigate oversized landing windows on 4.6.3 logs.
-  - Verify behaviour with go-arounds and aborted approaches.
-
-### Validation
-
-- [ ] Run detector suite on all available logs.
-- [ ] Record observations before modifying algorithms.
-- [ ] Only change detectors when supported by multiple logs.
-
-
-## Objective Analysis Principle
-
-The toolkit shall derive its conclusions solely from telemetry contained within the flight log.
-
-The processing chain is:
-
-## Objective Analysis Principle
-
-The toolkit shall derive its conclusions solely from telemetry contained within the flight log.
-
-The processing chain is:
-
-```text
-Flight Log
-    │
-    ▼
-Processors
-    │
-    ▼
-Analyzers
-    │
-    ▼
-Report
-```
-
-### Design Principle
-
-The flight log is the only source of truth.
-
-Processors and analyzers shall operate only on information contained within the telemetry. They shall not consume or depend upon:
-
-- pilot notes
-- flight journals
-- developer annotations
-- video recordings
-- user input
-- manually entered events
-
-These sources may be used during development to validate the software, but they must never influence the analysis itself.
-
-### Validation
-
-Development follows an independent validation workflow:
-
-```text
-Flight Log
-    │
-    ▼
-Analysis
-    │
-    ▼
-Report
-    │
-    ├── UAV Log Viewer
-    ├── Pilot observations
-    ├── Flight video
-    └── Engineering review
-```
-
-Validation exists only to answer one question:
-
-> Did the software correctly interpret the telemetry?
-
-If not, the algorithms are improved. The validation data is never incorporated into the runtime analysis.
-
-### Architectural Guidance
-
-When adding a new feature, ask:
-
-1. Can this conclusion be reached directly from telemetry?
-2. If not, can it be derived objectively from existing processor outputs?
-3. If neither is possible, it does not belong in the analyzer.
-
-This principle applies to every processor, analyzer and report.
-
-### Expected Outcome
-
-A completed analysis must be:
-
-- deterministic
-- repeatable
-- objective
-- independent of the operator
-- suitable for unattended batch processing
-
-Running the toolkit on the same log must always produce the same result, regardless of who performs the analysis or what they know about the flight.
-
-
-✓ FlightReader
-
-✓ BARO Processor
-
-✓ GPS Processor
-
-⬜ ARSP Processor
-
-⬜ RFND Processor (redesign)
-
-⬜ FC Processor
-
-⬜ Landing Window Analyzer
-
-⬜ Landing Analyzer
-
-⬜ Landing Report
-
-
-### Format Validation Event Times
-
-Display validation event start/end times as MM:SS.sss instead of raw TimeUS values. Retain TimeUS internally for calculations and cross-referencing between sensors.
-
-### Design Principle
-
-### Adopt Analysis-Centric Architecture
-
-The application will be organised around analysis workflows rather than individual sensor modules.
-
-Each analysis (e.g. Landing Analysis, Cruise Analysis, Sensor Diagnostics) will orchestrate the required processing pipeline:
-
-1. Select log(s)
-2. Load telemetry
-3. Determine the analysis window
-4. Execute the required processors
-5. Generate structured results
-6. Present reports (CLI, regression runner, or GUI)
-
-Sensor processors are independent, reusable components responsible only for analysing their own data and reporting results. They remain unaware of the calling workflow or presentation layer.
-
-The same analysis engine will be shared by:
-- Command-line interface
-- Regression runner
-- Future GUI
-
-This ensures a single source of analysis logic while allowing multiple front ends.
-
-### Transition to Analysis-Driven Execution
-
-The current `test_<processor>.py` scripts are development harnesses used while implementing and debugging individual processors.
-
-As the project matures, all execution paths will converge on the analysis engine. The test scripts will become lightweight wrappers that invoke the same analysis classes used by the regression runner and future GUI.
-
-Target architecture:
-
-    test_*.py
-         │
-    regression.py
-         │
-        GUI
-         │
-         ▼
-    Analysis Engine
-         │
-         ▼
-    Sensor Processors
-         │
-         ▼
-    Analysis Results
-
-This establishes a single execution path for all processing. New functionality is implemented once in the analysis engine and is immediately available to developer tests, regression testing, command-line execution, and the GUI without duplication.
-
-Status: Planned
-Priority: High
-
-### Structure
-
-Analyse/
-│
-├── analyse.py          ← application entry point
-│
-├── analyses/
-│   ├── landing.py
-│   ├── cruise.py
-│   ├── diagnostics.py
-│   └── summary.py
-│
-├── core/
-│   ├── reader.py
-│   ├── airspeed.py
-│   ├── gps.py
-│   └── barometer.py
-│
-└── tests/
-    ├── test_airspeed.py
-    ├── test_gps.py
-    └── ...
-    
-    ### Output Formatting
-
-Consolidate all human-readable time formatting into a shared utility.
-
-Current status:
-- Time formatting exists in multiple locations (e.g. landing.py, test scripts).
-- Internal processing uses TimeUS (microseconds).
-- User-facing reports should consistently display MM:SS.mmm.
-
-Planned:
-- Create a shared `core.time.format_time_us()` helper.
-- Use it throughout all analyses, reports, diagnostics, and tests.
-- Keep all internal calculations in TimeUS and only format at presentation time.
-
-Benefit:
-- Single implementation.
-- Consistent output across CLI, regression tests, and future GUI.
-- Avoid duplicated formatting logic.
-
-
-
-
-
-## Sensor Health vs Analysis
-
-The first implementation of `AirspeedProcessor.health()` demonstrated that not all existing validation rules are appropriate for sensor health.
-
-### Sensor Health
-
-Health answers:
-
-> "Can this sensor be trusted?"
-
-Typical rules:
-
-- Missing sensor
-- Missing values
-- Timestamp ordering
-- Sample gaps
-- Impossible values
-- Corrupt data
-
-Health is normally evaluated over the entire flight.
-
-### Analysis
-
-Analysis answers:
-
-> "What happened during this phase of flight?"
-
-Typical rules:
-
-- Low airspeed
-- Excessive airspeed change
-- Landing performance
-- Flare behaviour
-- Sink rate
-- Energy management
-
-Analysis is performed over a selected flight window.
-
-### Design Principle
-
-Health and analysis are separate responsibilities.
-
-A processor may expose both:
-
-```python
-processor.health()
-processor.analyse(window)
-
-
-
-## Next Refactor: Sensor Health Window
-
-The first implementation of sensor health highlighted that evaluating health over the entire flight log produces false positives. Examples include low airspeed before takeoff and after landing, and possible logging artefacts while the aircraft is stationary.
-
-The next refactor will introduce a common **Sensor Health Window** that defines the period over which sensor health is evaluated.
-
-### Sensor Health Window
-
-The window will be derived from GPS groundspeed.
-
-Preconditions:
-
-- GPS data must be present.
-- GPS quality (HDOP) must be within the configured limit.
-- If either condition fails, sensor health analysis is aborted.
-
-Window definition:
-
-- Start when:
-
-      groundspeed > max(0.5 × AIRSPEED_STALL, 5 m/s)
-
-- End when groundspeed falls below the same threshold.
-
-If `AIRSPEED_STALL` is unavailable, a default threshold of **5 m/s** is used.
-
-### Benefits
-
-- Evaluates sensors only during meaningful flight.
-- Removes expected false positives while stationary.
-- Uses GPS as an independent reference.
-- Provides a common evaluation window for multiple sensor processors.
-
-### Scope
-
-This refactor changes **where** health is evaluated, not **how** individual validation rules work.
-
-Existing airspeed validation rules will remain unchanged until they are re-evaluated using the new Sensor Health Window.
-
-# Sensor health window
-
-Support multiple sensor health windows for logs containing multiple flights or touch-and-go operations.
-
-## Sensor Health Window
-
-### Completed
-
-- GPS-speed based detector
-- Sensor validation restricted to the health window
-- Eliminated pre-flight and post-flight false positives
-
-### Remaining
-
-- Support multiple `SensorHealthWindow`s within a log by splitting flights after extended ground periods.
-- Split windows after an extended ground period.
-- Continue using the existing GPS speed threshold.
-- Add configurable minimum ground time before ending a window.
-- Return multiple `SensorHealthWindow` objects rather than a single longest window.
-
----
-
-## Landing Analysis Window
-
-### Planned
-
-Create a separate `LandingWindow` for AUTO landings.
-
-Derived from firmware `MSG` events:
-
-Start:
-- Landing approach start
-  (or `Mission: 3 Land`)
-
-End:
-- Throttle disarmed
-- Landing aborted via throttle
-
-The landing analyser will operate on `LandingWindow`, not `SensorHealthWindow`.
-
-Multiple landing windows are supported naturally for aborted landings and retries.
-
-Manual takeoffs and manual landings are intentionally out of scope.
-
-## Flight Windows
-
-### ✓ Completed
-
-- GPS-based `SensorHealthWindow`
-- Sensor validation restricted to the health window
-- False positives from pre-flight and post-flight largely eliminated
-
----
-
-## Event Timeline
-
-### ✓ Completed
-
-- `MSG` records successfully loaded from BIN logs.
-- `TimelineEvent` extended to support `EventType.MSG`.
-- Firmware messages exposed as timestamped events.
-
-This exposes information not available in UAV Log Viewer, including:
-
-- AUTO trigger
-- Takeoff
-- Landing approach
-- Glide slope
-- Flare
-- Landing abort
-- Autotune
-- Airspeed warnings
-- Mission progress
-
----
-
-## Sensor Health Window
-
-Purpose:
-
-Determine when sensor validation is meaningful.
-
-Current implementation:
-
-- GPS-speed based
-- Single continuous window
-- Independent of flight mode
-
-This window is used only for sensor health validation.
-
----
-
-## Landing Analysis Window
-
-Purpose:
-
-Define the period over which AUTO landing analysis is performed.
-
-Unlike the Sensor Health Window, this window is firmware-driven.
-
-Candidate boundaries:
-
-Start:
-- `Mission: 3 Land`
-  or
-- `Landing approach start`
-
-End:
-- `Throttle disarmed`
-- `Landing aborted via throttle`
-
-This allows multiple landing windows within a single flight (go-arounds).
-
-Only AUTO landings will be analysed.
-
-Manual takeoffs and manual landings are intentionally outside the scope of landing analysis.
-
----
-
-## Planned
-
-### EventExtractor
-
-Extract `TimelineEvent`s from `MSG`.
-
-### LandingWindowDetector
-
-Construct one or more `LandingWindow`s from firmware events.
-
-### Landing Analysis
-
-Operate on `LandingWindow` rather than `SensorHealthWindow`.
-
-### Future
-
-Integrate derived events (touchdown, rangefinder, GPS stop) with firmware events into a single chronological timeline.
-
-### architectural target
-
-FlightReader
-    │
-    ▼
-FlightLog
-    ├── Messages
-    ├── Parameters
-    ├── Events
-    └── FlightWindow(s)
-             │
-             ├── SensorHealthWindow
-             ├── LandingWindow(s)
-             ├── CruiseWindow(s)
-             ├── AutotuneWindow(s)
-             ├── RTLWindow(s)
-             └── ...
-             
- Architecture
-
-FlightReader is responsible only for decoding the log into a FlightLog. Analysis-specific window detectors progressively enrich each FlightWindow, allowing new analyses to be added without modifying the reader. This provides a scalable framework supporting multiple flights and multiple analysis windows per flight.
-
-## Flight Framework
-
-### Objective
-
-Introduce `FlightWindow` as the primary organisational unit within a flight log. All analysis-specific windows will be scoped to an individual flight, allowing multiple flights to be represented within a single log.
-
-### Planned
-
-- Add `FlightWindow` to the core model.
-- Add `flight.flights` to `FlightLog`.
-- Implement `FlightWindowDetector`.
-- Populate `FlightLog.flights` during log loading.
-- Refactor `SensorHealthWindowDetector` to operate on a `FlightWindow`.
-- Refactor `LandingWindowDetector` to operate on a `FlightWindow`.
-
-### Target Architecture
-
-```text
-reader.py
-    │
-    ▼
-FlightLog
-    ├── Messages
-    ├── Parameters
-    ├── Events
-    ├── Segments
-    └── FlightWindow(s)
-             │
-             ├── SensorHealthWindow
-             ├── LandingWindow(s)
-             ├── CruiseWindow(s)
-             ├── AutotuneWindow(s)
-             ├── RTLWindow(s)
-             └── ...
-```
-
-### Notes
-
-- `reader.py` remains responsible solely for decoding the log into a `FlightLog`.
-- `FlightWindowDetector` identifies individual flights within the log.
-- Analysis-specific window detectors progressively enrich each `FlightWindow`.
-- This architecture supports multiple flights per log and multiple analysis windows per flight while keeping responsibilities clearly separated.
-
-# Roadmap
-
-## Flight Framework ✅
-
-### Objective
-
-Introduce `FlightWindow` as the primary organisational unit within a flight log. All subsequent analysis is performed within one or more `FlightWindow` instances, allowing a single log to contain multiple independent flights.
-
-### Completed
-
-- Added `FlightWindow` model.
-- Added `FlightWindowDetector`.
-- Added `FlightLog.flights`.
-- Populated flight windows during log loading.
-- Refactored `SensorHealthWindowDetector` to operate on a `FlightWindow`.
-- Preserved existing mode segmentation.
-- Validated against logs containing multiple flights and go-arounds.
-
-### Current Architecture
-
-```text
-reader.py
-    │
-    ▼
-FlightLog
-    ├── Messages
-    ├── Parameters
-    ├── FlightWindow(s)
-    ├── Mode Segments
-    ├── Events
-    └── Metadata
-```
-
-Each `FlightWindow` now defines the scope for all subsequent analyses.
-
-```text
-FlightWindow
-    ├── SensorHealthWindow
-    ├── LandingWindow(s)
-    ├── CruiseWindow(s)
-    ├── AutotuneWindow(s)
-    ├── RTLWindow(s)
-    └── ...
-```
-
----
-
-# Next Milestone
-
-## Landing Framework
-
-### Objective
-
-Refactor landing detection to operate within a `FlightWindow` rather than across an entire log.
-
-### Planned
-
-- Refactor `LandingWindowDetector` to accept a `FlightWindow`.
-- Detect multiple landing attempts within a flight.
-- Support go-arounds and aborted approaches.
-- Use firmware `MSG` events where available to identify:
-  - Landing approach
-  - Landing abort
-  - Restarted landing
-  - Flare
-- Fall back to inference when `MSG` events are unavailable.
-- Return one or more `LandingWindow` objects per flight.
-
-### Target Architecture
-
-```text
-FlightLog
-└── FlightWindow
-    ├── SensorHealthWindow
-    ├── LandingWindow #1
-    ├── LandingWindow #2
-    ├── LandingWindow #3
-    └── ...
-```
-
-A continuous flight may therefore contain multiple landing attempts while remaining a single `FlightWindow`.
-
----
-
-# Future Work
-
-## Analysis Modules
-
-Each analysis becomes independent and operates on its own window.
-
-Planned modules include:
-
-- Landing analysis
-- Airspeed analysis
-- TECS analysis
-- Cruise analysis
-- Autotune analysis
-- RTL analysis
-- Power system analysis
-
-Each module follows the same pattern:
-
-```text
-FlightWindow
-        │
-        ▼
-Window Detector
-        │
-        ▼
-Analyzer
-        │
-        ▼
-Result
-```
-
-This keeps responsibilities clearly separated and allows new analyses to be added without modifying the core framework.
-
----
-
-## Long-term Goals
-
-- Support logs containing multiple flights.
-- Support multiple landing attempts per flight.
-- Keep `reader.py` responsible only for decoding and model construction.
-- Minimise coupling between detectors and analysers.
-- Build a modular flight-analysis framework rather than a landing-specific application.
-
 # ArduPlane Analyzer Roadmap
 
 ## Vision
@@ -721,181 +10,549 @@ The objective is to explain observed aircraft behaviour from logged telemetry, b
 
 # Design Principles
 
-- **FlightLog** is the sole owner of decoded telemetry, parameters, events, and mode segments.
-- **FlightWindow** represents a single flight within a log.
-- Every analysis operates on a selected **FlightWindow**.
-- Processors and detectors receive both the **FlightLog** and the selected **FlightWindow**.
-- Analysis-specific windows (LandingWindow, SensorHealthWindow, etc.) are derived from a parent FlightWindow.
-- The analysis orchestrator is responsible for selecting windows and validating relationships between them.
+- `FlightLog` is the sole owner of decoded telemetry, parameters, events, and mode segments.
+- `FlightWindow` represents one continuous flight within a log.
+- Every analysis operates within a selected `FlightWindow`.
+- `FlightWindow` remains a lightweight time-bound object and does not own telemetry.
+- Processors and detectors receive the `FlightLog` and selected `FlightWindow` when flight scope is required.
+- Analysis-specific windows such as `SensorHealthWindow` and `LandingWindow` are derived within a parent `FlightWindow`.
+- The analysis orchestrator is responsible for selecting flights and coordinating processors, detectors, and results.
+- Firmware-specific parameter names and units are normalised by `ParameterReader`.
+- Detectors and analysers operate only on the normalised parameter interface.
+- Internal calculations use `TimeUS`.
+- Human-readable output uses `MM:SS.mmm`.
 
 ---
 
-# v0.1 — Core Framework ✅
+# Objective Analysis Principle
+
+The toolkit derives its conclusions solely from telemetry contained within the flight log.
+
+```text
+Flight Log
+    │
+    ▼
+Processors
+    │
+    ▼
+Analysers
+    │
+    ▼
+Report
+...
+
+## Current Architecture
+
+BIN log
+    │
+    ▼
+FlightReader
+    │
+    ▼
+FlightLog
+    ├── Messages
+    ├── Parameters
+    ├── Events
+    ├── Mode Segments
+    ├── Metadata
+    │
+    └── FlightWindow(s)
+             │
+             ├── SensorHealthWindow
+             ├── LandingWindow(s)
+             ├── CruiseWindow(s)
+             ├── AutotuneWindow(s)
+             ├── RTLWindow(s)
+             └── ...
+...             
+             # v0.1 — Core Framework ✅
 
 ## Log Reader
-- [x] Read BIN logs
-- [x] Decode configured MAVLink messages
-- [x] Load matching parameter files
-- [x] Build FlightLog model
 
-## Flight Detection
-- [x] Introduce FlightWindow
-- [x] Detect multiple flights within a log
-- [x] GPS ground-speed based flight detection
-- [x] Support multiple flights and go-arounds
+- [x] Read BIN logs
+- [x] Decode configured MAVLink/DataFlash messages
+- [x] Load matching parameter files
+- [x] Build `FlightLog`
+- [x] Store telemetry as pandas DataFrames
+
+## Parameter Framework
+
+- [x] Load configured parameters
+- [x] Support exact parameter names
+- [x] Support wildcard parameter groups
+- [x] Normalise firmware-specific parameter names
+- [x] Normalise firmware-specific parameter units
+- [x] Support ArduPlane 4.6 `RNGFND1_MAX_CM`
+- [x] Present firmware-independent parameter interface to detectors
 
 ## Segmentation
-- [x] Generate MODE segments
+
+- [x] Decode MODE records
+- [x] Generate mode segments
 - [x] Store log-wide mode timeline
 
 ## Sensor Framework
+
 - [x] Airspeed processor
 - [x] GPS processor
 - [x] Barometer processor
 - [x] Sensor health window
+- [x] Rangefinder event processing
+
+## Event Framework
+
+- [x] Load firmware `MSG` records
+- [x] Represent firmware messages as timeline events
+- [x] Load `LAND` telemetry
+- [x] Load `ARM` telemetry
+- [x] Build chronological landing timeline
+
+# v0.2 — FlightWindow Integration ✅
+
+## Objective
+
+Complete the transition from whole-log analysis to independently scoped flight analysis.
+
+A single BIN log may contain multiple flights. Each flight must be analysed independently without moving telemetry ownership out of `FlightLog`.
 
 ---
 
-# v0.2 — FlightWindow Integration 🚧
+## Flight Detection
 
-**Objective**
-
-Complete the transition from log-level analyses to per-flight analyses.
-
-## Analysis orchestration
-- [ ] Iterate FlightLog.flights
-- [ ] Execute analyses independently for each FlightWindow
-- [ ] Produce one AnalysisResult per FlightWindow
-
-## Landing framework
-- [x] Refactor LandingWindowDetector
-- [x] Input: FlightLog + FlightWindow
-- [ ] Output: LandingWindow(s) within parent FlightWindow
-- [x] Remove fixed development landing window
-
-## Analysis model
-- [x] AnalysisResult references parent FlightWindow
-- [x] Consolidate duplicate LandingWindow models
-
-## FlightWindow integration
-
-- [ ] Scope LAND processing to FlightWindow
-- [ ] Scope MSG extraction to FlightWindow
-- [ ] Scope timeline event sources to FlightWindow
-
-## Utilities
-- [ ] Segment filtering helper
-- [ ] Update documentation
-- [x] Update development harnesses
+- [x] Introduce `FlightWindow`
+- [x] Add `FlightLog.flights`
+- [x] Implement `FlightWindowDetector`
+- [x] Populate flight windows during log loading
+- [x] GPS groundspeed based flight detection
+- [x] Default flight speed threshold of 5 m/s
+- [x] Allow flight speed threshold to be configured
+- [x] Use `AIRSPEED_STALL` where available when determining effective threshold
+- [x] Require above-threshold state to persist for 2 seconds
+- [x] Require extended ground period before separating flights
+- [x] Support multiple flights within one log
+- [x] Keep go-arounds within the same continuous `FlightWindow`
 
 ---
+
+## Sensor Health Scoping
+
+- [x] Refactor `SensorHealthWindowDetector` for flight-scoped operation
+- [x] Input includes `FlightLog` and selected `FlightWindow`
+- [x] Validate that the `FlightWindow` belongs to the supplied `FlightLog`
+- [x] Derive sensor-health bounds within the parent flight
+- [x] Restrict airspeed health analysis to the selected flight's health window
+
+---
+
+## Analysis Orchestration
+
+- [x] Iterate `FlightLog.flights`
+- [x] Execute analysis independently for each `FlightWindow`
+- [x] Produce one `AnalysisResult` per `FlightWindow`
+- [x] Preserve `FlightLog` as the telemetry owner
+- [x] Distinguish analysis failures from framework failures
+- [x] Validate multi-flight execution through the main CLI
+
+---
+
+## Analysis Model
+
+- [x] `AnalysisResult` explicitly references its parent `FlightWindow`
+- [x] Consolidate duplicate `LandingWindow` models
+- [x] Remove legacy `landwindow.py`
+- [x] Validate parent/child window relationships where required
+
+---
+
+## Flight-Scoped Processing
+
+- [x] Scope LAND processing to `FlightWindow`
+- [x] Scope MSG event extraction to `FlightWindow`
+- [x] Scope landing timeline event sources to `FlightWindow`
+- [x] Scope mode-segment selection to `FlightWindow`
+- [x] Keep log-wide telemetry and segment ownership in `FlightLog`
+
+---
+
+## Landing Framework Preparation
+
+- [x] Refactor `LandingWindowDetector`
+- [x] Accept `FlightLog + FlightWindow`
+- [x] Validate parent `FlightWindow`
+- [x] Remove fixed absolute development interval
+- [x] Return a bounded development `LandingWindow`
+- [x] Establish support for multiple `LandingWindow` results
+- [x] Validate LAND and MSG telemetry within individual flights
+
+Real landing-attempt detection is intentionally deferred to v0.4.
+
+---
+
+## Development Harnesses
+
+- [x] Update reader harness for FlightWindow API
+- [x] Update LAND-stage harness for flight scoping
+- [x] Update MSG harness for flight scoping
+- [x] Update rangefinder harness for canonical `LandingWindow`
+- [x] Update timeline harness for parent `FlightWindow`
+- [x] Remove remaining runtime dependencies on legacy `LandingWindows`
+- [x] Validate `log_17.bin` as a multi-flight regression case
+
+---
+
+## v0.2 Validation
+
+Validated against `log_17.bin`:
+
+- [x] Four independent flights detected
+- [x] Flight boundaries agree with previously validated boundaries
+- [x] Changing flight-start qualification from five samples to two seconds did not alter the four detected flight boundaries
+- [x] Multiple go-arounds remain within one continuous flight
+- [x] LAND records are correctly scoped to individual flights
+- [x] MSG records are correctly scoped to individual flights
+- [x] Landing timeline events remain within the selected flight
+- [x] Main landing-analysis CLI produces four `AnalysisResult` objects
+- [x] Main landing-analysis CLI completes with zero framework errors
 
 # v0.3 — Analysis Framework
 
-**Objective**
+## Objective
 
-Standardise every processor, detector, and analysis around a common API.
+Standardise processors, detectors, analyses, and result models around consistent flight-scoped contracts.
+
+The purpose of this milestone is API consistency rather than new landing-detection behaviour.
+
+---
 
 ## Analysis API
+
 - [ ] Define standard processor interface
 - [ ] Define standard detector interface
 - [ ] Define standard analysis interface
 - [ ] Standardise result models
+- [ ] Define common parent/child window validation
 
-## Sensor processors
-- [ ] Refactor AirspeedProcessor
-- [ ] Refactor GPSProcessor
-- [ ] Refactor BarometerProcessor
-- [ ] Refactor RangefinderProcessor
+---
 
-## Event processors
-- [ ] Refactor EventExtractor
-- [ ] Refactor ArmCycleFinder
-- [ ] Refactor LandingTimeline
+## Sensor Processors
 
-## Common conventions
-- [ ] FlightLog remains telemetry owner
-- [ ] FlightWindow defines parent analysis scope
-- [ ] Child windows derived from FlightWindow
-- [ ] Consistent validation responsibilities
-- [ ] Shared helper utilities
+- [ ] Refactor `AirspeedProcessor`
+- [ ] Refactor `GPSProcessor`
+- [ ] Refactor `BarometerProcessor`
+- [ ] Refactor rangefinder processing
+
+Target pattern:
+
+```text
+Processor
+    │
+    ├── FlightLog
+    ├── FlightWindow
+    └── optional analysis-specific sub-window
+...    
+
+Processors must never read telemetry outside the selected parent flight.
+    
+## Event Processors
+
+- [ ] Refactor `EventExtractor`
+- [ ] Refactor `ArmCycleFinder`
+- [ ] Refactor `LandingTimeline`
+- [ ] Standardise event filtering helpers
+- [ ] Standardise event ownership and storage
+  
+    
+## Shared Utilities
+
+- [ ] Consolidate human-readable time formatting
+- [ ] Implement shared `core.time.format_time_us()`
+- [ ] Remove duplicated time-formatting code
+- [ ] Standardise window containment helpers
+- [ ] Standardise segment filtering helpers
+- [ ] Standardise telemetry filtering helpers
+
+---
+
+## Common Conventions
+
+- [ ] `FlightLog` remains telemetry owner
+- [ ] `FlightWindow` defines parent analysis scope
+- [ ] Child windows are bounded by `FlightWindow`
+- [ ] Processors explicitly identify their parent flight
+- [ ] Health and analysis remain separate responsibilities
+- [ ] Validation responsibilities are consistent across processors
 
 ---
 
 # v0.4 — Landing Detection
 
-**Objective**
+## Objective
 
-Detect real landing attempts from telemetry.
+Detect real AUTO landing attempts objectively from logged telemetry.
 
-## Landing detection
-- [ ] Detect approach
+A continuous `FlightWindow` may contain zero, one, or multiple landing attempts.
+
+Go-arounds and aborted approaches must produce separate landing attempts without splitting the parent flight.
+
+---
+
+## Landing Event Validation
+
+Before finalising detection rules:
+
+- [ ] Catalogue LAND sequences across available logs
+- [ ] Catalogue firmware MSG landing sequences
+- [ ] Compare ArduPlane 4.6 and 4.7 behaviour
+- [ ] Validate aborted approaches
+- [ ] Validate restarted landings
+- [ ] Validate successful landings
+- [ ] Record observations in `Docs/Validation.md`
+
+Detector rules must be supported by multiple representative logs before being treated as authoritative.
+
+---
+
+## Landing Detection
+
+- [ ] Detect landing approach start
 - [ ] Detect flare
-- [ ] Detect touchdown
-- [ ] Detect rollout
-- [ ] Detect aborted landings
-- [ ] Detect multiple landing attempts
+- [ ] Detect aborted landing
+- [ ] Detect restarted landing
+- [ ] Detect touchdown evidence
+- [ ] Detect rollout where telemetry supports it
+- [ ] Detect multiple landing attempts within one flight
 - [ ] Support go-arounds
+- [ ] Return zero or more `LandingWindow` objects per `FlightWindow`
+- [ ] Guarantee every `LandingWindow` lies within its parent `FlightWindow`
 
-## Detection sources
-- [ ] LAND messages
-- [ ] Firmware MSG events
+---
+
+## Detection Sources
+
+Potential evidence includes:
+
+- [ ] `LAND.stage`
+- [ ] Firmware `MSG` events
 - [ ] MODE transitions
+- [ ] ARM/disarm events
 - [ ] Rangefinder
+- [ ] GPS
 - [ ] Airspeed
 - [ ] Barometer
+
+No source should be assumed authoritative until validated against representative logs.
+
+---
+
+## Known Validation Evidence
+
+Current logs show useful correspondence between firmware events and LAND stages.
+
+Examples observed include:
+
+```text
+Mission: 3 Land
+Landing approach start
+Landing glide slope
+Flare
+Landing aborted via throttle
+Restarted landing via DO_LAND_START
+Throttle disarmed
+```
+
+Flight 2 of `log_17.bin` contains multiple landing attempts and is the primary current regression case for aborted/restarted landing detection.
+
+These observations are validation evidence only. Final detector rules remain part of v0.4.
 
 ---
 
 # v0.5 — Landing Analysis
 
-**Objective**
+## Objective
 
-Measure landing quality using the detected landing window.
+Measure what occurred during each detected landing attempt.
 
-## Metrics
+Analysis remains descriptive and evidence-based. It does not recommend parameter changes.
+
+---
+
+## Geometry
+
+- [ ] Approach geometry
 - [ ] Glide slope
-- [ ] Sink rate
-- [ ] Airspeed tracking
-- [ ] Flare timing
-- [ ] Flare height
-- [ ] Touchdown speed
-- [ ] Touchdown location
-- [ ] Energy management
+- [ ] Height profile
+- [ ] Distance-to-landing-point profile
+- [ ] Touchdown location where measurable
 
-## Sensor validation
+---
+
+## Energy
+
+- [ ] Airspeed profile
+- [ ] Airspeed tracking
+- [ ] Groundspeed profile
+- [ ] Sink rate
+- [ ] Throttle behaviour
+- [ ] Energy-management observations
+
+---
+
+## Aircraft Response
+
+- [ ] Pitch
+- [ ] Roll
+- [ ] Attitude tracking
+- [ ] Control response where objectively measurable
+
+---
+
+## Flare
+
+- [ ] Flare start
+- [ ] Flare height
+- [ ] Flare airspeed
+- [ ] Flare sink rate
+- [ ] Flare duration
+- [ ] Rangefinder evidence
+
+---
+
+## Touchdown
+
+- [ ] Detect touchdown where telemetry permits
+- [ ] Touchdown speed
+- [ ] Touchdown sink rate
+- [ ] Touchdown location
+- [ ] Rollout measurements
+
+---
+
+## Sensor Validation
+
 - [ ] Airspeed quality
 - [ ] GPS quality
 - [ ] Barometer quality
 - [ ] Rangefinder quality
+- [ ] Associate measurement confidence with source quality
 
-## Scoring
-- [ ] Landing score
-- [ ] Confidence score
-- [ ] Warning generation
+---
+
+## Metrics
+
+Each metric must contain:
+
+- measured value
+- units
+- source/evidence
+- applicable time/window
+- confidence or validity where appropriate
+
+Metrics must not contain tuning recommendations.
 
 ---
 
 # v0.6 — Reporting
 
-## Reports
-- [ ] Landing summary
-- [ ] Timeline
-- [ ] Metrics report
-- [ ] Sensor validation report
-- [ ] Recommendations
+## Objective
 
-## Output
-- [ ] Console summary
+Present analysis results clearly while preserving the distinction between measurement, evidence, and interpretation.
+
+---
+
+## Report Structure
+
+- [ ] Summary
+- [ ] Measurements
+- [ ] Evidence
+- [ ] Observations
+- [ ] Timeline
+- [ ] Plots
+- [ ] Appendix
+
+---
+
+## Console
+
+- [ ] Landing summary
+- [ ] Flight identification
+- [ ] Landing-attempt identification
+- [ ] Sensor-health summary
+- [ ] Timeline
+- [ ] Metrics
+
+---
+
+## Structured Output
+
+- [ ] JSON export
+- [ ] Stable result schema
+- [ ] Machine-readable evidence references
+
+---
+
+## Rich Reports
+
 - [ ] HTML report
 - [ ] PDF report
-- [ ] JSON export
+
+---
+
+## Plotting
+
+Every plot must answer a specific engineering question.
+
+Potential landing plots include:
+
+- [ ] approach geometry
+- [ ] airspeed
+- [ ] sink rate
+- [ ] pitch
+- [ ] throttle
+- [ ] rangefinder
+- [ ] flare detail
+
+---
+
+# v0.7 — Regression Framework
+
+## Objective
+
+Make analysis changes objectively testable against representative logs.
+
+---
+
+## Automated Coverage
+
+- [ ] Zero-flight log
+- [ ] Single-flight log
+- [ ] Multiple-flight log
+- [ ] Flight with no AUTO landing
+- [ ] Successful landing
+- [ ] Aborted landing
+- [ ] Multiple landing attempts
+- [ ] Go-around
+- [ ] Missing sensor data
+- [ ] ArduPlane 4.6 parameters
+- [ ] ArduPlane 4.7 parameters
+- [ ] Window containment
+- [ ] Deterministic analysis results
+- [ ] Deterministic report output
+
+---
+
+## Validation Records
+
+- [ ] Maintain representative flight-log catalogue
+- [ ] Record expected flight boundaries
+- [ ] Record expected landing-event sequences
+- [ ] Record known firmware differences
+- [ ] Record expected detector outputs
 
 ---
 
 # Future Analyses
 
-The architecture should support additional analyses without changes to the core framework.
+The architecture should support additional analyses without changing the core flight framework.
 
 Potential modules include:
 
@@ -904,73 +561,71 @@ Potential modules include:
 - RTL
 - Autotune
 - Airspeed calibration
+- Launch
 - Power system
 - Battery performance
 - Wind estimation
 - Navigation accuracy
 - Mission analysis
+- Sensor diagnostics
 
-All future analyses should follow the same execution pattern:
+All future analyses should follow the same general execution pattern:
 
-```
+```text
 FlightLog
-    ↓
+    │
+    ▼
+FlightWindow
+    │
+    ▼
+Analysis-specific Window
+    │
+    ▼
+Processors / Analyser
+    │
+    ▼
+Result
+    │
+    ▼
+Report
+```
+
+---
+
+# Architecture Status
+
+- [x] `FlightLog` owns decoded telemetry
+- [x] `FlightLog` owns parameters
+- [x] `FlightLog` owns mode segments
+- [x] `FlightWindow` defines individual flight scope
+- [x] Multiple flights per log are supported
+- [x] Analysis orchestrator executes independently per `FlightWindow`
+- [x] `AnalysisResult` identifies its parent `FlightWindow`
+- [x] LAND processing is flight-scoped
+- [x] MSG extraction is flight-scoped
+- [x] Landing timeline sources are flight-scoped
+- [x] Development harnesses use the current FlightWindow architecture
+- [ ] Processor APIs are fully standardised
+- [ ] Real landing attempts are detected
+- [ ] Landing metrics are implemented
+- [ ] Landing reports are implemented
+
+---
+
+# Current Development Target
+
+## v0.3 — Analysis Framework
+
+With FlightWindow integration complete, the next development task is to standardise processor and event-processing APIs around the established architecture:
+
+```text
+FlightLog
+    +
 FlightWindow
     ↓
-Analysis
+Processor / Detector
     ↓
-Result
-    ↓
-Report
-
-Architecture status
-
-- [x] FlightLog owns decoded telemetry
-- [x] FlightWindow defines analysis scope
-- [x] AnalysisResult references parent FlightWindow
-- [ ] Analysis orchestrator executes one analysis per FlightWindow
-
-# v0.2 — FlightWindow Integration 🚧
-
-**Objective**
-
-Complete the transition from log-level analyses to per-flight analyses.
-
-## Flight detection
-- [x] GPS groundspeed based FlightWindow detection
-- [ ] Make flight speed threshold configurable (default 5 m/s)
-- [ ] Require threshold state to persist for 2 seconds
-- [x] Support multiple flights within one log
-
-## Analysis orchestration
-- [x] Iterate FlightLog.flights
-- [x] Execute analyses independently for each FlightWindow
-- [x] Produce one AnalysisResult per FlightWindow
-
-## Landing framework
-- [x] Refactor LandingWindowDetector
-- [x] Input: FlightLog + FlightWindow
-- [ ] Output: LandingWindow(s) within parent FlightWindow
-- [x] Remove fixed development landing window
-
-## Analysis model
-- [x] AnalysisResult references parent FlightWindow
-- [x] Consolidate duplicate LandingWindow models
-
-## FlightWindow integration
-- [x] Scope LAND processing to FlightWindow
-- [x] Scope MSG extraction to FlightWindow
-- [x] Scope timeline event sources to FlightWindow
-
-## Utilities
-- [x] Segment filtering helper
-- [ ] Update documentation
-- [x] Update development harnesses
-
-## Architecture status
-
-- [x] FlightLog owns decoded telemetry
-- [x] FlightWindow defines analysis scope
-- [x] AnalysisResult references parent FlightWindow
-- [ ] Analysis orchestrator executes one analysis per FlightWindow
+Scoped Result
 ```
+
+Real landing-attempt detection begins after that API consolidation in **v0.4 — Landing Detection**.

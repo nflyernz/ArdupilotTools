@@ -14,8 +14,23 @@ from .flight_window import FlightWindow
 class FlightWindowDetector:
 
     DEFAULT_THRESHOLD = 5.0
-    MIN_SAMPLES = 5
+
+    FLIGHT_TIME_US = 2_000_000       # 2 seconds
     GROUND_TIME_US = 30_000_000      # 30 seconds
+
+    def __init__(
+        self,
+        speed_threshold=DEFAULT_THRESHOLD,
+    ):
+
+        if speed_threshold <= 0:
+            raise ValueError(
+                "Flight speed threshold must be greater than zero."
+            )
+
+        self.speed_threshold = float(
+            speed_threshold
+        )
 
     def detect(self, flight):
 
@@ -24,48 +39,82 @@ class FlightWindowDetector:
         if gps.empty:
             return []
 
+        #
+        # AIRSPEED_STALL may raise the effective threshold,
+        # but never lower the configured minimum threshold.
+        #
         threshold = max(
-            self.DEFAULT_THRESHOLD,
+            self.speed_threshold,
             0.5 * flight.param(
                 "AIRSPEED_STALL",
-                self.DEFAULT_THRESHOLD * 2,
+                self.speed_threshold * 2,
             ),
         )
-
-        flying = gps.Spd > threshold
 
         windows = []
 
         start = None
-        flying_count = 0
+
+        flight_candidate_start = None
         ground_start = None
 
-        for index, state in enumerate(flying):
+        for index, row in gps.iterrows():
+
+            time_us = int(row["TimeUS"])
+            speed = float(row["Spd"])
+
+            above_threshold = (
+                speed > threshold
+            )
 
             #
-            # Looking for start of flight
+            # Looking for the start of a flight.
             #
             if start is None:
 
-                if state:
+                if above_threshold:
 
-                    flying_count += 1
+                    if flight_candidate_start is None:
 
-                    if flying_count >= self.MIN_SAMPLES:
+                        flight_candidate_start = index
 
-                        start = index - self.MIN_SAMPLES + 1
+                    candidate_time_us = int(
+                        gps.loc[
+                            flight_candidate_start,
+                            "TimeUS",
+                        ]
+                    )
+
+                    duration = (
+                        time_us
+                        - candidate_time_us
+                    )
+
+                    if duration >= self.FLIGHT_TIME_US:
+
+                        #
+                        # Flight starts at the first sample
+                        # of the persistent above-threshold
+                        # sequence.
+                        #
+                        start = flight_candidate_start
+
+                        flight_candidate_start = None
                         ground_start = None
 
                 else:
 
-                    flying_count = 0
+                    #
+                    # Threshold persistence was broken.
+                    #
+                    flight_candidate_start = None
 
                 continue
 
             #
-            # Already in flight
+            # Already in flight.
             #
-            if state:
+            if above_threshold:
 
                 ground_start = None
 
@@ -75,54 +124,64 @@ class FlightWindowDetector:
 
                     ground_start = index
 
+                ground_time_us = int(
+                    gps.loc[
+                        ground_start,
+                        "TimeUS",
+                    ]
+                )
+
                 duration = (
-                    gps.TimeUS.iloc[index]
-                    - gps.TimeUS.iloc[ground_start]
+                    time_us
+                    - ground_time_us
                 )
 
                 if duration >= self.GROUND_TIME_US:
 
+                    #
+                    # Flight ends at the last sample before
+                    # the extended ground period began.
+                    #
+                    end_index = ground_start - 1
+
                     windows.append(
-
                         FlightWindow(
-
                             start_us=int(
-                                gps.TimeUS.iloc[start]
-                            ),
-
-                            end_us=int(
-                                gps.TimeUS.iloc[
-                                    ground_start - 1
+                                gps.loc[
+                                    start,
+                                    "TimeUS",
                                 ]
                             ),
-
+                            end_us=int(
+                                gps.loc[
+                                    end_index,
+                                    "TimeUS",
+                                ]
+                            ),
                         )
-
                     )
 
                     start = None
-                    flying_count = 0
+                    flight_candidate_start = None
                     ground_start = None
 
         #
-        # Flight continues to end of log
+        # Flight continues to the end of available GPS data.
         #
         if start is not None:
 
             windows.append(
-
                 FlightWindow(
-
                     start_us=int(
-                        gps.TimeUS.iloc[start]
+                        gps.loc[
+                            start,
+                            "TimeUS",
+                        ]
                     ),
-
                     end_us=int(
-                        gps.TimeUS.iloc[-1]
+                        gps["TimeUS"].iloc[-1]
                     ),
-
                 )
-
             )
 
         return windows

@@ -14,7 +14,8 @@ print()
 for i, flight_window in enumerate(flight.flights, start=1):
 
     sensor_window = SensorHealthWindowDetector().detect(
-        flight_window
+        flight,
+        flight_window,
     )
 
     duration = (
