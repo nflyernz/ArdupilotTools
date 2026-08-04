@@ -9,6 +9,7 @@ from core.airspeed import AirspeedProcessor
 from core.landing_window_detector import LandingWindowDetector
 from core.reader import FlightReader
 from core.sensor_health_window import SensorHealthWindowDetector
+from core.time import format_time_us
 
 
 class LandingAnalysis:
@@ -72,8 +73,8 @@ class LandingAnalysis:
 
                     print(
                         f"    Window     : "
-                        f"{self.format_time(flight_window.start_us)} - "
-                        f"{self.format_time(flight_window.end_us)}"
+                        f"{format_time_us(flight_window.start_us)} - "
+                        f"{format_time_us(flight_window.end_us)}"
                     )
 
                     #
@@ -99,8 +100,8 @@ class LandingAnalysis:
 
                         print(
                             f"    ✓ Health    : "
-                            f"{self.format_time(health_window.start_us)} - "
-                            f"{self.format_time(health_window.end_us)}"
+                            f"{format_time_us(health_window.start_us)} - "
+                            f"{format_time_us(health_window.end_us)}"
                         )
 
                         #
@@ -151,7 +152,7 @@ class LandingAnalysis:
                                     f"        {rule:<12}"
                                     f"x{len(failures):<2}  "
                                     f"first "
-                                    f"{self.format_time(first.start_us)}"
+                                    f"{format_time_us(first.start_us)}"
                                 )
 
                     #
@@ -176,8 +177,8 @@ class LandingAnalysis:
 
                         print(
                             f"      {landing_index}: "
-                            f"{self.format_time(landing_window.start_us)} - "
-                            f"{self.format_time(landing_window.end_us)}"
+                            f"{format_time_us(landing_window.start_us)} - "
+                            f"{format_time_us(landing_window.end_us)}"
                         )
 
                     #
@@ -256,30 +257,3 @@ class LandingAnalysis:
         )
 
         return reader.read()
-
-    @staticmethod
-    def format_time(
-        time_us,
-    ):
-
-        total_ms = (
-            time_us // 1000
-        )
-
-        minutes = (
-            total_ms // 60000
-        )
-
-        seconds = (
-            total_ms % 60000
-        ) // 1000
-
-        milliseconds = (
-            total_ms % 1000
-        )
-
-        return (
-            f"{minutes:02}:"
-            f"{seconds:02}."
-            f"{milliseconds:03}"
-        )
