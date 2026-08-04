@@ -39,10 +39,13 @@ Analysers
     │
     ▼
 Report
-...
+```
 
-## Current Architecture
+---
 
+# Current Architecture
+
+```text
 BIN log
     │
     ▼
@@ -64,8 +67,11 @@ FlightLog
              ├── AutotuneWindow(s)
              ├── RTLWindow(s)
              └── ...
-...             
-             # v0.1 — Core Framework ✅
+```
+
+---
+
+# v0.1 — Core Framework ✅
 
 ## Log Reader
 
@@ -106,6 +112,8 @@ FlightLog
 - [x] Load `LAND` telemetry
 - [x] Load `ARM` telemetry
 - [x] Build chronological landing timeline
+
+---
 
 # v0.2 — FlightWindow Integration ✅
 
@@ -214,7 +222,9 @@ Validated against `log_17.bin`:
 - [x] Main landing-analysis CLI produces four `AnalysisResult` objects
 - [x] Main landing-analysis CLI completes with zero framework errors
 
-# v0.3 — Analysis Framework
+---
+
+# v0.3 — Analysis Framework ✅
 
 ## Objective
 
@@ -226,22 +236,45 @@ The purpose of this milestone is API consistency rather than new landing-detecti
 
 ## Analysis API
 
-- [ ] Define standard processor interface
-- [ ] Define standard detector interface
-- [ ] Define standard analysis interface
-- [ ] Standardise result models
-- [ ] Define common parent/child window validation
+- [x] Define standard processor interface
+- [x] Define standard detector interface
+- [x] Define standard analysis interface
+- [x] Standardise result models
+- [x] Define common parent/child window validation
+
+The established per-flight contract is:
+
+```text
+FlightLog
+    +
+FlightWindow
+    ↓
+Processor / Detector / Analysis
+    ↓
+Scoped Result
+```
+
+`LandingAnalysis` now exposes the reusable per-flight entry point:
+
+```python
+LandingAnalysis.analyse(
+    flight_log,
+    flight_window,
+) -> AnalysisResult
+```
+
+The interactive `LandingAnalysis.run()` remains responsible for orchestration and presentation.
 
 ---
 
 ## Sensor Processors
 
-- [ ] Refactor `AirspeedProcessor`
-- [ ] Refactor `GPSProcessor`
-- [ ] Refactor `BarometerProcessor`
-- [ ] Refactor rangefinder processing
+- [x] Refactor `AirspeedProcessor`
+- [x] Refactor `GPSProcessor`
+- [x] Refactor `BarometerProcessor`
+- [x] Refactor rangefinder processing
 
-Target pattern:
+Established pattern:
 
 ```text
 Processor
@@ -249,38 +282,184 @@ Processor
     ├── FlightLog
     ├── FlightWindow
     └── optional analysis-specific sub-window
-...    
+```
 
 Processors must never read telemetry outside the selected parent flight.
-    
+
+The airspeed native-rate result was also corrected so that the result contains the calculated numeric sample rate rather than the function object.
+
+Existing airspeed validation behaviour was preserved.
+
+---
+
 ## Event Processors
 
-- [ ] Refactor `EventExtractor`
-- [ ] Refactor `ArmCycleFinder`
-- [ ] Refactor `LandingTimeline`
-- [ ] Standardise event filtering helpers
-- [ ] Standardise event ownership and storage
-  
-    
+- [x] Refactor `EventExtractor`
+- [x] Refactor `ArmCycleFinder`
+- [x] Refactor `LandingTimeline`
+- [x] Standardise event filtering helpers
+- [x] Standardise event ownership and storage
+
+`EventExtractor` operates within the selected `FlightWindow`.
+
+`ArmCycleFinder` is strictly FlightWindow-scoped and does not use pre-window ARM state to manufacture partial cycles.
+
+`LandingTimeline` explicitly operates within its parent `FlightWindow` and child `LandingWindow`.
+
+Rangefinder event processing uses the sensor configuration from `Config/sensors.yaml`.
+
+---
+
 ## Shared Utilities
 
-- [ ] Consolidate human-readable time formatting
-- [ ] Implement shared `core.time.format_time_us()`
-- [ ] Remove duplicated time-formatting code
-- [ ] Standardise window containment helpers
-- [ ] Standardise segment filtering helpers
-- [ ] Standardise telemetry filtering helpers
+- [x] Consolidate human-readable time formatting
+- [x] Implement shared `core.time.format_time_us()`
+- [x] Remove duplicated time-formatting code
+- [x] Standardise window containment helpers
+- [x] Standardise segment filtering helpers
+- [x] Standardise telemetry filtering helpers
+
+Shared scope utilities provide common handling for:
+
+- FlightWindow validation
+- child-window containment
+- telemetry filtering
+- segment filtering
+
+Internal calculations continue to use `TimeUS`.
 
 ---
 
 ## Common Conventions
 
-- [ ] `FlightLog` remains telemetry owner
-- [ ] `FlightWindow` defines parent analysis scope
-- [ ] Child windows are bounded by `FlightWindow`
-- [ ] Processors explicitly identify their parent flight
-- [ ] Health and analysis remain separate responsibilities
-- [ ] Validation responsibilities are consistent across processors
+- [x] `FlightLog` remains telemetry owner
+- [x] `FlightWindow` defines parent analysis scope
+- [x] Child windows are bounded by `FlightWindow`
+- [x] Processors explicitly identify their parent flight
+- [x] Health and analysis remain separate responsibilities
+- [x] Validation responsibilities are consistent across processors
+- [x] `AnalysisResult` does not claim telemetry ownership
+
+The final telemetry ownership model is:
+
+```text
+FlightLog
+    └── owns telemetry
+
+AnalysisResult
+    ├── references FlightWindow
+    ├── references SensorHealthWindow
+    ├── contains sensor-health results
+    └── references LandingWindow(s)
+```
+
+---
+
+## Analysis Result Model
+
+- [x] `AnalysisResult` identifies its parent `FlightWindow`
+- [x] `AnalysisResult` exposes the derived `SensorHealthWindow`
+- [x] `AnalysisResult` exposes derived `LandingWindow` results
+- [x] `AnalysisResult` carries analysis outputs without owning source telemetry
+- [x] Remove the remaining telemetry reference from `AnalysisResult`
+
+The result model therefore preserves the ownership boundary:
+
+```text
+FlightLog
+    │
+    └── source telemetry
+
+AnalysisResult
+    │
+    ├── analysis scopes
+    └── analytical results
+```
+
+---
+
+## Rangefinder Configuration
+
+- [x] Use `Config/sensors.yaml` for rangefinder event processing
+- [x] Add explicit `rangefinder.events` configuration
+- [x] Preserve existing rangefinder event behaviour
+- [x] Validate rangefinder event output after configuration refactor
+
+The configured rangefinder event settings are:
+
+```yaml
+rangefinder:
+
+  events:
+
+    zero_threshold: 0.05
+
+    continuous_seconds: 1.0
+```
+
+The validated output remains:
+
+```text
+RFND_FIRST_NONZERO  1.97 m
+RFND_CONTINUOUS     50 samples
+```
+
+---
+
+## Development Harnesses
+
+- [x] Migrate development harnesses to the public FlightWindow architecture
+- [x] Remove obsolete processor API usage
+- [x] Remove duplicated telemetry filtering where shared helpers apply
+- [x] Remove duplicated segment filtering where shared helpers apply
+- [x] Use shared time formatting
+- [x] Add direct `LandingAnalysis.analyse()` harness
+- [x] Validate sensor processors independently
+- [x] Validate event processors independently
+- [x] Validate rangefinder processing independently
+- [x] Validate landing timeline independently
+
+---
+
+## v0.3 Validation
+
+Validated against `log_17.bin`:
+
+- [x] Python source tree compiles successfully
+- [x] Exactly four `FlightWindow` objects are detected
+- [x] Validated FlightWindow boundaries remain unchanged
+- [x] Flight 2 remains one continuous flight through multiple landing attempts and go-arounds
+- [x] LAND-stage telemetry remains correctly flight-scoped
+- [x] MSG events remain correctly flight-scoped
+- [x] ARM-cycle processing remains correctly flight-scoped
+- [x] Rangefinder events remain correctly scoped
+- [x] Landing timeline remains correctly scoped
+- [x] Airspeed behaviour remains unchanged
+- [x] GPS processor regression harness passes
+- [x] Barometer processor regression harness passes
+- [x] Direct `LandingAnalysis.analyse()` produces one result per FlightWindow
+- [x] Each direct analysis result contains the expected `SensorHealthWindow`
+- [x] Each direct analysis result contains one bounded development `LandingWindow`
+- [x] Main landing-analysis CLI produces four flight results
+- [x] Main landing-analysis CLI reports zero framework errors
+- [x] Final source search confirms `AnalysisResult` no longer stores telemetry
+
+Validated FlightWindow boundaries:
+
+| Flight | Start TimeUS | End TimeUS |
+|---|---:|---:|
+| 1 | 656,723,277 | 924,883,724 |
+| 2 | 1,095,783,170 | 1,680,743,260 |
+| 3 | 1,966,307,340 | 2,051,367,266 |
+| 4 | 2,573,683,601 | 2,863,678,803 |
+
+Validated production result:
+
+```text
+Logs            : 1
+Flight Results  : 4
+Framework Errors: 0
+```
 
 ---
 
@@ -601,11 +780,20 @@ Report
 - [x] Multiple flights per log are supported
 - [x] Analysis orchestrator executes independently per `FlightWindow`
 - [x] `AnalysisResult` identifies its parent `FlightWindow`
+- [x] `AnalysisResult` does not own telemetry
 - [x] LAND processing is flight-scoped
 - [x] MSG extraction is flight-scoped
-- [x] Landing timeline sources are flight-scoped
+- [x] ARM-cycle processing is flight-scoped
+- [x] Rangefinder processing is flight/landing-scoped
+- [x] Landing timeline sources are flight/landing-scoped
 - [x] Development harnesses use the current FlightWindow architecture
-- [ ] Processor APIs are fully standardised
+- [x] Processor APIs are standardised around explicit parent scope
+- [x] Detector APIs are standardised according to their required scope
+- [x] Reusable per-flight landing-analysis API is established
+- [x] Shared telemetry filtering is established
+- [x] Shared segment filtering is established
+- [x] Shared window containment validation is established
+- [x] Shared human-readable time formatting is established
 - [ ] Real landing attempts are detected
 - [ ] Landing metrics are implemented
 - [ ] Landing reports are implemented
@@ -614,18 +802,42 @@ Report
 
 # Current Development Target
 
-## v0.3 — Analysis Framework
+## v0.4 — Landing Detection
 
-With FlightWindow integration complete, the next development task is to standardise processor and event-processing APIs around the established architecture:
+With FlightWindow integration and analysis-framework consolidation complete, the next development task is to detect real AUTO landing attempts within each continuous flight.
+
+The established architecture is:
 
 ```text
 FlightLog
-    +
+    │
+    ▼
 FlightWindow
-    ↓
-Processor / Detector
-    ↓
-Scoped Result
+    │
+    ▼
+Landing Detection
+    │
+    ├── LandingWindow
+    ├── LandingWindow
+    └── ...
 ```
 
-Real landing-attempt detection begins after that API consolidation in **v0.4 — Landing Detection**.
+A single `FlightWindow` may contain:
+
+```text
+zero landing attempts
+one landing attempt
+multiple landing attempts
+```
+
+Go-arounds and aborted approaches must remain within the same parent `FlightWindow` while producing separate landing attempts where supported by validated telemetry evidence.
+
+The first v0.4 task is **landing-event validation**, not implementation of assumed detector semantics.
+
+LAND stages, firmware MSG events, MODE transitions, ARM/disarm events, rangefinder, GPS, airspeed, and barometer are candidate evidence sources.
+
+No source is authoritative until its behaviour has been validated against representative logs.
+
+Flight 2 of `log_17.bin`, containing multiple aborted/restarted landing sequences, remains the primary current regression case.
+
+The validated evidence will define the rules used by the real `LandingWindowDetector`.
