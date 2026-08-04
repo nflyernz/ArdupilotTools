@@ -1,4 +1,5 @@
 from core.reader import FlightReader
+from core.scope import filter_telemetry
 
 
 flight_log = FlightReader(
@@ -19,10 +20,10 @@ if not flight_log.flights:
 
 for i, flight_window in enumerate(flight_log.flights, start=1):
 
-    flight_land = land[
-        (land["TimeUS"] >= flight_window.start_us)
-        & (land["TimeUS"] <= flight_window.end_us)
-    ]
+    flight_land = filter_telemetry(
+        land,
+        flight_window,
+    )
 
     print()
     print(f"Flight {i}")
