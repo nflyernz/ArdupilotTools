@@ -1,27 +1,75 @@
 from core.reader import FlightReader
 from core.armcycle import ArmCycleFinder
+from core.time import format_time_us
 
-flight = FlightReader(
-    "Logs/log_19_2026-7-5-09-43-10.bin"
+
+LOG = "Logs/log_19.bin"
+
+
+flight_log = FlightReader(
+    LOG
 ).read()
 
-cycles = ArmCycleFinder(flight).find()
 
 print()
-
-print("Arm Cycles")
+print("Flight-scoped Arm Cycles")
 print("-" * 70)
 
-for i, c in enumerate(cycles, start=1):
 
-    print(f"Cycle {i}")
+if not flight_log.flights:
 
-    print(f"  Arm      : {c.arm_us / 1e6:.3f} s")
+    print("No FlightWindows detected.")
+    raise SystemExit
 
-    print(f"  Disarm   : {c.disarm_us / 1e6:.3f} s")
 
-    print(f"  Duration : {c.duration_s:.2f} s")
+for flight_number, flight_window in enumerate(
+    flight_log.flights,
+    start=1,
+):
 
-    print(f"  Closed   : {c.closed}")
+    cycles = ArmCycleFinder(
+        flight_log,
+        flight_window,
+    ).find()
 
     print()
+    print(f"Flight {flight_number}")
+
+    print(
+        f"  Window : "
+        f"{format_time_us(flight_window.start_us)}"
+        f" -> "
+        f"{format_time_us(flight_window.end_us)}"
+    )
+
+    print(
+        f"  Cycles : {len(cycles)}"
+    )
+
+    for i, cycle in enumerate(
+        cycles,
+        start=1,
+    ):
+
+        print()
+        print(f"  Cycle {i}")
+
+        print(
+            f"    Arm      : "
+            f"{format_time_us(cycle.arm_us)}"
+        )
+
+        print(
+            f"    Disarm   : "
+            f"{format_time_us(cycle.disarm_us)}"
+        )
+
+        print(
+            f"    Duration : "
+            f"{cycle.duration_s:.2f} s"
+        )
+
+        print(
+            f"    Closed   : "
+            f"{cycle.closed}"
+        )

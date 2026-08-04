@@ -119,10 +119,10 @@ class LandingTimeline:
         events.extend(
             RangefinderEvents(
                 self.flight_log,
+                self.flight_window,
                 self.landing_window,
                 self.config,
-            ).build()
-        )
+            ).build()        )
 
         #
         # Sort chronologically

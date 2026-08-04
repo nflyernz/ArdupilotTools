@@ -1,5 +1,12 @@
 from dataclasses import dataclass
 
+from core.flight_window import FlightWindow
+from core.model import FlightLog
+from core.scope import (
+    filter_telemetry,
+    validate_flight_window,
+)
+
 
 @dataclass
 class ArmCycle:
@@ -22,24 +29,42 @@ class ArmCycle:
 
 class ArmCycleFinder:
     """
-    Find all arm/disarm cycles in a flight.
+    Find arm/disarm cycles within one FlightWindow.
+
+    Only ARM transitions whose timestamps lie within the selected
+    FlightWindow are considered.
+
+    State before the FlightWindow is not used to synthesize a partial
+    arm cycle at the flight boundary.
     """
 
-    def __init__(self, flight):
+    def __init__(
+        self,
+        flight_log: FlightLog,
+        flight_window: FlightWindow,
+    ):
 
-        self.flight = flight
+        validate_flight_window(
+            flight_log,
+            flight_window,
+        )
 
-    def find(self):
+        self.flight_log = flight_log
+        self.flight_window = flight_window
 
-        arm = self.flight.get("ARM")
+    def find(self) -> list[ArmCycle]:
 
-        if arm.empty:
+        arm = filter_telemetry(
+            self.flight_log.get("ARM"),
+            self.flight_window,
+        )
+
+        if arm is None or arm.empty:
             return []
 
         cycles = []
 
         current = None
-
         previous = None
 
         for index, row in arm.iterrows():
@@ -47,7 +72,7 @@ class ArmCycleFinder:
             state = int(row.ArmState)
 
             #
-            # Arm transition
+            # Arm transition.
             #
             if previous == 0 and state == 1:
 
@@ -57,7 +82,7 @@ class ArmCycleFinder:
                 )
 
             #
-            # Disarm transition
+            # Disarm transition.
             #
             elif (
                 current is not None
@@ -65,7 +90,9 @@ class ArmCycleFinder:
                 and state == 0
             ):
 
-                current.disarm_us = int(row.TimeUS)
+                current.disarm_us = int(
+                    row.TimeUS
+                )
 
                 current.disarm_index = index
 
@@ -83,11 +110,14 @@ class ArmCycleFinder:
             previous = state
 
         #
-        # Still armed when log ended
+        # An arm transition occurred inside the FlightWindow but no
+        # matching disarm transition occurred before the window ended.
         #
         if current is not None:
 
-            current.disarm_us = int(arm.iloc[-1].TimeUS)
+            current.disarm_us = int(
+                arm.iloc[-1].TimeUS
+            )
 
             current.disarm_index = arm.index[-1]
 

@@ -4,23 +4,23 @@ from core.landing_window_detector import LandingWindowDetector
 from core.rangefinder import RangefinderEvents
 
 
-flight = FlightReader(
+flight_log = FlightReader(
     "Logs/log_17.bin"
 ).read()
 
 config = Config("Config/landing.yaml")
 
-if not flight.flights:
+if not flight_log.flights:
 
     print("No flight windows found.")
     raise SystemExit
 
-flight_window = flight.flights[0]
+flight_window = flight_log.flights[0]
 
 detector = LandingWindowDetector()
 
 windows = detector.detect(
-    flight,
+    flight_log,
     flight_window,
 )
 
@@ -29,16 +29,13 @@ if not windows:
     print("No landing windows found.")
     raise SystemExit
 
-window = windows[0]
+landing_window = windows[0]
 
 events = RangefinderEvents(
-
-    flight,
-
-    window,
-
+    flight_log,
+    flight_window,
+    landing_window,
     config,
-
 ).build()
 
 print()
@@ -46,23 +43,25 @@ print("Rangefinder Events")
 print("-" * 70)
 
 print(
-    f"Landing Start : {window.start_us / 1e6:.3f} s"
+    f"Landing Start : {landing_window.start_us / 1e6:.3f} s"
 )
 
 print(
-    f"Landing End   : {window.end_us / 1e6:.3f} s"
+    f"Landing End   : {landing_window.end_us / 1e6:.3f} s"
 )
 
 print(
-    f"Duration      : {(window.end_us - window.start_us) / 1e6:.2f} s"
+    f"Duration      : "
+    f"{(landing_window.end_us - landing_window.start_us) / 1e6:.2f} s"
 )
 
 print()
 
-if flight.has_param("RNGFND1_MAX"):
+if flight_log.has_param("RNGFND1_MAX"):
 
     print(
-        f"RNGFND1_MAX   : {flight.param('RNGFND1_MAX'):.2f} m"
+        f"RNGFND1_MAX   : "
+        f"{flight_log.param('RNGFND1_MAX'):.2f} m"
     )
 
 else:
@@ -71,7 +70,7 @@ else:
 
 print()
 
-rfnd = flight.get("RFND")
+rfnd = flight_log.get("RFND")
 
 if len(rfnd) > 1:
 

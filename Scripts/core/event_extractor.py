@@ -1,6 +1,10 @@
 from core.events import TimelineEvent, EventType
 from core.model import FlightLog
 from core.flight_window import FlightWindow
+from core.scope import (
+    filter_telemetry,
+    validate_flight_window,
+)
 
 
 class EventExtractor:
@@ -14,15 +18,18 @@ class EventExtractor:
         flight_window: FlightWindow,
     ) -> list[TimelineEvent]:
 
-        msg = flight_log.get("MSG")
+        validate_flight_window(
+            flight_log,
+            flight_window,
+        )
 
-        if msg.empty:
+        msg = filter_telemetry(
+            flight_log.get("MSG"),
+            flight_window,
+        )
+
+        if msg is None or msg.empty:
             return []
-
-        msg = msg[
-            (msg["TimeUS"] >= flight_window.start_us)
-            & (msg["TimeUS"] <= flight_window.end_us)
-        ]
 
         return [
             TimelineEvent(
