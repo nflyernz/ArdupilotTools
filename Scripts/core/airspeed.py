@@ -3,6 +3,13 @@ from dataclasses import dataclass, field
 import pandas as pd
 import yaml
 
+from .flight_window import FlightWindow
+from .model import FlightLog
+from .scope import (
+    filter_telemetry,
+    validate_child_window,
+    validate_flight_window,
+)
 from .time import native_rate
 
 
@@ -19,53 +26,51 @@ class AirspeedValidationFailure:
     recommendation: str | None = None
     start_us: int | None = None
     end_us: int | None = None
+
     def __str__(self):
 
         lines = [
-
             f"Rule           : {self.rule}",
-
             f"Description    : {self.description}",
-
             f"Criteria       : {self.criteria}",
-
             f"Evidence       : {self.evidence}",
-
         ]
 
         if self.recommendation:
 
             lines.append(
-
                 f"Recommendation : {self.recommendation}"
-
             )
 
         if self.start_us is not None:
 
             lines.append(
-
-                f"Start Time     : {self.start_us / 1_000_000:.3f} s"
-
+                f"Start Time     : "
+                f"{self.start_us / 1_000_000:.3f} s"
             )
 
         if self.end_us is not None:
 
             lines.append(
-
-                f"End Time       : {self.end_us / 1_000_000:.3f} s"
-
+                f"End Time       : "
+                f"{self.end_us / 1_000_000:.3f} s"
             )
 
         return "\n".join(lines)
+
 
 @dataclass
 class AirspeedValidationReport:
     valid: bool = True
     rules_evaluated: int = 0
-    failures: list[AirspeedValidationFailure] = field(default_factory=list)
+    failures: list[AirspeedValidationFailure] = field(
+        default_factory=list
+    )
 
-    def add(self, failure: AirspeedValidationFailure):
+    def add(
+        self,
+        failure: AirspeedValidationFailure,
+    ):
 
         self.failures.append(failure)
         self.valid = False
@@ -109,12 +114,19 @@ class AirspeedProcessor:
 
     def __init__(
         self,
-        flight,
+        flight_log: FlightLog,
+        flight_window: FlightWindow,
         sample_period=1.0,
         config_file="Config/sensors.yaml",
     ):
 
-        self.flight = flight
+        validate_flight_window(
+            flight_log,
+            flight_window,
+        )
+
+        self.flight_log = flight_log
+        self.flight_window = flight_window
         self.sample_period = sample_period
 
         with open(config_file, "r") as fp:
@@ -124,66 +136,69 @@ class AirspeedProcessor:
 
     # --------------------------------------------------------
 
-    def health(self, window):
+    def health(
+        self,
+        sensor_health_window,
+    ):
 
-        arsp = self.flight.get("ARSP")
+        return self._process(
+            sensor_health_window
+        )
 
-        arsp = arsp[
-            (arsp["TimeUS"] >= window.start_us) &
-            (arsp["TimeUS"] <= window.end_us)
-        ]
+    # --------------------------------------------------------
+
+    def analyse(
+        self,
+        analysis_window=None,
+    ):
+
+        if analysis_window is None:
+            analysis_window = self.flight_window
+
+        return self._process(
+            analysis_window
+        )
+
+    # --------------------------------------------------------
+
+    def _process(
+        self,
+        window,
+    ):
+
+        validate_child_window(
+            self.flight_window,
+            window,
+        )
+
+        arsp = filter_telemetry(
+            self.flight_log.get("ARSP"),
+            window,
+        )
 
         if arsp is None or arsp.empty:
             return None
-    
-        native_rate(arsp.TimeUS)
-    
+
+        arsp = arsp.copy()
+
+        measured_native_rate = native_rate(
+            arsp.TimeUS
+        )
+
         summary = self._build_summary(arsp)
         validation = self._validate(arsp)
         profile = self._build_profile(arsp)
-    
+
         return AirspeedAnalysis(
             start_us=int(arsp.TimeUS.iloc[0]),
             end_us=int(arsp.TimeUS.iloc[-1]),
-            native_rate=native_rate,
+            native_rate=measured_native_rate,
             requested_rate=1.0 / self.sample_period,
             summary=summary,
             profile=profile,
             validation=validation,
         )
-        
-    def analyse(self, window):
 
-        arsp = self.flight.get("ARSP")
-    
-        if arsp is None or arsp.empty:
-            return None
-    
-        arsp = arsp[
-            (arsp.TimeUS >= window.start_us)
-            &
-            (arsp.TimeUS <= window.end_us)
-        ].copy()
-    
-        if arsp.empty:
-            return None
-    
-        native_rate(arsp.TimeUS)
-    
-        summary = self._build_summary(arsp)
-        validation = self._validate(arsp)
-        profile = self._build_profile(arsp)
-    
-        return AirspeedAnalysis(
-            start_us=int(arsp.TimeUS.iloc[0]),
-            end_us=int(arsp.TimeUS.iloc[-1]),
-            native_rate=native_rate,
-            requested_rate=1.0 / self.sample_period,
-            summary=summary,
-            profile=profile,
-            validation=validation,
-        )
-        
     # --------------------------------------------------------
 
     def _build_summary(
@@ -192,23 +207,18 @@ class AirspeedProcessor:
     ) -> AirspeedSummary:
 
         return AirspeedSummary(
-
             start_speed=float(
                 arsp.Airspeed.iloc[0]
             ),
-
             end_speed=float(
                 arsp.Airspeed.iloc[-1]
             ),
-
             minimum_speed=float(
                 arsp.Airspeed.min()
             ),
-
             maximum_speed=float(
                 arsp.Airspeed.max()
             ),
-
             mean_speed=float(
                 arsp.Airspeed.mean()
             ),
@@ -226,33 +236,30 @@ class AirspeedProcessor:
         )
 
         profile = (
-
             arsp
-
             .assign(
-
-                Bucket=lambda df:
-
-                (
-
-                    (df.TimeUS - df.TimeUS.iloc[0])
-
+                Bucket=lambda df: (
+                    (
+                        df.TimeUS
+                        - df.TimeUS.iloc[0]
+                    )
                     // bucket_us
-
                 )
-
             )
-
-            .groupby("Bucket", as_index=False)
-
+            .groupby(
+                "Bucket",
+                as_index=False,
+            )
             .agg(
-
-                TimeUS=("TimeUS", "first"),
-
-                Airspeed=("Airspeed", "mean"),
-
+                TimeUS=(
+                    "TimeUS",
+                    "first",
+                ),
+                Airspeed=(
+                    "Airspeed",
+                    "mean",
+                ),
             )
-
         )
 
         return profile
@@ -267,24 +274,18 @@ class AirspeedProcessor:
         report = AirspeedValidationReport()
 
         validators = (
-
             self._validate_missing_samples,
-
             self._validate_missing_values,
-
             self._validate_timestamp_order,
-
             self._validate_sample_gap,
-
             self._validate_negative_values,
-
             self._validate_step_change,
-
             self._validate_low_speed,
-
         )
 
-        report.rules_evaluated = len(validators)
+        report.rules_evaluated = len(
+            validators
+        )
 
         for validator in validators:
 
@@ -293,7 +294,6 @@ class AirspeedProcessor:
             if failures:
 
                 for failure in failures:
-
                     report.add(failure)
 
         return report
@@ -302,22 +302,17 @@ class AirspeedProcessor:
     # Validation Rules
     # ========================================================
 
-    # --------------------------------------------------------
-
     def _validate_missing_samples(
         self,
         arsp: pd.DataFrame,
     ):
 
-        cfg = self.config["validation"]["missing_samples"]
+        cfg = self.config[
+            "validation"
+        ]["missing_samples"]
 
         if not cfg["enabled"]:
-
             return []
-
-        #
-        # Presence already verified in run()
-        #
 
         return []
 
@@ -328,50 +323,46 @@ class AirspeedProcessor:
         arsp: pd.DataFrame,
     ):
 
-        cfg = self.config["validation"]["missing_values"]
+        cfg = self.config[
+            "validation"
+        ]["missing_values"]
 
         if not cfg["enabled"]:
-
             return []
 
         failures = []
 
-        invalid = arsp[arsp.Airspeed.isna()]
+        invalid = arsp[
+            arsp.Airspeed.isna()
+        ]
 
         if invalid.empty:
-
             return failures
 
         failures.append(
-
             AirspeedValidationFailure(
-
                 rule="missing_values",
-
-                description="Missing airspeed samples detected.",
-
+                description=(
+                    "Missing airspeed samples detected."
+                ),
                 criteria={
-
                     "field": "Airspeed",
-
                     "must_not_be_null": True,
-
                 },
-
                 evidence={
-
                     "count": len(invalid),
-
                 },
-
-                recommendation="Inspect log integrity or airspeed sensor.",
-
-                start_us=int(invalid.TimeUS.iloc[0]),
-
-                end_us=int(invalid.TimeUS.iloc[-1]),
-
+                recommendation=(
+                    "Inspect log integrity or "
+                    "airspeed sensor."
+                ),
+                start_us=int(
+                    invalid.TimeUS.iloc[0]
+                ),
+                end_us=int(
+                    invalid.TimeUS.iloc[-1]
+                ),
             )
-
         )
 
         return failures
@@ -383,20 +374,22 @@ class AirspeedProcessor:
         arsp: pd.DataFrame,
     ):
 
-        cfg = self.config["validation"]["timestamp_order"]
+        cfg = self.config[
+            "validation"
+        ]["timestamp_order"]
 
         if not cfg["enabled"]:
-
             return []
 
         failures = []
 
         delta = arsp.TimeUS.diff()
 
-        invalid = arsp[delta <= 0]
+        invalid = arsp[
+            delta <= 0
+        ]
 
         if invalid.empty:
-
             return failures
 
         evidence = []
@@ -404,51 +397,46 @@ class AirspeedProcessor:
         for index in invalid.index:
 
             evidence.append(
-
                 {
-
                     "row": int(index),
-
-                    "timestamp": int(arsp.loc[index, "TimeUS"]),
-
+                    "timestamp": int(
+                        arsp.loc[
+                            index,
+                            "TimeUS",
+                        ]
+                    ),
                 }
-
             )
 
         failures.append(
-
             AirspeedValidationFailure(
-
                 rule="timestamp_order",
-
-                description="Airspeed timestamps are not strictly increasing.",
-
+                description=(
+                    "Airspeed timestamps are "
+                    "not strictly increasing."
+                ),
                 criteria={
-
                     "timestamp_difference_us": "> 0",
-
                 },
-
                 evidence={
-
                     "count": len(invalid),
-
                     "samples": evidence,
-
                 },
-
-                recommendation="Inspect the flight log for corrupted or duplicated ARSP records.",
-
-                start_us=int(invalid.TimeUS.iloc[0]),
-
-                end_us=int(invalid.TimeUS.iloc[-1]),
-
+                recommendation=(
+                    "Inspect the flight log for "
+                    "corrupted or duplicated "
+                    "ARSP records."
+                ),
+                start_us=int(
+                    invalid.TimeUS.iloc[0]
+                ),
+                end_us=int(
+                    invalid.TimeUS.iloc[-1]
+                ),
             )
-
         )
 
         return failures
-    # --------------------------------------------------------
 
     # --------------------------------------------------------
 
@@ -457,57 +445,68 @@ class AirspeedProcessor:
         arsp: pd.DataFrame,
     ):
 
-        cfg = self.config["validation"]["sample_gap"]
+        cfg = self.config[
+            "validation"
+        ]["sample_gap"]
 
         if not cfg["enabled"]:
             return []
 
         failures = []
 
-        maximum_gap_us = cfg["maximum_ms"] * 1000
+        maximum_gap_us = (
+            cfg["maximum_ms"] * 1000
+        )
 
         delta = arsp.TimeUS.diff()
 
-        gaps = arsp[delta > maximum_gap_us]
+        gaps = arsp[
+            delta > maximum_gap_us
+        ]
 
         for index in gaps.index:
 
-            previous = arsp.loc[index - 1]
+            previous = arsp.loc[
+                index - 1
+            ]
 
-            current = arsp.loc[index]
+            current = arsp.loc[
+                index
+            ]
 
             failures.append(
-
                 AirspeedValidationFailure(
-
                     rule="sample_gap",
-
-                    description="Gap detected between consecutive airspeed samples.",
-
+                    description=(
+                        "Gap detected between "
+                        "consecutive airspeed samples."
+                    ),
                     criteria={
-
-                        "maximum_gap_ms": cfg["maximum_ms"]
-
+                        "maximum_gap_ms":
+                            cfg["maximum_ms"],
                     },
-
                     evidence={
-
-                        "gap_ms": float(delta.loc[index] / 1000.0),
-
-                        "previous_timestamp": int(previous.TimeUS),
-
-                        "current_timestamp": int(current.TimeUS),
-
+                        "gap_ms": float(
+                            delta.loc[index]
+                            / 1000.0
+                        ),
+                        "previous_timestamp":
+                            int(previous.TimeUS),
+                        "current_timestamp":
+                            int(current.TimeUS),
                     },
-
-                    recommendation="Inspect telemetry logging or airspeed sensor communication.",
-
-                    start_us=int(previous.TimeUS),
-
-                    end_us=int(current.TimeUS),
-
+                    recommendation=(
+                        "Inspect telemetry logging "
+                        "or airspeed sensor "
+                        "communication."
+                    ),
+                    start_us=int(
+                        previous.TimeUS
+                    ),
+                    end_us=int(
+                        current.TimeUS
+                    ),
                 )
-
             )
 
         return failures
@@ -519,49 +518,50 @@ class AirspeedProcessor:
         arsp: pd.DataFrame,
     ):
 
-        cfg = self.config["validation"]["negative_values"]
+        cfg = self.config[
+            "validation"
+        ]["negative_values"]
 
         if not cfg["enabled"]:
             return []
 
         failures = []
 
-        invalid = arsp[arsp.Airspeed < 0]
+        invalid = arsp[
+            arsp.Airspeed < 0
+        ]
 
         for _, row in invalid.iterrows():
 
             failures.append(
-
                 AirspeedValidationFailure(
-
                     rule="negative_values",
-
-                    description="Negative airspeed detected.",
-
+                    description=(
+                        "Negative airspeed detected."
+                    ),
                     criteria={
-
-                        "minimum_airspeed": 0.0
-
+                        "minimum_airspeed": 0.0,
                     },
-
                     evidence={
-
-                        "airspeed": float(row.Airspeed)
-
+                        "airspeed": float(
+                            row.Airspeed
+                        ),
                     },
-
-                    recommendation="Inspect pitot tube, differential pressure sensor or calibration.",
-
-                    start_us=int(row.TimeUS),
-
-                    end_us=int(row.TimeUS),
-
+                    recommendation=(
+                        "Inspect pitot tube, "
+                        "differential pressure sensor "
+                        "or calibration."
+                    ),
+                    start_us=int(
+                        row.TimeUS
+                    ),
+                    end_us=int(
+                        row.TimeUS
+                    ),
                 )
-
             )
 
         return failures
-    # --------------------------------------------------------
 
     # --------------------------------------------------------
 
@@ -570,7 +570,9 @@ class AirspeedProcessor:
         arsp: pd.DataFrame,
     ):
 
-        cfg = self.config["validation"]["step_change"]
+        cfg = self.config[
+            "validation"
+        ]["step_change"]
 
         if not cfg["enabled"]:
             return []
@@ -578,68 +580,82 @@ class AirspeedProcessor:
         failures = []
 
         threshold = cfg["threshold"]
-        
         interval_ms = cfg["interval_ms"]
 
         events = []
 
-        for index in range(len(arsp) - 1):
-        
-            start_time = arsp.TimeUS.iloc[index]
-        
-            target_time = start_time + interval_ms * 1000
-        
-            end = arsp.TimeUS.searchsorted(target_time)
-        
+        for index in range(
+            len(arsp) - 1
+        ):
+
+            start_time = (
+                arsp.TimeUS.iloc[index]
+            )
+
+            target_time = (
+                start_time
+                + interval_ms * 1000
+            )
+
+            end = arsp.TimeUS.searchsorted(
+                target_time
+            )
+
             if end >= len(arsp):
-        
                 break
-        
+
             change = abs(
                 arsp.Airspeed.iloc[end]
                 - arsp.Airspeed.iloc[index]
             )
-        
+
             if change > threshold:
-        
-                events.append((index, end, change))
-                
+                events.append(
+                    (
+                        index,
+                        end,
+                        change,
+                    )
+                )
+
         for start, end, change in events:
 
             before = arsp.iloc[start]
             after = arsp.iloc[end]
 
             failures.append(
-
                 AirspeedValidationFailure(
-
                     rule="step_change",
-
-                    description="Large airspeed step change detected.",
-
+                    description=(
+                        "Large airspeed step "
+                        "change detected."
+                    ),
                     criteria={
-
-                        "maximum_change": threshold,
-
+                        "maximum_change":
+                            threshold,
                     },
-
                     evidence={
-
-                        "before": float(before.Airspeed),
-
-                        "after": float(after.Airspeed),
-                        
-                        "change": float(change),
-
+                        "before": float(
+                            before.Airspeed
+                        ),
+                        "after": float(
+                            after.Airspeed
+                        ),
+                        "change": float(
+                            change
+                        ),
                     },
-
-                    recommendation="Inspect pitot tubing and pressure sensor for spikes.",
-
-                    start_us=int(before.TimeUS),
-
-                    end_us=int(after.TimeUS),
+                    recommendation=(
+                        "Inspect pitot tubing and "
+                        "pressure sensor for spikes."
+                    ),
+                    start_us=int(
+                        before.TimeUS
+                    ),
+                    end_us=int(
+                        after.TimeUS
+                    ),
                 )
-
             )
 
         return failures
@@ -651,19 +667,26 @@ class AirspeedProcessor:
         arsp: pd.DataFrame,
     ):
 
-        cfg = self.config["validation"]["low_speed"]
+        cfg = self.config[
+            "validation"
+        ]["low_speed"]
 
         if not cfg["enabled"]:
             return []
 
         failures = []
 
-        maximum_duration = cfg["maximum_duration"] * 1_000_000
+        maximum_duration = (
+            cfg["maximum_duration"]
+            * 1_000_000
+        )
 
-        low = arsp.Airspeed < cfg["threshold"]
-        
+        low = (
+            arsp.Airspeed
+            < cfg["threshold"]
+        )
+
         if not low.any():
-
             return failures
 
         start = None
@@ -674,108 +697,119 @@ class AirspeedProcessor:
 
                 start = index
 
-            elif not state and start is not None:
+            elif (
+                not state
+                and start is not None
+            ):
 
                 end = index - 1
 
                 duration = (
-
                     arsp.TimeUS.iloc[end]
-
-                    -
-
-                    arsp.TimeUS.iloc[start]
-
+                    - arsp.TimeUS.iloc[start]
                 )
 
                 if duration > maximum_duration:
 
-                    section = arsp.iloc[start:end + 1]
+                    section = arsp.iloc[
+                        start:end + 1
+                    ]
 
                     failures.append(
-
                         AirspeedValidationFailure(
-
                             rule="low_speed",
-
-                            description="Airspeed remained at low for an extended period.",
-
+                            description=(
+                                "Airspeed remained "
+                                "at low for an "
+                                "extended period."
+                            ),
                             criteria={
-
-                                "maximum_duration_seconds": cfg["maximum_duration"],
-
+                                "maximum_duration_seconds":
+                                    cfg[
+                                        "maximum_duration"
+                                    ],
                             },
-
                             evidence={
-                                "duration_seconds": float(duration / 1_000_000),
-                                "samples": len(section),
+                                "duration_seconds":
+                                    float(
+                                        duration
+                                        / 1_000_000
+                                    ),
+                                "samples":
+                                    len(section),
                             },
-
-                            recommendation="Confirm this period is expected (e.g. post-landing). Otherwise inspect the pitot system.",
-
-                            start_us=int(section.TimeUS.iloc[0]),
-
-                            end_us=int(section.TimeUS.iloc[-1]),
-
+                            recommendation=(
+                                "Confirm this period "
+                                "is expected "
+                                "(e.g. post-landing). "
+                                "Otherwise inspect "
+                                "the pitot system."
+                            ),
+                            start_us=int(
+                                section.TimeUS.iloc[0]
+                            ),
+                            end_us=int(
+                                section.TimeUS.iloc[-1]
+                            ),
                         )
-
                     )
 
                 start = None
 
         #
-        # Handle run continuing to end of log
+        # Handle run continuing to end of window.
         #
-
         if start is not None:
 
             end = len(arsp) - 1
 
             duration = (
-
                 arsp.TimeUS.iloc[end]
-
-                -
-
-                arsp.TimeUS.iloc[start]
-
+                - arsp.TimeUS.iloc[start]
             )
 
             if duration > maximum_duration:
 
-                section = arsp.iloc[start:end + 1]
+                section = arsp.iloc[
+                    start:end + 1
+                ]
 
                 failures.append(
-
                     AirspeedValidationFailure(
-
-                        rule="low speed",
-
-                        description="Airspeed remained low for an extended period.",
-
+                        rule="low_speed",
+                        description=(
+                            "Airspeed remained low "
+                            "for an extended period."
+                        ),
                         criteria={
-
-                            "maximum_duration_seconds": cfg["maximum_duration"],
-
+                            "maximum_duration_seconds":
+                                cfg[
+                                    "maximum_duration"
+                                ],
                         },
-
                         evidence={
-
-                            "duration_seconds": duration / 1_000_000,
-
-                            "samples": len(section),
-
+                            "duration_seconds":
+                                float(
+                                    duration
+                                    / 1_000_000
+                                ),
+                            "samples":
+                                len(section),
                         },
-
-                        recommendation="Confirm this period is expected (e.g. post-landing). Otherwise inspect the pitot system.",
-
-                        start_us=int(section.TimeUS.iloc[0]),
-
-                        end_us=int(section.TimeUS.iloc[-1]),
-
+                        recommendation=(
+                            "Confirm this period is "
+                            "expected "
+                            "(e.g. post-landing). "
+                            "Otherwise inspect the "
+                            "pitot system."
+                        ),
+                        start_us=int(
+                            section.TimeUS.iloc[0]
+                        ),
+                        end_us=int(
+                            section.TimeUS.iloc[-1]
+                        ),
                     )
-
                 )
 
         return failures
-

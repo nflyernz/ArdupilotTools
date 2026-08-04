@@ -3,6 +3,13 @@ import math
 
 import pandas as pd
 
+from .flight_window import FlightWindow
+from .model import FlightLog
+from .scope import (
+    filter_telemetry,
+    validate_child_window,
+    validate_flight_window,
+)
 from .time import native_rate
 
 
@@ -38,34 +45,42 @@ class GPSProcessor:
 
     def __init__(
         self,
-        flight,
-        window,
+        flight_log: FlightLog,
+        flight_window: FlightWindow,
         sample_period=1.0,
     ):
 
-        self.flight = flight
-        self.window = window
+        validate_flight_window(
+            flight_log,
+            flight_window,
+        )
+
+        self.flight_log = flight_log
+        self.flight_window = flight_window
         self.sample_period = sample_period
 
-    def run(self):
+    def analyse(
+        self,
+        analysis_window=None,
+    ):
 
-        gps = self.flight.get("GPS")
+        if analysis_window is None:
+            analysis_window = self.flight_window
 
-        if gps is None or gps.empty:
+        validate_child_window(
+            self.flight_window,
+            analysis_window,
+        )
+
+        gps = filter_telemetry(
+            self.flight_log.get("GPS"),
+            analysis_window,
+        )
+
+        if gps is None or len(gps) < 2:
             return None
 
-        #
-        # Restrict to requested window.
-        #
-
-        gps = gps[
-            (gps.TimeUS >= self.window.start_us)
-            &
-            (gps.TimeUS <= self.window.end_us)
-        ].copy()
-
-        if len(gps) < 2:
-            return None
+        gps = gps.copy()
 
         #
         # Native sample rate.
@@ -88,7 +103,10 @@ class GPSProcessor:
             .assign(
                 Bucket=lambda df:
                 (
-                    (df.TimeUS - df.TimeUS.iloc[0])
+                    (
+                        df.TimeUS
+                        - df.TimeUS.iloc[0]
+                    )
                     // bucket_us
                 )
             )
@@ -176,40 +194,25 @@ class GPSProcessor:
         ) * lat_scale
 
         horizontal_distance = math.sqrt(
-            dx * dx + dy * dy
+            dx * dx
+            + dy * dy
         )
 
         return GPSAnalysis(
-
-            start_us=self.window.start_us,
-
-            end_us=self.window.end_us,
-
+            start_us=analysis_window.start_us,
+            end_us=analysis_window.end_us,
             native_rate=rate,
-
             requested_rate=1.0 / self.sample_period,
-
             start_lat=start_lat,
-
             start_lng=start_lng,
-
             start_alt=start_alt,
-
             end_lat=end_lat,
-
             end_lng=end_lng,
-
             end_alt=end_alt,
-
             horizontal_distance=horizontal_distance,
-
             vertical_change=vertical_change,
-
             mean_speed=mean_speed,
-
             mean_hdop=mean_hdop,
-
             minimum_satellites=minimum_satellites,
-
             profile=profile,
         )

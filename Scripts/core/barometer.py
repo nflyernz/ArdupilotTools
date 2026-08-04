@@ -2,6 +2,13 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from .flight_window import FlightWindow
+from .model import FlightLog
+from .scope import (
+    filter_telemetry,
+    validate_child_window,
+    validate_flight_window,
+)
 from .time import native_rate
 
 
@@ -27,34 +34,42 @@ class BarometerProcessor:
 
     def __init__(
         self,
-        flight,
-        window,
+        flight_log: FlightLog,
+        flight_window: FlightWindow,
         sample_period=1.0,
     ):
 
-        self.flight = flight
-        self.window = window
+        validate_flight_window(
+            flight_log,
+            flight_window,
+        )
+
+        self.flight_log = flight_log
+        self.flight_window = flight_window
         self.sample_period = sample_period
 
-    def run(self):
+    def analyse(
+        self,
+        analysis_window=None,
+    ):
 
-        baro = self.flight.get("BARO")
+        if analysis_window is None:
+            analysis_window = self.flight_window
 
-        if baro is None or baro.empty:
+        validate_child_window(
+            self.flight_window,
+            analysis_window,
+        )
+
+        baro = filter_telemetry(
+            self.flight_log.get("BARO"),
+            analysis_window,
+        )
+
+        if baro is None or len(baro) < 2:
             return None
 
-        #
-        # Restrict to requested window.
-        #
-
-        baro = baro[
-            (baro.TimeUS >= self.window.start_us)
-            &
-            (baro.TimeUS <= self.window.end_us)
-        ].copy()
-
-        if len(baro) < 2:
-            return None
+        baro = baro.copy()
 
         #
         # Native sample rate.
@@ -77,7 +92,10 @@ class BarometerProcessor:
             .assign(
                 Bucket=lambda df:
                 (
-                    (df.TimeUS - df.TimeUS.iloc[0])
+                    (
+                        df.TimeUS
+                        - df.TimeUS.iloc[0]
+                    )
                     // bucket_us
                 )
             )
@@ -121,22 +139,13 @@ class BarometerProcessor:
             mean_rate = 0.0
 
         return BarometerAnalysis(
-
-            start_us=self.window.start_us,
-
-            end_us=self.window.end_us,
-
+            start_us=analysis_window.start_us,
+            end_us=analysis_window.end_us,
             native_rate=rate,
-
             requested_rate=1.0 / self.sample_period,
-
             start_alt=start_alt,
-
             end_alt=end_alt,
-
             altitude_change=altitude_change,
-
             mean_rate=mean_rate,
-
             profile=profile,
         )

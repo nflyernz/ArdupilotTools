@@ -106,7 +106,10 @@ class LandingAnalysis:
                         #
                         # Airspeed health
                         #
-                        airspeed = AirspeedProcessor(flight_log)
+                        airspeed = AirspeedProcessor(
+                            flight_log,
+                            flight_window,
+                        )
 
                         health = airspeed.health(
                             health_window

@@ -1,127 +1,148 @@
 from core.reader import FlightReader
 from core.gps import GPSProcessor
+from core.time import format_time_us
 
 
 # ---------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------
 
-LOG = "Logs/log_9_2026-5-3-10-43-02.bin"
+LOG = "Logs/log_17.bin"
 
-START = "11:57.000"
-DURATION = "05:00.000"
+FLIGHT_INDEX = 0
 
 SAMPLE_PERIOD = 1.0
-
-
-# ---------------------------------------------------------------------
-# Window
-# ---------------------------------------------------------------------
-
-class Window:
-
-    def __init__(self, start_us, end_us):
-
-        self.start_us = start_us
-        self.end_us = end_us
-
-
-# ---------------------------------------------------------------------
-# Utilities
-# ---------------------------------------------------------------------
-
-def parse_time(text):
-
-    minutes, seconds = text.split(":")
-
-    return int(
-        (
-            int(minutes) * 60
-            + float(seconds)
-        )
-        * 1_000_000
-    )
-
-
-def format_time(time_us):
-
-    seconds = time_us / 1_000_000
-
-    minutes = int(seconds // 60)
-
-    seconds -= minutes * 60
-
-    return f"{minutes:02}:{seconds:06.3f}"
 
 
 # ---------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------
 
-start_us = parse_time(START)
-end_us = start_us + parse_time(DURATION)
+flight_log = FlightReader(LOG).read()
 
-window = Window(start_us, end_us)
+if not flight_log.flights:
 
-flight = FlightReader(LOG).read()
+    print("No FlightWindows detected.")
+    raise SystemExit
 
-gps = flight.get("GPS")
+if FLIGHT_INDEX >= len(flight_log.flights):
+
+    print(
+        f"Flight index {FLIGHT_INDEX} does not exist. "
+        f"Detected {len(flight_log.flights)} flight(s)."
+    )
+    raise SystemExit
+
+
+flight_window = flight_log.flights[
+    FLIGHT_INDEX
+]
+
+gps = flight_log.get("GPS")
+
 
 print()
 print("GPS Diagnostics")
 print("-" * 70)
 
-if gps is None:
+if gps is None or gps.empty:
 
     print("GPS message not found.")
     raise SystemExit
 
+
 print(f"Samples      : {len(gps)}")
 print(f"Columns      : {list(gps.columns)}")
-print(f"Time Start   : {format_time(gps.TimeUS.min())}")
-print(f"Time End     : {format_time(gps.TimeUS.max())}")
+print(
+    f"Time Start   : "
+    f"{format_time_us(gps.TimeUS.min())}"
+)
+print(
+    f"Time End     : "
+    f"{format_time_us(gps.TimeUS.max())}"
+)
 
 print()
-print(f"Window Start : {format_time(start_us)}")
-print(f"Window End   : {format_time(end_us)}")
+print(
+    f"Flight       : "
+    f"{FLIGHT_INDEX + 1}"
+)
+print(
+    f"Window Start : "
+    f"{format_time_us(flight_window.start_us)}"
+)
+print(
+    f"Window End   : "
+    f"{format_time_us(flight_window.end_us)}"
+)
+
 
 analysis = GPSProcessor(
-    flight,
-    window,
+    flight_log,
+    flight_window,
     sample_period=SAMPLE_PERIOD,
-).run()
+).analyse()
+
 
 if analysis is None:
 
     print()
     print("GPSProcessor returned None.")
     print("Either:")
-    print("  - no GPS data in requested window")
+    print("  - no GPS data in selected FlightWindow")
     print("  - fewer than two samples")
     raise SystemExit
+
 
 print()
 print("GPS Analysis")
 print("-" * 70)
 
-print(f"Window Start        : {format_time(analysis.start_us)}")
-print(f"Window End          : {format_time(analysis.end_us)}")
+print(
+    f"Window Start        : "
+    f"{format_time_us(analysis.start_us)}"
+)
+print(
+    f"Window End          : "
+    f"{format_time_us(analysis.end_us)}"
+)
 
 print()
 
-print(f"Native Rate         : {analysis.native_rate:.1f} Hz")
-print(f"Sample Period       : {SAMPLE_PERIOD:.1f} s")
+print(
+    f"Native Rate         : "
+    f"{analysis.native_rate:.1f} Hz"
+)
+print(
+    f"Sample Period       : "
+    f"{SAMPLE_PERIOD:.1f} s"
+)
 
 print()
 
-print(f"Horizontal Distance : {analysis.horizontal_distance:.1f} m")
-print(f"Vertical Change     : {analysis.vertical_change:.2f} m")
-print(f"Mean Speed          : {analysis.mean_speed:.2f} m/s")
+print(
+    f"Horizontal Distance : "
+    f"{analysis.horizontal_distance:.1f} m"
+)
+print(
+    f"Vertical Change     : "
+    f"{analysis.vertical_change:.2f} m"
+)
+print(
+    f"Mean Speed          : "
+    f"{analysis.mean_speed:.2f} m/s"
+)
 
 print()
 
-print(f"Mean HDOP           : {analysis.mean_hdop:.2f}")
-print(f"Minimum Satellites  : {analysis.minimum_satellites}")
+print(
+    f"Mean HDOP           : "
+    f"{analysis.mean_hdop:.2f}"
+)
+print(
+    f"Minimum Satellites  : "
+    f"{analysis.minimum_satellites}"
+)
 
 print()
 
@@ -142,7 +163,7 @@ print("-" * 90)
 for row in analysis.profile.itertuples():
 
     print(
-        f"{format_time(row.TimeUS):12}"
+        f"{format_time_us(row.TimeUS):12}"
         f"{row.Alt:8.2f}"
         f"{row.Spd:8.2f}"
         f"{row.VZ:8.2f}"
