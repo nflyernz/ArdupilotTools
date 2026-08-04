@@ -8,7 +8,7 @@ flight_log = FlightReader(
     "Logs/log_17.bin"
 ).read()
 
-config = Config("Config/landing.yaml")
+config = Config("Config/sensors.yaml")
 
 if not flight_log.flights:
 

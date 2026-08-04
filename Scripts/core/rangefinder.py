@@ -101,17 +101,21 @@ class RangefinderEvents:
             "rangefinder",
             {},
         )
-
-        zero_threshold = cfg.get(
+        
+        event_cfg = cfg.get(
+            "events",
+            {},
+        )
+        
+        zero_threshold = event_cfg.get(
             "zero_threshold",
             0.05,
         )
-
-        continuous_seconds = cfg.get(
+        
+        continuous_seconds = event_cfg.get(
             "continuous_seconds",
             1.0,
         )
-
         sample_rate = self.estimate_sample_rate(
             rfnd
         )

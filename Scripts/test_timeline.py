@@ -4,7 +4,7 @@ from core.timeline import LandingTimeline
 from core.config import Config
 
 
-config = Config("Config/landing.yaml")
+config = Config("Config/sensors.yaml")
 
 flight_log = FlightReader(
     "Logs/log_17.bin"
