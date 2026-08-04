@@ -8,6 +8,7 @@ Detection is based solely on GPS ground speed and is independent
 of flight mode, mission state or analysis type.
 """
 
+from .model import FlightLog
 from .flight_window import FlightWindow
 
 
@@ -32,9 +33,12 @@ class FlightWindowDetector:
             speed_threshold
         )
 
-    def detect(self, flight):
+    def detect(
+        self,
+        flight_log: FlightLog,
+    ) -> list[FlightWindow]:
 
-        gps = flight.get("GPS")
+        gps = flight_log.get("GPS")
 
         if gps.empty:
             return []
@@ -45,7 +49,7 @@ class FlightWindowDetector:
         #
         threshold = max(
             self.speed_threshold,
-            0.5 * flight.param(
+            0.5 * flight_log.param(
                 "AIRSPEED_STALL",
                 self.speed_threshold * 2,
             ),
