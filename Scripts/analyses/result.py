@@ -11,7 +11,7 @@ class AnalysisResult:
     log_path: Path
     flight_window: FlightWindow
 
-    telemetry: object | None = None
+
 
     sensor_health_window: SensorHealthWindow | None = None
     sensor_health: object | None = None

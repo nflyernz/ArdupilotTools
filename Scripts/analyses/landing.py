@@ -80,7 +80,6 @@ class LandingAnalysis:
         return AnalysisResult(
             log_path=log_path,
             flight_window=flight_window,
-            telemetry=flight_log,
             sensor_health_window=health_window,
             sensor_health=health,
             landing_windows=landing_windows,
