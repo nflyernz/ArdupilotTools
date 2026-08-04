@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from core.model import FlightLog
 from core.flight_window import FlightWindow
+from core.scope import validate_flight_window
 
 
 @dataclass(slots=True)
@@ -48,10 +49,10 @@ class SensorHealthWindowDetector:
         Create a sensor-health window for one FlightWindow.
         """
 
-        if flight_window not in flight_log.flights:
-            raise ValueError(
-                "FlightWindow does not belong to FlightLog"
-            )
+        validate_flight_window(
+            flight_log,
+            flight_window,
+        )
 
         start_us = (
             flight_window.start_us

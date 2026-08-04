@@ -1,5 +1,6 @@
 from core.reader import FlightReader
 from core.sensor_health_window import SensorHealthWindowDetector
+from core.scope import filter_segments
 
 
 flight = FlightReader("Logs/log_17.bin").read()
@@ -25,14 +26,10 @@ for i, flight_window in enumerate(flight.flights, start=1):
     #
     # Include every segment that overlaps this flight.
     #
-    segments = [
-        s for s in flight.segments
-        if (
-            s.end_us >= flight_window.start_us
-            and
-            s.start_us <= flight_window.end_us
-        )
-    ]
+    segments = filter_segments(
+        flight.segments,
+        flight_window,
+    )
 
     print(f"Flight {i}")
     print(f"  Duration : {duration:.1f}s")

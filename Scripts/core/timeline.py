@@ -3,6 +3,11 @@ from core.model import FlightLog
 from core.flight_window import FlightWindow
 from core.landing_window import LandingWindow
 from core.rangefinder import RangefinderEvents
+from core.scope import (
+    filter_telemetry,
+    validate_child_window,
+    validate_flight_window,
+)
 
 
 class LandingTimeline:
@@ -24,18 +29,15 @@ class LandingTimeline:
         self.landing_window = landing_window
         self.config = config
 
-        if flight_window not in flight_log.flights:
-            raise ValueError(
-                "FlightWindow does not belong to FlightLog"
-            )
+        validate_flight_window(
+            flight_log,
+            flight_window,
+        )
 
-        if (
-            landing_window.start_us < flight_window.start_us
-            or landing_window.end_us > flight_window.end_us
-        ):
-            raise ValueError(
-                "LandingWindow is outside parent FlightWindow"
-            )
+        validate_child_window(
+            flight_window,
+            landing_window,
+        )
 
     def build(self):
 
@@ -44,14 +46,12 @@ class LandingTimeline:
         #
         # LAND.stage transitions
         #
-        land = self.flight_log.get("LAND")
+        land = filter_telemetry(
+            self.flight_log.get("LAND"),
+            self.landing_window,
+        )
 
         if not land.empty:
-
-            land = land[
-                (land["TimeUS"] >= self.landing_window.start_us)
-                & (land["TimeUS"] <= self.landing_window.end_us)
-            ]
 
             previous = None
 
@@ -74,14 +74,12 @@ class LandingTimeline:
         #
         # MODE transitions
         #
-        mode = self.flight_log.get("MODE")
+        mode = filter_telemetry(
+            self.flight_log.get("MODE"),
+            self.landing_window,
+        )
 
         if not mode.empty:
-
-            mode = mode[
-                (mode["TimeUS"] >= self.landing_window.start_us)
-                & (mode["TimeUS"] <= self.landing_window.end_us)
-            ]
 
             for _, row in mode.iterrows():
 
@@ -96,14 +94,12 @@ class LandingTimeline:
         #
         # ARM transitions
         #
-        arm = self.flight_log.get("ARM")
+        arm = filter_telemetry(
+            self.flight_log.get("ARM"),
+            self.landing_window,
+        )
 
         if not arm.empty:
-
-            arm = arm[
-                (arm["TimeUS"] >= self.landing_window.start_us)
-                & (arm["TimeUS"] <= self.landing_window.end_us)
-            ]
 
             for _, row in arm.iterrows():
 

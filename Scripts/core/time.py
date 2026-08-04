@@ -1,3 +1,8 @@
+"""
+Shared TimeUS conversion, formatting, and sampling utilities.
+"""
+
+
 def parse_time(text):
     """
     Convert a UAV Log Viewer time string (MM:SS.sss)
@@ -15,9 +20,9 @@ def parse_time(text):
     )
 
 
-def format_time(time_us):
+def format_time_us(time_us):
     """
-    Convert TimeUS into UAV Log Viewer format.
+    Convert TimeUS into UAV Log Viewer format (MM:SS.sss).
     """
 
     seconds = time_us / 1_000_000
@@ -27,6 +32,16 @@ def format_time(time_us):
     seconds -= minutes * 60
 
     return f"{minutes:02}:{seconds:06.3f}"
+
+
+def format_time(time_us):
+    """
+    Compatibility alias for format_time_us().
+
+    New code should use format_time_us().
+    """
+
+    return format_time_us(time_us)
 
 
 def duration_us(seconds):

@@ -5,6 +5,7 @@ Landing window detector.
 from core.model import FlightLog
 from core.flight_window import FlightWindow
 from core.landing_window import LandingWindow
+from core.scope import validate_flight_window
 
 
 class LandingWindowDetector:
@@ -38,11 +39,10 @@ class LandingWindowDetector:
             Landing windows contained within the flight.
         """
 
-        #
-        # Ensure the supplied FlightWindow belongs to this FlightLog.
-        #
-        if flight_window not in flight_log.flights:
-            raise ValueError("FlightWindow does not belong to FlightLog")
+        validate_flight_window(
+            flight_log,
+            flight_window,
+        )
 
         #
         # Temporary implementation.
