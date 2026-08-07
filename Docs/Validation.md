@@ -55,6 +55,15 @@ This confirms that the 2-second persistence rule removes dependence on GPS sampl
 
 ---
 
+## AIRSPEED_STALL FlightWindow Threshold
+
+**Status: DEFERRED VALIDATION**
+
+The parameter exports used by the current regression logs contain:
+
+```text
+AIRSPEED_STALL
+
 ## Multiple Landing Attempts
 
 Flight 2 contains multiple landing attempts and go-arounds.
@@ -538,3 +547,349 @@ The following behaviour is not yet considered fully validated:
 - cross-version MSG landing-event consistency
 
 These remain validation targets for the landing-detection milestone.
+
+---
+
+# v0.4 — AUTO-Landing Detection Validation
+
+## Status
+
+**IN PROGRESS**
+
+v0.4 introduces objective detection of ArduPlane AUTO-landing attempts within a parent `FlightWindow`.
+
+A `FlightWindow` may contain:
+
+```text
+zero AUTO-landing attempts
+one AUTO-landing attempt
+multiple AUTO-landing attempts
+```
+
+Manual approaches and manual landings are outside the scope of v0.4 AUTO-landing detection.
+
+The purpose of this validation work is to establish the observed telemetry semantics before those semantics are encoded in `LandingWindowDetector`.
+
+---
+
+# Validation Principle
+
+Landing-detection rules must be derived from repeatable evidence across representative logs.
+
+No individual source is currently assumed to be authoritative.
+
+Candidate evidence includes:
+
+```text
+LAND.stage
+firmware MSG events
+MODE transitions
+ARM/disarm events
+rangefinder
+GPS
+airspeed
+barometer
+mission state
+other logged landing-state information
+```
+
+The validation process must distinguish between:
+
+```text
+direct firmware state
+validated state correspondence
+physical telemetry evidence
+heuristic inference
+```
+
+Where evidence is incomplete or contradictory, the uncertainty should be recorded rather than converted prematurely into a detector rule.
+
+---
+
+# Primary Evidence Logs
+
+## log_17.bin
+
+**Status: EXISTING VALIDATION LOG**
+
+`log_17.bin` remains the primary regression log from v0.2 and v0.3.
+
+It provides:
+
+- four independently validated `FlightWindow` objects;
+- multiple AUTO-landing attempts;
+- aborted AUTO-landing attempts;
+- go-arounds;
+- restarted AUTO-landing sequences;
+- different declared glide slopes;
+- LAND stage transitions;
+- firmware landing MSG events;
+- rangefinder engagement;
+- disarm evidence.
+
+Flight 2 remains particularly important because multiple AUTO-landing attempts occur within one continuous `FlightWindow`.
+
+Existing observations from this log are documented above.
+
+---
+
+## New Landing Evidence Log
+
+**Status: PENDING ANALYSIS**
+
+A new landing log has been recorded specifically for further landing investigation.
+
+Observed during the flight:
+
+- multiple AUTO-landing attempts;
+- multiple go-arounds;
+- completed AUTO landings;
+- different glide slopes;
+- apparently inconsistent flare behaviour.
+
+This log will be used as the second primary evidence source for v0.4.
+
+The matching parameter file must be considered when investigating configuration-dependent behaviour.
+
+No detector semantics are inferred from this log until its telemetry has been extracted and compared with the existing validation evidence.
+
+---
+
+# AUTO-Landing Attempt Validation
+
+For each identified AUTO-landing attempt, record the chronological relationship between:
+
+```text
+Mission / AUTO landing entry
+Landing approach start
+Landing glide-slope declaration
+LAND.stage transitions
+Flare MSG
+Rangefinder engagement
+Abort
+Restart
+Disarm
+Landing-completion evidence
+```
+
+Where required to interpret these events, correlate:
+
+```text
+airspeed
+groundspeed
+barometric altitude
+sink rate
+pitch
+throttle
+rangefinder height
+distance from LAND point
+```
+
+The purpose is to establish defensible meanings for:
+
+```text
+LandingWindow start
+LandingWindow abort end
+LandingWindow successful end
+new attempt following go-around
+```
+
+---
+
+# No AUTO-Landing Attempt Case
+
+**Status: VALIDATION REQUIRED**
+
+A representative `FlightWindow` containing no ArduPlane AUTO-landing attempt must be tested.
+
+Expected detector result:
+
+```text
+[]
+```
+
+Manual flight, a manual approach, or a manual landing must not by itself create a `LandingWindow`.
+
+This case is required to establish false-positive behaviour before v0.4 is considered complete.
+
+---
+
+# Flare Validation
+
+## Status
+
+**IN PROGRESS**
+
+Existing logs already show that the firmware `Flare` message does not occur at one fixed reported height.
+
+Examples from `log_17.bin` include:
+
+```text
+Flare 5.2m sink=1.76 speed=11.2 dist=25.9
+Flare 6.6m sink=2.21 speed=15.9 dist=60.6
+Flare 6.3m sink=2.11 speed=11.0 dist=27.1
+Flare 4.5m sink=1.56 speed=12.9 dist=38.9
+Flare 4.4m sink=1.50 speed=10.6 dist=47.3
+```
+
+The new landing log also appeared during flight to show differing flare behaviour.
+
+This must be investigated rather than treated as an anomaly.
+
+For each representative AUTO-landing attempt, compare:
+
+```text
+declared glide slope
+configured landing parameters
+approach airspeed
+approach groundspeed
+sink rate
+barometric altitude
+rangefinder height
+LAND.stage transition
+Flare MSG
+pitch response
+throttle response
+abort/completion outcome
+```
+
+The objective is to establish what the logged flare events represent and what conditions correspond to them.
+
+v0.4 does not attempt to determine whether the flare was good or bad.
+
+Landing-quality analysis belongs to v0.5.
+
+---
+
+# Glide-Slope Validation
+
+## Status
+
+**IN PROGRESS**
+
+Existing validation evidence contains multiple declared glide slopes, including:
+
+```text
+3.8 degrees
+4.7 degrees
+5.1 degrees
+```
+
+The new landing log contains additional approaches flown with different glide slopes.
+
+These cases provide comparative evidence for determining whether glide-slope geometry affects observed flare timing, height, sink rate, or other landing-state transitions.
+
+For each attempt record:
+
+```text
+declared glide slope
+approach-start altitude
+flare time
+flare reported height
+flare sink rate
+flare airspeed
+LAND.stage transitions
+rangefinder engagement
+abort/completion outcome
+```
+
+Different glide slopes must not themselves alter the semantic definition of an AUTO-landing attempt.
+
+---
+
+# Yaapu Landing-Complete Observation
+
+## Status
+
+**INVESTIGATION REQUIRED**
+
+During a completed AUTO landing in the new evidence flight, the TX16S running the Yaapu telemetry widget produced the audible announcement:
+
+```text
+Landing complete
+```
+
+No equivalent text was observed in the MAVLink message stream at the time.
+
+This raises the possibility that Yaapu generates the announcement locally from an ArduPilot telemetry state rather than receiving a `STATUSTEXT` containing those words.
+
+The source of this announcement must be established before it is considered landing-completion evidence.
+
+Questions to resolve:
+
+1. Is `Landing complete` received from ArduPilot as text?
+2. Is the announcement generated locally by Yaapu?
+3. If generated locally, which telemetry state triggers it?
+4. Is that underlying state represented in the DataFlash BIN log?
+5. What is its timing relative to:
+   - flare;
+   - LAND.stage transitions;
+   - rangefinder engagement;
+   - touchdown evidence;
+   - throttle;
+   - disarm?
+6. Does the state occur consistently after successful AUTO landings?
+7. Is it absent during aborted AUTO-landing attempts?
+
+The Yaapu announcement itself must not be used by `LandingWindowDetector`.
+
+If the underlying ArduPilot state is available in the BIN log and proves repeatable, that state may become validated landing-completion evidence.
+
+---
+
+# v0.4 Boundary Questions
+
+The following questions must be resolved before real AUTO-landing detection is considered validated.
+
+## AUTO-Landing Start
+
+- What event most reliably marks the beginning of an AUTO-landing attempt?
+- What is the relationship between `Mission: 3 Land`, `Landing approach start`, `Landing glide slope`, and `LAND.stage 0 -> 1`?
+- Which event provides the correct `LandingWindow.start_us`?
+
+## Abort
+
+- What event should terminate an aborted AUTO-landing attempt?
+- How does the explicit firmware abort MSG relate to LAND state?
+- Should the window end at abort declaration, state-machine reset, or another event?
+
+## Restart
+
+- What constitutes a new AUTO-landing attempt following a go-around?
+- Does `Restarted landing via DO_LAND_START` mark a new attempt or preparation for the subsequent approach?
+- How does LAND stage reset relate to the next approach?
+
+## Successful End
+
+- What evidence most reliably identifies completion of a successful AUTO landing?
+- Is physical touchdown determinable from the available telemetry?
+- Is disarm an appropriate boundary or merely supporting evidence?
+- Does a logged landed state exist?
+- Does the telemetry state responsible for Yaapu's `Landing complete` announcement exist in the BIN log?
+
+These questions must be answered from evidence before final detector semantics are implemented.
+
+---
+
+# v0.4 Expected Validation Outcomes
+
+Before v0.4 is complete, validation should establish:
+
+- [ ] AUTO-landing attempt-start semantics.
+- [ ] Aborted-attempt end semantics.
+- [ ] Go-around/restart semantics.
+- [ ] Successful AUTO-landing end semantics.
+- [ ] Multiple AUTO-landing attempts within one `FlightWindow`.
+- [ ] Zero AUTO-landing attempts within a valid `FlightWindow`.
+- [ ] No false AUTO-landing detection from manual flight or manual landing.
+- [ ] LAND-stage correspondence across representative attempts.
+- [ ] Firmware MSG correspondence across representative attempts.
+- [ ] Flare-event behaviour across different approaches.
+- [ ] Glide-slope comparison across representative approaches.
+- [ ] Rangefinder relationship to flare and landing completion.
+- [ ] Yaapu `Landing complete` trigger investigated.
+- [ ] Usable landing-completion evidence identified or explicitly documented as unavailable.
+- [ ] Released ArduPlane 4.7 behaviour checked against the existing pre-release observations.
+
+Until these items are validated, AUTO-landing boundary semantics remain **IN PROGRESS**.
+

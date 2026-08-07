@@ -134,8 +134,8 @@ A single BIN log may contain multiple flights. Each flight must be analysed inde
 - [x] GPS groundspeed based flight detection
 - [x] Default flight speed threshold of 5 m/s
 - [x] Allow flight speed threshold to be configured
-- [x] Use `AIRSPEED_STALL` where available when determining effective threshold
-- [x] Require above-threshold state to persist for 2 seconds
+- [x] Support `AIRSPEED_STALL` in FlightWindow threshold calculation when available
+- [ ] Enable `AIRSPEED_STALL` parameter loading only after explicit FlightWindow regression validation- [x] Require above-threshold state to persist for 2 seconds
 - [x] Require extended ground period before separating flights
 - [x] Support multiple flights within one log
 - [x] Keep go-arounds within the same continuous `FlightWindow`
@@ -627,6 +627,9 @@ Each metric must contain:
 - confidence or validity where appropriate
 
 Metrics must not contain tuning recommendations.
+
+Public first release
++ user logs / feedback
 
 ---
 

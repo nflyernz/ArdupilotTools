@@ -78,13 +78,13 @@ class LandingAnalysis:
         )
 
         return AnalysisResult(
+            flight_log=flight_log,
             log_path=log_path,
             flight_window=flight_window,
             sensor_health_window=health_window,
             sensor_health=health,
             landing_windows=landing_windows,
         )
-
     def present_result(
         self,
         result: AnalysisResult,
@@ -106,6 +106,32 @@ class LandingAnalysis:
             f"{format_time_us(flight_window.start_us)} - "
             f"{format_time_us(flight_window.end_us)}"
         )
+        
+                #
+        # Parameters
+        #
+        if result.flight_log.metadata["parameters_loaded"]:
+
+            print(
+                f"    ✓ Parameters: "
+                f"{result.flight_log.metadata['parameter_file']}"
+            )
+
+        else:
+
+            print(
+                "    ⚠ Parameters: Missing"
+            )
+
+            print(
+                f"        Expected: "
+                f"{result.flight_log.metadata['parameter_file']}"
+            )
+
+            print(
+                "        Parameter-dependent features "
+                "may be unavailable."
+            )
 
         #
         # Sensor health

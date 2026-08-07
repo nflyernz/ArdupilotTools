@@ -70,7 +70,17 @@ class FlightReader:
 
     def _read_parameters(self, flight):
 
-        paramfile = Path("Params") / (self.filename.stem + ".params")
+        paramfile = Path("Params") / (
+            self.filename.stem + ".params"
+        )
+
+        #
+        # Always record the expected parameter file.
+        #
+        flight.metadata["parameter_file"] = str(paramfile)
+        flight.metadata["parameters_loaded"] = (
+            paramfile.exists()
+        )
 
         if not paramfile.exists():
             return
@@ -82,11 +92,11 @@ class FlightReader:
 
         flight.parameters = reader.read()
 
-        flight.metadata["parameter_file"] = str(paramfile)
-
     def _build_flights(self, flight):
 
-        flight.flights = FlightWindowDetector().detect(flight)
+        flight.flights = FlightWindowDetector().detect(
+            flight
+        )
 
     def _build_segments(self, flight):
 
