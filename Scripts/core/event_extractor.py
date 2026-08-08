@@ -1,31 +1,33 @@
 from core.events import TimelineEvent, EventType
 from core.model import FlightLog
-from core.flight_window import FlightWindow
-from core.scope import (
-    filter_telemetry,
-    validate_flight_window,
-)
+from core.scope import filter_telemetry
 
 
 class EventExtractor:
     """
-    Extract firmware MSG events for a selected FlightWindow.
+    Extract firmware MSG events contained within a supplied time window.
+
+    The window may be a FlightWindow or any child analysis window
+    exposing start_us and end_us.
     """
 
     def extract(
         self,
         flight_log: FlightLog,
-        flight_window: FlightWindow,
+        window,
     ) -> list[TimelineEvent]:
 
-        validate_flight_window(
-            flight_log,
-            flight_window,
-        )
+        if window is None:
+            raise ValueError("window is required")
+
+        if window.start_us > window.end_us:
+            raise ValueError(
+                "window start_us must not be after end_us"
+            )
 
         msg = filter_telemetry(
             flight_log.get("MSG"),
-            flight_window,
+            window,
         )
 
         if msg is None or msg.empty:

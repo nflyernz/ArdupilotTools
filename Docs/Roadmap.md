@@ -475,6 +475,30 @@ Go-arounds and aborted approaches must produce separate landing attempts without
 
 ---
 
+### Implementation Notes
+
+During implementation it became clear that `EventExtractor`
+currently extracts only `MSG` events.
+
+Before `LandingAttemptExtractor` is implemented,
+`EventExtractor` will become the authoritative source of
+time-ordered timeline events.
+
+It will publish a unified event stream including:
+
+- MSG
+- LAND.stage
+- MODE
+- Rangefinder events
+
+Subsequent components (`LandingTimeline`,
+`LandingAttemptExtractor`, and future landing analysis)
+will consume this common event stream rather than
+duplicating event extraction logic.
+
+This preserves a single authoritative event model
+throughout the framework.
+
 ## Landing Event Validation
 
 Before finalising detection rules:
