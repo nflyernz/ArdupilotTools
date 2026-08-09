@@ -1,5 +1,6 @@
 from core.events import TimelineEvent, EventType
 from core.model import FlightLog
+from core.modes import mode_name
 from core.scope import filter_telemetry
 
 
@@ -59,15 +60,19 @@ class EventExtractor:
         )
 
         #
-        # Future event sources.
+        # Flight mode changes.
         #
 
-        # events.extend(
-        #     self._extract_mode_events(
-        #         flight_log,
-        #         window,
-        #     )
-        # )
+        events.extend(
+            self._extract_mode_events(
+                flight_log,
+                window,
+            )
+        )
+
+        #
+        # Future event sources.
+        #
 
         # events.extend(
         #     self._extract_rangefinder_events(
@@ -152,12 +157,30 @@ class EventExtractor:
         window,
     ) -> list[TimelineEvent]:
         """
-        Extract MODE change events.
+        Extract flight mode change events.
 
-        Placeholder for v0.4.
+        MODE messages are already event-based, so each record becomes
+        a single timeline event.
         """
 
-        return []
+        mode = filter_telemetry(
+            flight_log.get("MODE"),
+            window,
+        )
+
+        if mode is None or mode.empty:
+            return []
+
+        return [
+            TimelineEvent(
+                time_us=int(row["TimeUS"]),
+                event=EventType.MODE,
+                detail=mode_name(
+                    row["ModeNum"],
+                ),
+            )
+            for _, row in mode.iterrows()
+        ]
 
     def _extract_rangefinder_events(
         self,

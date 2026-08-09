@@ -24,6 +24,7 @@ messages:
   - MSG
   - LAND
   - ARM
+  - VER
 
 #
 # Parameter groups required
@@ -36,3 +37,4 @@ parameters:
   - ARSPD_*
   - AHRS_*
   - EK3_*
+  - RNGFND*

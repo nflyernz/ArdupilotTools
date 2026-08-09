@@ -75,3 +75,33 @@ class FlightLog:
         True if a parameter exists.
         """
         return name in self.parameters
+
+    def firmware_version(self):
+        """
+        Return firmware version information from the BIN VER message.
+
+        Returns:
+            dict or None:
+                {
+                    "major": int,
+                    "minor": int,
+                    "patch": int,
+                    "version": str,
+                }
+
+        Returns None if no usable VER message is present.
+        """
+
+        ver = self.get("VER")
+
+        if ver.empty:
+            return None
+
+        row = ver.iloc[0]
+
+        return {
+            "major": int(row["Maj"]),
+            "minor": int(row["Min"]),
+            "patch": int(row["Pat"]),
+            "version": str(row["FWS"]),
+        }
