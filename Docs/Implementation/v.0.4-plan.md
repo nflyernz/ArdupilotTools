@@ -217,6 +217,96 @@ They do not yet establish detector semantics.
 
 ---
 
+# Current Working Observations
+
+The following observations are supported by the available evidence
+(log_17.bin and log_26.bin) but are not yet considered validated
+ArduPlane semantics.
+
+These observations guide investigation only.
+
+## LAND.stage
+
+Current working interpretation:
+
+Stage 0
+    Idle / landing controller inactive or reset.
+
+Stage 1
+    Beginning of AUTO landing approach.
+
+Stage 2
+    Transition into a later landing phase, possibly pre-flare.
+
+Stage 3
+    Occurs simultaneously with the firmware Flare message in all
+    currently examined ArduPlane 4.7 logs.
+
+These interpretations remain hypotheses until verified against
+additional flights and, where necessary, ArduPlane source code.
+
+## Flare Message
+
+The firmware Flare message appears to coincide with LAND.stage 3.
+
+However the message may indicate the controller's flare decision
+rather than the physical beginning of aircraft pitch-up.
+
+Future validation should compare:
+
+- LAND.stage
+- flare MSG
+- pitch response
+- sink-rate change
+- throttle response
+
+before assigning detector semantics.
+
+## Pre-flare
+
+The available evidence suggests LAND.stage 2 may represent the
+pre-flare phase.
+
+This remains unverified.
+
+Future flights should vary:
+
+- LAND_PF_ALT
+- LAND_PF_SEC
+- LAND_PF_ARSPD
+
+independently to determine which parameter influences the Stage 2
+transition.
+
+## Rangefinder
+
+Rangefinder engagement has not yet proved suitable as a landing
+boundary.
+
+Observed behaviour depends on RNGFND1_MAX and sensor acquisition.
+
+Future testing will compare identical landing profiles using
+different RNGFND1_MAX values.
+
+Rangefinder engagement should therefore not currently be treated as
+touchdown evidence.
+
+## LAND.fh
+
+Forum discussion indicates LAND.fh represents the flare timing
+height.
+
+Its relationship to LAND.stage transitions should continue to be
+recorded.
+
+## Version Scope
+
+Current observations apply only to ArduPlane 4.7.x.
+
+Older firmware (for example 4.6.2) has already shown different LAND
+behaviour and should not be assumed compatible.
+---
+
 # New Landing Evidence Log
 
 A new landing log is available for v0.4 validation.
@@ -1162,10 +1252,20 @@ v0.4 is complete when all of the following are true:
 
 # v0.4 Status
 
-**v0.4 — Landing Detection: PLANNED**
+v0.4 — Landing Detection: IN PROGRESS
 
-The first task is:
+Completed
 
-**Commit 1 — Landing Evidence Harness**
+✓ Evidence harness
+✓ LandingAttempt extraction
+✓ Unified event timeline
+✓ LAND.stage extraction
+✓ Multiple landing-attempt identification
+
+Current focus
+
+• Validate LAND.stage semantics
+• Validate landing boundaries
+• Investigate landing completion state
 
 The detector itself must not be implemented until the available AUTO-landing evidence, including the new multiple-go-around log, different glide slopes, apparently inconsistent flare behaviour, and the Yaapu landing-completion observation, has been examined and documented.

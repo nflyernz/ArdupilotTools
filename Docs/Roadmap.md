@@ -569,6 +569,25 @@ These observations are validation evidence only. Final detector rules remain par
 
 ---
 
+### Future Enhancement: Per-Flight Landing Parameters
+
+The current framework associates a companion `.params` file with each log and assumes those values apply to all flights contained within that log.
+
+This is sufficient for the initial landing analysis framework because parameter changes are typically made between flying sessions.
+
+However, development and tuning flights may deliberately change landing parameters between flights within a single log (for example `RNGFND1_MAX`, `LAND_FLARE_ALT`, or `LAND_PF_ALT`). In these cases the companion `.params` file no longer accurately represents every flight.
+
+A future enhancement should reconstruct the active parameter set for each `FlightWindow` using in-log `PARM` messages.
+
+Until this is implemented:
+
+- The companion `.params` file is treated as a log-level parameter snapshot.
+- Reports should clearly indicate the parameter source.
+- Landing analysis should not assume parameter values remained constant throughout the log.
+- Comparative tuning flights are best recorded as separate logs whenever practical.
+
+This enhancement is deferred until parameter-dependent landing analysis requires per-flight parameter reconstruction.
+
 # v0.5 — Landing Analysis
 
 ## Objective

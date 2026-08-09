@@ -893,3 +893,15 @@ Before v0.4 is complete, validation should establish:
 
 Until these items are validated, AUTO-landing boundary semantics remain **IN PROGRESS**.
 
+### Supported Firmware
+
+The initial release targets ArduPlane 4.7.x.
+
+Firmware event messages and landing state transitions are
+treated as part of the analysis API. Earlier firmware
+versions (e.g. 4.6.x) are not regression targets and may
+produce incomplete landing analysis.
+
+Support for additional firmware versions may be added in a
+future release if there is sufficient demand.
+
