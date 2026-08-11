@@ -632,28 +632,98 @@ The planned compatibility rule is:
 A pre-4.7 log may not contain a usable `VER` record. That case must be handled
 explicitly rather than guessed.
 
-This version gate is a future v0.4/v0.5 compatibility task, not a reason to
-change current 4.7 event logic.
+The v0.4 implementation now accepts only ArduPlane 4.7.x. Unsupported
+firmware is rejected before parameters, flight windows or segments are built,
+and the diagnostic harness reports unsupported logs as skipped rather than
+crashing.
 
 ---
 
-# v0.4 Validation / Current Next Steps
+# v0.4 Validation / Current Status
 
-The next flight is expected to provide useful evidence for the landing problem and
-may also clarify `LAND.stage` behaviour.
+The v0.4 landing-window implementation has now been validated against four
+ArduPlane 4.7 regression logs.
 
-Before that flight:
+## Completed v0.4 Implementation
 
-1. Complete source-informed LAND event semantics.
-2. Review the four existing 4.7 logs using the confirmed source definitions.
-3. Keep rangefinder independent from landing-window detection.
-4. Add any required landing evidence to the event model.
-5. Do not add tuning recommendations to the analyzer.
-6. Keep development harnesses as validation tools; later analysis and GUI work
-   should consume the underlying framework rather than turn the harnesses into
-   permanent product interfaces.
+- [x] Detect landing-window starts from `LAND.stage == 1`
+- [x] Require AUTO mode at the landing-window start
+- [x] Support multiple landing windows within a continuous `FlightWindow`
+- [x] Bound aborted/go-around attempts instead of silently discarding them
+- [x] Evaluate MSG, MODE, GPS persistence and flight-window-end termination
+      independently of GPS sample timing
+- [x] Select the earliest applicable termination boundary
+- [x] Use GPS groundspeed below 3 m/s with 2 seconds persistence as the
+      validated GPS termination rule
+- [x] Keep `LAND.stage == 0` non-terminating
+- [x] Restrict v0.4 firmware acceptance to ArduPlane 4.7.x
+- [x] Handle unsupported firmware gracefully in the diagnostic harness
+- [x] Keep the human-readable unified event timeline as a validation tool
+- [x] Assert that all four regression logs are processed
+- [x] Assert six validated flights and ten validated landing cases
+- [x] Assert that no regression logs are skipped
+- [x] Run compile and event-timeline regression successfully
 
----
+Validated regression result:
+
+```text
+Regression logs  : 4 / 4
+Validated flights : 6
+Validated cases   : 10
+Skipped logs      : 0
+
+STATUS : PASS
+```
+
+## v0.4 Deferred Hardening
+
+The following items were identified during the final read-only sanity review.
+They are deliberately deferred rather than changing the validated v0.4
+implementation.
+
+- [ ] Add an explicit termination-reason field to `LandingWindow`, if the
+      eventual analysis/result contract requires reason-bearing windows.
+- [ ] Define handling for a new landing attempt that starts before the previous
+      attempt has received an explicit termination event.
+- [ ] Remove the no-op `LAND.stage == 0` scan from the detector.
+- [ ] Remove unused imports from `landing_window_detector.py`.
+- [ ] Consolidate duplicated LAND, MSG and MODE interpretation between the
+      detector, event extractor and landing-attempt extractor.
+- [ ] Add an independent diagnostic check proving the full GPS persistence
+      interval rather than relying only on the detector's boundary.
+- [ ] Resolve working-directory-dependent configuration paths if command-line
+      execution from outside the repository root becomes a requirement.
+
+These are cleanup, architecture or future-analysis concerns and are not required
+to invalidate the current v0.4 regression result.
+
+## v0.4 Analyse Deliverable
+
+The unified event timeline is retained as a validation and diagnostic tool.
+The eventual Analyse deliverable should consume the structured landing-window
+and event data rather than the development harness directly.
+
+- [ ] Add **Landing Analysis** to the Analyse menu.
+- [ ] Present a structured landing-attempt timeline for each flight.
+- [ ] Show landing-window start and end times.
+- [ ] Show landing outcome: completed, aborted/go-around, disarmed, or unresolved.
+- [ ] Show landing-window termination reason: GPS groundspeed, disarm, mode change,
+      abort, or flight-window end.
+- [ ] Show `LAND.stage` transitions alongside the landing timeline.
+- [ ] Show key landing events including rangefinder engagement, flare, and
+      landing aborts.
+- [ ] Provide timestamps and measurements so each detected landing can be
+      independently validated against the flight log.
+- [ ] Use structured landing-window data as the foundation for progressively
+      richer landing analysis in future versions.
+
+## v0.4 Cleanup
+
+- [ ] Audit module usage and identify genuinely unused modules before renaming
+      or removing anything.
+- [ ] Rename modules to more descriptive names where their current names obscure
+      their purpose.
+- [ ] Re-run the full regression suite after module cleanup.
 
 # ArduPilot Landing Logic — Source Validation ✅
 
@@ -1080,11 +1150,13 @@ Analysis
 
 ## Current
 
-- [ ] Real landing attempts are detected
-- [ ] Unified LAND-stage events use source-defined names
-- [ ] Landing attempt detection rules are validated across representative logs
-- [ ] Firmware compatibility gate is implemented
+- [x] Real landing-window attempts are detected
+- [x] Landing attempt detection rules are validated across four representative
+      ArduPlane 4.7 logs
+- [x] Firmware compatibility gate is implemented for ArduPlane 4.7.x
+- [x] Unified event timeline provides validated LAND-stage, MSG and MODE evidence
 - [ ] Landing metrics are implemented
+- [ ] Analyse-menu landing deliverable is implemented
 
 ## Later
 

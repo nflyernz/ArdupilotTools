@@ -49,9 +49,9 @@ class FlightReader:
                 f"unsupported firmware: {text}"
             )
 
-        if (version["major"], version["minor"]) < (4, 7):
+        if version["major"] != 4 or version["minor"] != 7:
             raise UnsupportedFirmwareError(
-                f"{text}; v0.4 requires ArduPlane 4.7.x or later"
+                f"{text}; v0.4 requires ArduPlane 4.7.x"
             )
 
     def _read_messages(self):
