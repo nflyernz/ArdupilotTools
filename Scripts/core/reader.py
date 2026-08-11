@@ -10,24 +10,23 @@ from .segmentation import FlightSegmenter
 from .flight_window_detector import FlightWindowDetector
 
 
+class UnsupportedFirmwareError(ValueError):
+    """Log firmware is not supported by this analysis."""
+
+
 class FlightReader:
 
     def __init__(self, filename):
-
         self.filename = Path(filename)
         self.config = Config("Config/landing.yaml")
 
     def read(self):
-
         flight = FlightLog()
 
         flight.messages = self._read_messages()
 
+        self._validate_firmware(flight)
         self._read_parameters(flight)
-
-        #
-        # Build derived model objects
-        #
         self._build_flights(flight)
         self._build_segments(flight)
 
@@ -35,16 +34,33 @@ class FlightReader:
 
         return flight
 
+    def _validate_firmware(self, flight):
+        version = flight.firmware_version()
+
+        if version is None:
+            raise UnsupportedFirmwareError(
+                "no usable ArduPilot VER message found"
+            )
+
+        text = version["version"]
+
+        if not text.startswith("ArduPlane "):
+            raise UnsupportedFirmwareError(
+                f"unsupported firmware: {text}"
+            )
+
+        if (version["major"], version["minor"]) < (4, 7):
+            raise UnsupportedFirmwareError(
+                f"{text}; v0.4 requires ArduPlane 4.7.x or later"
+            )
+
     def _read_messages(self):
-
         wanted = set(self.config.get("messages"))
-
-        rows = {m: [] for m in wanted}
+        rows = {name: [] for name in wanted}
 
         log = mavutil.mavlink_connection(str(self.filename))
 
         while True:
-
             msg = log.recv_match()
 
             if msg is None:
@@ -52,54 +68,40 @@ class FlightReader:
 
             name = msg.get_type()
 
-            if name not in wanted:
-                continue
-
-            rows[name].append(msg.to_dict())
+            if name in wanted:
+                rows[name].append(msg.to_dict())
 
         messages = {}
 
         for name, records in rows.items():
-
-            if records:
-                messages[name] = pd.DataFrame(records)
-            else:
-                messages[name] = pd.DataFrame()
+            messages[name] = (
+                pd.DataFrame(records)
+                if records
+                else pd.DataFrame()
+            )
 
         return messages
 
     def _read_parameters(self, flight):
-
         paramfile = Path("Params") / (
             self.filename.stem + ".params"
         )
 
-        #
-        # Always record the expected parameter file.
-        #
         flight.metadata["parameter_file"] = str(paramfile)
-        flight.metadata["parameters_loaded"] = (
-            paramfile.exists()
-        )
+        flight.metadata["parameters_loaded"] = paramfile.exists()
 
         if not paramfile.exists():
             return
 
-        reader = ParameterReader(
+        flight.parameters = ParameterReader(
             paramfile,
             self.config,
-        )
-
-        flight.parameters = reader.read()
+        ).read()
 
     def _build_flights(self, flight):
-
-        flight.flights = FlightWindowDetector().detect(
-            flight
-        )
+        flight.flights = FlightWindowDetector().detect(flight)
 
     def _build_segments(self, flight):
-
-        segmenter = FlightSegmenter(flight)
-
-        flight.segments = segmenter.mode_segments()
+        flight.segments = FlightSegmenter(
+            flight
+        ).mode_segments()

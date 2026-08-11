@@ -1119,3 +1119,24 @@ inventing thresholds from observed logs.
 - Keep rangefinder events independent of landing-window detection.
 - Investigate the four existing 4.7 logs using the confirmed source semantics.
 - Add version compatibility handling before accepting pre-4.7 logs.
+
+### Analyse — Landing Analysis Deliverable
+
+- [ ] Add **Landing Analysis** to the Analyse menu.
+- [ ] Present a structured landing-attempt timeline for each flight.
+- [ ] Show landing-window start and end times.
+- [ ] Show landing outcome:
+  - completed landing
+  - aborted / go-around
+  - disarmed
+  - unresolved
+- [ ] Show landing-window termination reason:
+  - GPS groundspeed below configured threshold
+  - disarm
+  - mode change
+  - landing abort
+  - flight-window end
+- [ ] Show ArduPilot `LAND.stage` transitions alongside the landing timeline.
+- [ ] Show key landing events including rangefinder engagement, flare and landing aborts.
+- [ ] Provide the underlying timestamps and measurements so each detected landing can be independently validated against the flight log.
+- [ ] Use the structured landing-window data as the foundation for progressively richer landing analysis in future versions.
