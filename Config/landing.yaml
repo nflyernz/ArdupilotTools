@@ -7,6 +7,19 @@ analysis:
   name: Fixed Wing Landing Analysis
 
 #
+# Landing window detection
+#
+
+landing_window:
+
+  # End the landing window when GPS groundspeed remains
+  # below this value for the configured persistence time.
+  end_speed: 3.0
+
+  # Required continuous time below end_speed.
+  end_speed_seconds: 2.0
+
+#
 # MAVLink messages required
 #
 

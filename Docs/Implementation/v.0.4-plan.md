@@ -84,3 +84,22 @@ after the 4.7.x implementation has been validated.
       determined from the BIN.
 - [ ] Investigate pre-4.7 LAND.stage / landing-controller behaviour
       separately.
+      
+      
+      - [ ] Add configurable landing-window end speed, default 3.0 m/s
+- [ ] Add configurable landing-window end persistence, default 2.0 s
+- [ ] Validate GPS-only landing-window termination across the four 4.7 logs
+      
+      ## v0.4 Final Cleanup — Descriptive Module Names
+
+- [ ] Review all modules under `Scripts/core/`
+- [ ] Rename modules whose filenames do not clearly describe their purpose
+- [ ] Use descriptive names that make the module's role obvious without opening it
+- [ ] Identify and replace historical, abbreviated, or overly generic names
+- [ ] Review `model.py` in particular — replace with a name that describes what it provides
+- [ ] Update all imports and references
+- [ ] Update test/development harnesses
+- [ ] Update documentation and roadmap references
+- [ ] Run `python -m compileall -q Scripts`
+- [ ] Run the v0.4 regression tests
+- [ ] Commit the naming cleanup separately

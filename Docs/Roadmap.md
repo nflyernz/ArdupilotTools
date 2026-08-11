@@ -887,3 +887,235 @@ No source is authoritative until its behaviour has been validated against repres
 Flight 2 of `log_17.bin`, containing multiple aborted/restarted landing sequences, remains the primary current regression case.
 
 The validated evidence will define the rules used by the real `LandingWindowDetector`.
+
+## ArduPilot Landing Logic Source Validation
+
+Before adding further interpretation of `LAND.stage`, `LAND.fh`, pre-flare, or flare
+events, inspect the actual ArduPilot landing implementation used by the 4.7 series.
+
+The four 4.7 logs show behaviour that should not be interpreted purely from observed
+log values. In particular, `LAND.fh` is documented by ArduPilot as height used for
+flare timing, rather than simply height above ground, and `LAND.stage` represents
+internal landing-controller state.
+
+### Objective
+
+Use the ArduPilot source code to establish the actual meaning and transitions of:
+
+- `LAND.stage`
+- `LAND.fh`
+- `LAND.slope`
+- `LAND.slopeInit`
+- pre-flare
+- final flare
+- rangefinder altitude correction
+- `LAND_PF_ALT`
+- `LAND_PF_SEC`
+- `LAND_PF_ARSPD`
+- `LAND_FLARE_ALT`
+- `LAND_FLARE_SEC`
+
+### Version boundary
+
+Determine whether the relevant precision-autoland implementation changed at the
+4.6.3 → 4.7 boundary.
+
+The 4.7 beta release notes do not show a major precision-autoland implementation
+change during the beta series. This suggests the relevant work may have entered
+the 4.7 development cycle earlier, but this must be confirmed from the source rather
+than inferred from release notes.
+
+### Required source inspection
+
+Inspect the ArduPlane 4.7 implementation, particularly:
+
+- `AP_Landing_Slope.cpp`
+- `AP_Landing.cpp`
+- associated landing headers
+- calculation of the logged flare-height value
+- assignments to the landing stage
+- pre-flare transition logic
+- flare transition logic
+- rangefinder correction used by the landing controller
+
+Compare against 4.6.3 only where necessary to establish the version boundary.
+
+### Evidence status
+
+**Observed**
+- Four 4.7 logs contain `LAND.stage` and `LAND.fh`.
+- Stage transitions and `fh` values are not always intuitive from the logs alone.
+- Pre-flare and flare are distinct controller states.
+- Rangefinder use occurs independently of the landing-window definition.
+
+**Validated**
+- `LAND.fh` is logged by ArduPilot as height used for flare timing.
+- Precision autoland includes explicit pre-flare parameters.
+
+**To validate**
+- Exact meaning of each `LAND.stage` value.
+- Exact calculation and meaning of `LAND.fh`.
+- Conditions causing stage 1 → stage 2 → stage 3.
+- Relationship between pre-flare parameters and `LAND.stage`.
+- Relationship between rangefinder correction and `LAND.fh`.
+- Whether any relevant implementation changed between 4.6.3 and 4.7.
+
+### Outcome
+
+Use the source-derived behaviour to determine what the analyzer should call and
+extract in a later landing-analysis milestone. Do not add inferred landing-state
+semantics to the analyzer until this validation is complete.
+
+
+## ArduPilot Landing Logic — Source Validation
+
+**Status: Source inspected — semantics confirmed**
+
+Before adding further interpretation of `LAND.stage`, `LAND.fh`, pre-flare, or
+flare events, the ArduPilot landing implementation was inspected directly.
+
+The source confirms that these values should not be reverse-engineered from flight
+logs.
+
+### LAND.stage
+
+The landing controller defines four progress states:
+
+| Stage | ArduPilot meaning |
+|---:|---|
+| 0 | NORMAL |
+| 1 | APPROACH |
+| 2 | PREFLARE |
+| 3 | FINAL |
+
+The logger records `stage` as progress through the landing sequence.
+
+The transitions are implemented explicitly in the landing controller.
+
+### LAND.fh
+
+`LAND.fh` is logged as:
+
+> Height for flare timing
+
+It is the `height` value supplied to the landing controller for its flare/pre-flare
+decisions. It is **not simply rangefinder altitude** and should not be interpreted
+as generic height above ground.
+
+The height is derived from the landing-height calculation and is subsequently
+terrain-corrected before being supplied to the landing controller.
+
+The analyzer should therefore retain the raw `fh` value and describe it as
+**flare-timing height**, rather than renaming or interpreting it as AGL.
+
+### Pre-flare
+
+The transition from APPROACH to PREFLARE is explicitly controlled by:
+
+- `LAND_PF_ARSPD`
+- `LAND_PF_ALT`
+- `LAND_PF_SEC`
+
+`LAND_PF_ARSPD > 0` enables the pre-flare stage.
+
+Pre-flare occurs when either:
+
+- height reaches `LAND_PF_ALT`, or
+- height reaches the equivalent of `sink_rate × LAND_PF_SEC`.
+
+On entering PREFLARE, the landing controller targets `LAND_PF_ARSPD`.
+
+For the current aircraft:
+
+    LAND_PF_ALT   = 4 m
+    LAND_PF_SEC   = 7 s
+    LAND_PF_ARSPD = 9 m/s
+
+Therefore pre-flare is not simply "4 m above ground"; it can also be triggered by
+the predicted time represented by the current sink rate.
+
+### Final flare
+
+The transition to FINAL is controlled primarily by:
+
+- `LAND_FLARE_ALT`
+- `LAND_FLARE_SEC`
+
+The altitude condition is:
+
+    height <= LAND_FLARE_ALT
+
+The time-based condition is based on:
+
+    height <= sink_rate × LAND_FLARE_SEC
+
+The time-based flare condition also requires sufficient progress along the landing
+path, preventing an excessively large flare setting from causing an early flare
+while still establishing the approach.
+
+There are additional final-stage conditions associated with passing the landing
+point and rangefinder availability.
+
+### Rangefinder
+
+Rangefinder data has two distinct effects relevant to landing analysis:
+
+1. It can affect the height used for landing flare/pre-flare timing.
+2. It can affect landing-slope correction.
+
+It is therefore an **independent sensor/event source**, not a prerequisite for
+defining the landing window.
+
+This remains important because rangefinder use is also relevant during automatic
+takeoff.
+
+### Version investigation
+
+The relevant landing logic was already present in the 4.6.3 timeframe.
+
+The 4.6.3 release notes contain landing/rangefinder fixes, including fixes for:
+
+- landing flare when using a rangefinder
+- landing slope when a rangefinder exists but is not in use
+
+The 4.7 beta release notes do not identify a subsequent change to this landing
+state-machine logic.
+
+For the four 4.7 logs currently being analysed, the relevant landing-controller
+implementation can therefore be treated as consistent for our purposes.
+
+This does **not** require us to prove byte-for-byte identity between every 4.6.3
+and 4.7 source file.
+
+### Consequences for the analyzer
+
+We no longer need to infer the meaning of `LAND.stage` from flight data.
+
+The analyzer can explicitly expose:
+
+    0 = NORMAL
+    1 = APPROACH
+    2 = PREFLARE
+    3 = FINAL
+
+The raw landing fields should remain available:
+
+    stage
+    fh
+    slope
+    slopeInit
+    altO
+
+`fh` should be presented as **flare-timing height**.
+
+Further landing analysis should use the source-defined state transitions rather than
+inventing thresholds from observed logs.
+
+### Future work
+
+- Use the confirmed stage meanings in the LAND event extractor.
+- Preserve raw `fh` for diagnostic analysis.
+- Correlate PREFLARE and FINAL transitions with the configured landing parameters.
+- Keep rangefinder events independent of landing-window detection.
+- Investigate the four existing 4.7 logs using the confirmed source semantics.
+- Add version compatibility handling before accepting pre-4.7 logs.
