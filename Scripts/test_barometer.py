@@ -1,4 +1,4 @@
-from core.reader import FlightReader
+from core.log_reader import FlightReader
 from core.barometer import BarometerProcessor
 from core.time import format_time_us
 

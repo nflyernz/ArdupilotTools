@@ -11,7 +11,7 @@ start and end.
 
 from dataclasses import dataclass
 
-from core.model import FlightLog
+from core.flight_data import FlightLog
 from core.flight_window import FlightWindow
 from core.scope import validate_flight_window
 

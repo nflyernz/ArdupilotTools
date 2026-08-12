@@ -1,4 +1,4 @@
-from core.reader import FlightReader
+from core.log_reader import FlightReader
 from core.landing_window_detector import LandingWindowDetector
 from core.landing_attempt_extractor import LandingAttemptExtractor
 from core.time import format_time

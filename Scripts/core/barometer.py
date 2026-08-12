@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from .flight_window import FlightWindow
-from .model import FlightLog
+from .flight_data import FlightLog
 from .scope import (
     filter_telemetry,
     validate_child_window,

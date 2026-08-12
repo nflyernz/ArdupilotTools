@@ -1,5 +1,5 @@
 from analyses.landing import LandingAnalysis
-from core.reader import FlightReader
+from core.log_reader import FlightReader
 
 
 flight_log = FlightReader(

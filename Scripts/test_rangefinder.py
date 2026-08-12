@@ -1,4 +1,4 @@
-from core.reader import FlightReader
+from core.log_reader import FlightReader
 from core.config import Config
 from core.landing_window_detector import LandingWindowDetector
 from core.rangefinder import RangefinderEvents

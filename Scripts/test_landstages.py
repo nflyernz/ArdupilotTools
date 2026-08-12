@@ -1,4 +1,4 @@
-from core.reader import FlightReader
+from core.log_reader import FlightReader
 from core.scope import filter_telemetry
 
 

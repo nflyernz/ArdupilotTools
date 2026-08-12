@@ -1,4 +1,4 @@
-from core.reader import FlightReader
+from core.log_reader import FlightReader
 from core.airspeed import AirspeedProcessor
 from core.time import format_time_us
 

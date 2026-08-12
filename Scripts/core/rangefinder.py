@@ -1,7 +1,7 @@
 from core.events import TimelineEvent, EventType
 from core.flight_window import FlightWindow
 from core.landing_window import LandingWindow
-from core.model import FlightLog
+from core.flight_data import FlightLog
 from core.scope import (
     filter_telemetry,
     validate_child_window,

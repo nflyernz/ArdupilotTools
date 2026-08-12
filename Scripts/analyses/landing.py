@@ -7,7 +7,7 @@ from pathlib import Path
 from analyses.result import AnalysisResult
 from core.airspeed import AirspeedProcessor
 from core.landing_window_detector import LandingWindowDetector
-from core.reader import FlightReader
+from core.log_reader import FlightReader
 from core.sensor_health_window import SensorHealthWindowDetector
 from core.time import format_time_us
 

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 from core.flight_window import FlightWindow
-from core.model import FlightLog
+from core.flight_data import FlightLog
 from core.scope import (
     filter_telemetry,
     validate_flight_window,

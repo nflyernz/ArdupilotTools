@@ -4,9 +4,9 @@ import pandas as pd
 from pymavlink import mavutil
 
 from .config import Config
-from .model import FlightLog
+from .flight_data import FlightLog
 from .params import ParameterReader
-from .segmentation import FlightSegmenter
+from .flight_segmenter import FlightSegmenter
 from .flight_window_detector import FlightWindowDetector
 
 

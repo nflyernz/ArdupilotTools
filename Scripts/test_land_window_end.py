@@ -3,7 +3,7 @@ import sys
 
 sys.path.insert(0, "Scripts")
 
-from core.reader import FlightReader
+from core.log_reader import FlightReader
 
 
 targets = {

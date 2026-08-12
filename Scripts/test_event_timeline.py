@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from core.reader import (
+from core.log_reader import (
     FlightReader,
     UnsupportedFirmwareError,
 )

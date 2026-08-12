@@ -8,7 +8,7 @@ Detection is based solely on GPS ground speed and is independent
 of flight mode, mission state or analysis type.
 """
 
-from .model import FlightLog
+from .flight_data import FlightLog
 from .flight_window import FlightWindow
 
 

@@ -1,4 +1,4 @@
-from core.reader import FlightReader
+from core.log_reader import FlightReader
 from core.sensor_health_window import SensorHealthWindowDetector
 from core.scope import filter_segments
 

@@ -1,5 +1,5 @@
 from core.events import TimelineEvent, EventType
-from core.model import FlightLog
+from core.flight_data import FlightLog
 from core.modes import mode_name
 from core.scope import filter_telemetry
 

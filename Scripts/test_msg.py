@@ -1,5 +1,5 @@
 from core.event_extractor import EventExtractor
-from core.reader import FlightReader
+from core.log_reader import FlightReader
 
 
 flight_log = FlightReader(
