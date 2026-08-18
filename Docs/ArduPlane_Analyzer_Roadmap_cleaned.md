@@ -1168,3 +1168,93 @@ Analysis
 
 
 Landing-window termination — open question: investigate whether IMU/attitude data provides useful evidence for identifying the end of a landing attempt, particularly after flare/touchdown. Compare against airspeed, GPS, altitude and LAND-stage behaviour. Do not use ARM/DISARM or rangefinder as mandatory termination criteria.
+
+## Architecture Reference — Current Analysis Flow
+
+The project architecture is based on a common decoded `FlightLog` with
+specialised processors providing different views of the same flight data.
+These processors are intentionally parallel rather than forming one linear
+processing chain. The analysis layer combines their outputs into an
+analysis result.
+
+```text
+                     ┌─────────────────┐
+                     │    BIN LOG      │
+                     └────────┬────────┘
+                              │
+                              ▼
+                     ┌─────────────────┐
+                     │  log_reader.py  │
+                     └────────┬────────┘
+                              │
+                              ▼
+                     ┌─────────────────┐
+                     │ flight_data.py  │
+                     │   FlightLog     │
+                     └────────┬────────┘
+                              │
+          ┌───────────────────┼───────────────────┐
+          │                   │                   │
+          ▼                   ▼                   ▼
+ FlightWindowDetector   flight_segmenter   EventExtractor
+          │                   │                   │
+          ▼                   ▼                   ▼
+   FlightWindow(s)      FlightSegment(s)    Event(s)
+          │                   │                   │
+          └───────────────────┼───────────────────┘
+                              │
+                     ┌────────┴────────┐
+                     │                │
+                     ▼                ▼
+          LandingWindowDetector   other processors
+                     │
+                     ▼
+              LandingWindow(s)
+                     │
+          ┌──────────┴──────────┐
+          │                     │
+          ▼                     ▼
+    Airspeed data         Sensor health
+          │                     │
+          └──────────┬──────────┘
+                     ▼
+              analyses/landing.py
+                     │
+                     ▼
+              analyses/result.py
+                     │
+                     ▼
+                  analyse.py
+```
+
+### Architectural Principles
+
+- `log_reader.py` converts the raw ArduPilot log into the common
+  `FlightLog` representation.
+- `flight_data.py` provides the shared flight-data model.
+- `FlightWindowDetector`, `flight_segmenter`, `EventExtractor`, and
+  `LandingWindowDetector` are specialised evidence/data processors.
+- These processors operate from the common flight data and are not intended
+  to form a single mandatory processing chain.
+- `FlightWindow` identifies the bounds of an actual flight.
+- `FlightSegment` describes meaningful phases or portions of a flight.
+- `Event` provides discrete logged events and state transitions.
+- `LandingWindow` identifies a specific landing attempt within a flight.
+- Additional processors such as airspeed and sensor-health analysis provide
+  specialised measurements or evidence.
+- `analyses/landing.py` combines these independent sources into a landing
+  analysis.
+- `analyses/result.py` provides the structured analysis result.
+- `analyse.py` is the application entry point and presentation layer.
+
+### Design Rule
+
+**Processors should provide evidence; analysis modules should interpret and
+combine that evidence.**
+
+Avoid moving analysis-specific interpretation into low-level processors unless
+there is a clear reason for it to be reusable by multiple analyses.
+
+This separation is intended to allow future analyses such as TECS, cruise
+performance, RTL, power systems, and autotune to reuse the same underlying
+flight-data and evidence-processing framework.
