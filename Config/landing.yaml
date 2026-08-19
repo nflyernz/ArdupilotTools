@@ -25,6 +25,7 @@ landing_window:
 
 messages:
 
+  - BAT
   - BARO
   - GPS
   - ARSP
