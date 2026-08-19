@@ -33,10 +33,11 @@ def menu():
         print("================")
         print("1. Landing Analysis")
         print("2. Event Timeline")
-        print("3. Cruise Analysis")
-        print("4. Autotune Review")
-        print("5. Sensor Diagnostics")
-        print("6. Log Summary")
+        print("3. Battery Analysis")
+        print("4. Cruise Analysis")
+        print("5. Autotune Review")
+        print("6. Sensor Diagnostics")
+        print("7. Log Summary")
         print("0. Exit")
 
         choice = input("\nSelection: ").strip()
@@ -56,15 +57,21 @@ def menu():
             input("\nPress Enter to return to the menu...")
 
         elif choice == "3":
-            cruise_analysis()
+            from analyses.battery import BatteryAnalysisPresentation
+            analysis = BatteryAnalysisPresentation()
+            analysis.run()
+            input("\nPress Enter to return to the menu...")
 
         elif choice == "4":
-            autotune_review()
+            cruise_analysis()
 
         elif choice == "5":
-            sensor_diagnostics()
+            autotune_review()
 
         elif choice == "6":
+            sensor_diagnostics()
+
+        elif choice == "7":
             log_summary()
 
         elif choice == "0":
