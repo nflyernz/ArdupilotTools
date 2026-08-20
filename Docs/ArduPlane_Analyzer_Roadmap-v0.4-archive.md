@@ -1,3 +1,5 @@
+Archived development roadmap — retained for project history. See Docs/Roadmap.md for the current roadmap
+
 # ArduPlane Analyzer Roadmap
 
 ## Vision
