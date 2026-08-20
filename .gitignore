@@ -23,3 +23,11 @@ Output/
 **/.DS_Store
 .AppleDouble
 .LSOverride
+
+# Generated analysis output
+Output/
+
+# macOS metadata
+.DS_Store
+._*
+__MACOSX/

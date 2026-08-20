@@ -371,9 +371,29 @@ Go-arounds therefore create additional landing attempts, not additional flights.
 
 The canonical `LandingWindow` model is used throughout the repository.
 
-The current landing detector provides a bounded development window.
+`LandingWindowDetector` identifies landing activity within the selected
+`FlightWindow`. A landing window may contain one or more bounded
+`LandingAttempt` objects when go-arounds or aborts occur.
 
-Real event-driven landing-attempt detection is a later analysis milestone.
+Landing attempts are derived from logged flight behaviour and firmware
+events. Their boundaries are constrained to the parent `LandingWindow`
+and `FlightWindow`.
+
+Conceptually:
+
+```text
+FlightWindow
+    │
+    └── LandingWindow
+            │
+            ├── LandingAttempt 1 ──► aborted
+            ├── LandingAttempt 2 ──► aborted
+            └── LandingAttempt 3 ──► completed
+```
+
+`LandingAttemptProcessor` converts each bounded attempt into objective
+landing evidence. It does not classify landing quality or recommend
+configuration changes.
 
 ---
 
@@ -589,7 +609,9 @@ Time formatting is a presentation concern and must not affect internal calculati
 
 # Landing Analysis
 
-Landing analysis is built in stages:
+Landing analysis operates on one selected `FlightWindow` at a time.
+
+The current architecture is:
 
 ```text
 FlightLog
@@ -597,41 +619,72 @@ FlightLog
 FlightWindow
     │
     ▼
-Sensor Validation
-    │
-    ▼
-Landing Detection
+LandingWindowDetector
     │
     ▼
 LandingWindow(s)
     │
     ▼
-Landing Analysis
+LandingAttemptExtractor
     │
     ▼
-Metrics
+LandingAttempt(s)
     │
     ▼
-Report
+LandingAttemptProcessor
+    │
+    ▼
+LandingAttemptAnalysis
+    │
+    ▼
+Presentation
 ```
 
-The landing module will measure objective behaviour including:
+`LandingAnalysis` is the workflow and presentation layer. It owns the
+landing configuration for the analysis run and supplies that configuration
+to the reader, detectors, and processors that require it.
 
-- geometry
-- airspeed
-- pitch
-- roll
-- throttle
-- TECS behaviour
-- flare
-- touchdown
-- rangefinder evidence
+The landing pipeline currently reports objective evidence including:
+
+- landing-window timing and duration
+- approach altitude
+- glide slope
+- preflare timing and height
+- airspeed and GPS groundspeed at preflare
+- sink rate at preflare
+- flare timing and flare-timing height
+- airspeed and GPS groundspeed at flare
+- sink rate at flare
+- flare distance to the mission LAND target when a valid target is available
+- rangefinder acquisition evidence
+- GPS-stop timing when detected
+- flare-to-stop elapsed time
+- final distance from the mission LAND target when available
+- attempt termination reason
+
+A mission LAND target is used only when the applicable `CMD` records form
+a complete, consecutive mission snapshot and contain exactly one usable
+`MAV_CMD_NAV_LAND` command. Missing, incomplete, invalid, or ambiguous
+mission evidence produces an unavailable measurement rather than a guessed
+target.
+
+Optional telemetry remains non-fatal. For example, unavailable airspeed,
+rangefinder, flare, GPS-stop, or target evidence is represented as
+unavailable where appropriate rather than causing the landing analysis to
+invent a value.
+
+Sensor-health analysis is a separate concern. It may use the same
+`FlightLog` and parent `FlightWindow`, but it is not a prerequisite stage
+inside the landing-attempt measurement pipeline.
+
+Additional landing metrics such as pitch tracking, roll behaviour,
+throttle behaviour, TECS behaviour, and richer touchdown analysis are not
+part of the current landing report. They may be added later when each
+metric has a defined engineering purpose and validated evidence model.
 
 Landing analysis describes what occurred.
 
 It does not prescribe parameter changes.
-
----
 
 # Report Structure
 

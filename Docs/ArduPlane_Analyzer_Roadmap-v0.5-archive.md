@@ -1,4 +1,7 @@
-Archived development roadmap — retained for project history. See Docs/Roadmap.md for the current roadmap
+> **Archived roadmap**
+>
+> Retained as a historical development record.
+> See `ArduPlane_Analyzer_Roadmap.md` for the current roadmap.
 
 # ArduPlane Analyzer Roadmap
 

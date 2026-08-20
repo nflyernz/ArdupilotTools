@@ -1,3 +1,7 @@
+> **Archived roadmap**
+>
+> Retained as a historical development record.
+
 # v0.4 — Landing Detection Implementation Plan
 
 ## Purpose

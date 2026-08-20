@@ -1,3 +1,10 @@
+
+> This document records validation work accumulated during v0.1–v0.5.
+> Some sections describe the implementation state at the time the validation
+> was performed. For the current architecture and roadmap, see
+> `Architecture.md` and `ArduPlane_Analyzer_Roadmap.md`.
+
+
 # Validation
 
 This document records observations used to validate ArduPlane Analyzer against known flight logs and external log-viewing tools.
