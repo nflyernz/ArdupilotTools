@@ -47,7 +47,9 @@ class LandingAnalysis:
         self,
         config=None,
     ):
-        self.config = config or Config("Config/landing.yaml")
+        self.config = config or Config(
+            "Config/landing.yaml"
+        )
 
     def analyse(
         self,
@@ -62,7 +64,9 @@ class LandingAnalysis:
         """
 
         landing_windows = (
-            LandingWindowDetector(self.config).detect(
+            LandingWindowDetector(
+                self.config
+            ).detect(
                 flight_log,
                 flight_window,
             )
@@ -138,7 +142,9 @@ class LandingAnalysis:
 
         if not analyses:
             print()
-            print("No landing attempts detected.")
+            print(
+                "No landing attempts detected."
+            )
             return
 
         for (
@@ -173,7 +179,7 @@ class LandingAnalysis:
         print("-" * 70)
 
         self._row(
-            "Window",
+            "Landing window",
             (
                 f"{format_time_us(attempt.start_us)} -> "
                 f"{format_time_us(attempt.end_us)}"
@@ -181,10 +187,10 @@ class LandingAnalysis:
         )
 
         self._row(
-            "Duration",
+            "Landing duration",
             self._value(
                 analysis.duration_s,
-                2,
+                1,
                 " s",
             ),
         )
@@ -232,7 +238,7 @@ class LandingAnalysis:
             "Preflare height",
             self._value(
                 analysis.preflare_altitude,
-                2,
+                1,
                 " m",
             ),
         )
@@ -241,7 +247,7 @@ class LandingAnalysis:
             "Airspeed",
             self._value(
                 analysis.preflare_airspeed,
-                2,
+                1,
                 " m/s",
             ),
         )
@@ -250,7 +256,7 @@ class LandingAnalysis:
             "GPS groundspeed",
             self._value(
                 analysis.preflare_gps_speed,
-                2,
+                1,
                 " m/s",
             ),
         )
@@ -259,7 +265,7 @@ class LandingAnalysis:
             "Sink rate",
             self._value(
                 analysis.preflare_sink_rate,
-                2,
+                1,
                 " m/s",
             ),
         )
@@ -282,7 +288,7 @@ class LandingAnalysis:
             "Flare-timing height",
             self._value(
                 analysis.flare_altitude,
-                2,
+                1,
                 " m",
             ),
         )
@@ -291,7 +297,7 @@ class LandingAnalysis:
             "Sink rate",
             self._value(
                 analysis.flare_sink_rate,
-                2,
+                1,
                 " m/s",
             ),
         )
@@ -300,7 +306,7 @@ class LandingAnalysis:
             "Airspeed",
             self._value(
                 analysis.flare_airspeed,
-                2,
+                1,
                 " m/s",
             ),
         )
@@ -309,7 +315,7 @@ class LandingAnalysis:
             "GPS groundspeed",
             self._value(
                 analysis.flare_gps_speed,
-                2,
+                1,
                 " m/s",
             ),
         )
@@ -350,7 +356,7 @@ class LandingAnalysis:
                 self._value(
                     analysis
                     .rangefinder_first_nonzero_distance,
-                    2,
+                    1,
                     " m",
                 ),
             )
@@ -368,7 +374,7 @@ class LandingAnalysis:
                 self._value(
                     analysis
                     .rangefinder_first_in_range_distance,
-                    2,
+                    1,
                     " m",
                 ),
             )
@@ -386,9 +392,14 @@ class LandingAnalysis:
         #
 
         print()
-        print("LANDING / ROLLOUT COMPLETION")
+        print(
+            "LANDING / ROLLOUT COMPLETION"
+        )
 
-        if analysis.gps_stop_time_us is not None:
+        if (
+            analysis.gps_stop_time_us
+            is not None
+        ):
 
             self._row(
                 "GPS stop",
@@ -401,7 +412,7 @@ class LandingAnalysis:
                 "Flare -> stop",
                 self._value(
                     analysis.flare_to_gps_stop_s,
-                    2,
+                    1,
                     " s",
                 ),
             )
@@ -520,17 +531,23 @@ class LandingAnalysis:
 
         self._row(
             "Logs",
-            str(len(logs)),
+            str(
+                len(logs)
+            ),
         )
 
         self._row(
             "Flight results",
-            str(len(results)),
+            str(
+                len(results)
+            ),
         )
 
         self._row(
             "Framework errors",
-            str(framework_errors),
+            str(
+                framework_errors
+            ),
         )
 
         return results
@@ -552,7 +569,9 @@ class LandingAnalysis:
 
             return []
 
-        path = Path(entry)
+        path = Path(
+            entry
+        )
 
         if not path.exists():
 
@@ -619,7 +638,7 @@ class LandingAnalysis:
     @staticmethod
     def _value(
         value,
-        decimals=2,
+        decimals=1,
         suffix="",
     ):
         """
