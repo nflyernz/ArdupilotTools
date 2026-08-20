@@ -1,14 +1,24 @@
 """
 Landing analysis workflow.
+
+User-facing presentation for the landing-analysis pipeline.
 """
 
 from pathlib import Path
 
 from analyses.result import AnalysisResult
-from core.airspeed import AirspeedProcessor
-from core.landing_window_detector import LandingWindowDetector
+
+from core.config import Config
+from core.landing_attempt_extractor import (
+    LandingAttemptExtractor,
+)
+from core.landing_attempt_processor import (
+    LandingAttemptProcessor,
+)
+from core.landing_window_detector import (
+    LandingWindowDetector,
+)
 from core.log_reader import FlightReader
-from core.sensor_health_window import SensorHealthWindowDetector
 from core.time import format_time_us
 
 
@@ -17,13 +27,23 @@ class LandingAnalysis:
     Landing analysis.
 
     Workflow:
+
         1. Select log(s)
         2. Load telemetry
-        3. Select each FlightWindow
-        4. Analyse each FlightWindow
-        5. Present the result
-        6. Generate one AnalysisResult per FlightWindow
+        3. Process each FlightWindow
+        4. Detect LandingWindows
+        5. Extract LandingAttempts
+        6. Build measured landing evidence
+        7. Present the result
+
+    Core landing-analysis code is responsible for measurement and
+    event extraction. This class handles workflow and presentation.
     """
+
+    def __init__(self):
+        self.config = Config(
+            "Config/landing.yaml"
+        )
 
     def analyse(
         self,
@@ -37,32 +57,6 @@ class LandingAnalysis:
         CLI input or presentation.
         """
 
-        #
-        # Sensor health window
-        #
-        health_window = (
-            SensorHealthWindowDetector().detect(
-                flight_log,
-                flight_window,
-            )
-        )
-
-        health = None
-
-        if health_window is not None:
-
-            airspeed = AirspeedProcessor(
-                flight_log,
-                flight_window,
-            )
-
-            health = airspeed.health(
-                health_window
-            )
-
-        #
-        # Landing windows
-        #
         landing_windows = (
             LandingWindowDetector().detect(
                 flight_log,
@@ -70,9 +64,42 @@ class LandingAnalysis:
             )
         )
 
-        #
-        # FlightReader records the source log in metadata.
-        #
+        analyses = []
+
+        extractor = LandingAttemptExtractor(
+            flight_log
+        )
+
+        for landing_index, landing_window in enumerate(
+            landing_windows,
+            start=1,
+        ):
+
+            attempts = extractor.extract(
+                landing_window
+            )
+
+            for attempt_index, attempt in enumerate(
+                attempts,
+                start=1,
+            ):
+
+                analysis = LandingAttemptProcessor(
+                    flight_log,
+                    flight_window,
+                    landing_window,
+                    attempt,
+                    self.config,
+                ).build()
+
+                analyses.append(
+                    (
+                        landing_index,
+                        attempt_index,
+                        analysis,
+                    )
+                )
+
         log_path = Path(
             flight_log.metadata["log_file"]
         )
@@ -81,138 +108,321 @@ class LandingAnalysis:
             flight_log=flight_log,
             log_path=log_path,
             flight_window=flight_window,
-            sensor_health_window=health_window,
-            sensor_health=health,
             landing_windows=landing_windows,
+            report=analyses,
         )
+
     def present_result(
         self,
         result: AnalysisResult,
         flight_index: int,
     ):
         """
-        Present one FlightWindow analysis result.
+        Present one FlightWindow landing-analysis result.
         """
 
-        flight_window = result.flight_window
+        print()
+        print("=" * 70)
+        print()
+        print(
+            f"FLIGHT {flight_index}"
+        )
+        print()
+        print("=" * 70)
+
+        analyses = result.report or []
+
+        if not analyses:
+            print()
+            print("No landing attempts detected.")
+            return
+
+        for (
+            landing_index,
+            attempt_index,
+            analysis,
+        ) in analyses:
+
+            self._present_attempt(
+                landing_index,
+                attempt_index,
+                analysis,
+            )
+
+    def _present_attempt(
+        self,
+        landing_index,
+        attempt_index,
+        analysis,
+    ):
+        """
+        Present one LandingAttemptAnalysis.
+        """
+
+        attempt = analysis.attempt
 
         print()
         print(
-            f"  Flight {flight_index}"
+            f"Landing {landing_index} "
+            f"Attempt {attempt_index}"
+        )
+        print("-" * 70)
+
+        self._row(
+            "Window",
+            (
+                f"{format_time_us(attempt.start_us)} -> "
+                f"{format_time_us(attempt.end_us)}"
+            ),
         )
 
-        print(
-            f"    Window     : "
-            f"{format_time_us(flight_window.start_us)} - "
-            f"{format_time_us(flight_window.end_us)}"
-        )
-        
-                #
-        # Parameters
-        #
-        if result.flight_log.metadata["parameters_loaded"]:
-
-            print(
-                f"    ✓ Parameters: "
-                f"{result.flight_log.metadata['parameter_file']}"
-            )
-
-        else:
-
-            print(
-                "    ⚠ Parameters: Missing"
-            )
-
-            print(
-                f"        Expected: "
-                f"{result.flight_log.metadata['parameter_file']}"
-            )
-
-            print(
-                "        Parameter-dependent features "
-                "may be unavailable."
-            )
-
-        #
-        # Sensor health
-        #
-        health_window = result.sensor_health_window
-        health = result.sensor_health
-
-        if health_window is None:
-
-            print(
-                "    ✗ Health    : "
-                "No valid sensor-health window"
-            )
-
-        else:
-
-            print(
-                f"    ✓ Health    : "
-                f"{format_time_us(health_window.start_us)} - "
-                f"{format_time_us(health_window.end_us)}"
-            )
-
-            if health is None:
-
-                print(
-                    "    ✗ Airspeed  : "
-                    "No ARSP data"
-                )
-
-            elif health.validation.valid:
-
-                print(
-                    "    ✓ Airspeed  : PASS"
-                )
-
-            else:
-
-                print(
-                    "    ✗ Airspeed  : FAIL"
-                )
-
-                grouped = {}
-
-                for failure in health.validation.failures:
-
-                    grouped.setdefault(
-                        failure.rule,
-                        [],
-                    ).append(failure)
-
-                for rule, failures in grouped.items():
-
-                    first = failures[0]
-
-                    print(
-                        f"        {rule:<12}"
-                        f"x{len(failures):<2}  "
-                        f"first "
-                        f"{format_time_us(first.start_us)}"
-                    )
-
-        #
-        # Landing windows
-        #
-        print(
-            f"    Landing windows : "
-            f"{len(result.landing_windows)}"
+        self._row(
+            "Duration",
+            self._value(
+                analysis.duration_s,
+                2,
+                " s",
+            ),
         )
 
-        for landing_index, landing_window in enumerate(
-            result.landing_windows,
-            start=1,
+        #
+        # Approach
+        #
+
+        print()
+        print("APPROACH")
+
+        self._row(
+            "Approach altitude",
+            self._value(
+                analysis.approach_start_altitude,
+                1,
+                " m",
+            ),
+        )
+
+        self._row(
+            "Glide slope",
+            self._value(
+                analysis.glide_slope_degrees,
+                1,
+                " deg",
+            ),
+        )
+
+        #
+        # Preflare
+        #
+
+        print()
+        print("PREFLARE")
+
+        self._row(
+            "Time",
+            self._time(
+                analysis.preflare_time_us
+            ),
+        )
+
+        self._row(
+            "Preflare height",
+            self._value(
+                analysis.preflare_altitude,
+                2,
+                " m",
+            ),
+        )
+
+        self._row(
+            "Airspeed",
+            self._value(
+                analysis.preflare_airspeed,
+                2,
+                " m/s",
+            ),
+        )
+
+        self._row(
+            "GPS groundspeed",
+            self._value(
+                analysis.preflare_gps_speed,
+                2,
+                " m/s",
+            ),
+        )
+
+        self._row(
+            "Sink rate",
+            self._value(
+                analysis.preflare_sink_rate,
+                2,
+                " m/s",
+            ),
+        )
+
+        #
+        # Flare
+        #
+
+        print()
+        print("FLARE")
+
+        self._row(
+            "Time",
+            self._time(
+                analysis.flare_time_us
+            ),
+        )
+
+        self._row(
+            "Flare-timing height",
+            self._value(
+                analysis.flare_altitude,
+                2,
+                " m",
+            ),
+        )
+
+        self._row(
+            "Sink rate",
+            self._value(
+                analysis.flare_sink_rate,
+                2,
+                " m/s",
+            ),
+        )
+
+        self._row(
+            "Airspeed",
+            self._value(
+                analysis.flare_airspeed,
+                2,
+                " m/s",
+            ),
+        )
+
+        self._row(
+            "GPS groundspeed",
+            self._value(
+                analysis.flare_gps_speed,
+                2,
+                " m/s",
+            ),
+        )
+
+        self._row(
+            "Flare distance to target",
+            self._value(
+                analysis.flare_distance,
+                1,
+                " m",
+            ),
+        )
+
+        #
+        # Rangefinder
+        #
+        # Rangefinder is optional. Only display this section when
+        # rangefinder evidence exists for the attempt.
+        #
+
+        if self._has_rangefinder_evidence(
+            analysis
         ):
 
-            print(
-                f"      {landing_index}: "
-                f"{format_time_us(landing_window.start_us)} - "
-                f"{format_time_us(landing_window.end_us)}"
+            print()
+            print("RANGEFINDER")
+
+            self._row(
+                "First non-zero",
+                self._time(
+                    analysis
+                    .rangefinder_first_nonzero_time_us
+                ),
             )
 
+            self._row(
+                "First distance",
+                self._value(
+                    analysis
+                    .rangefinder_first_nonzero_distance,
+                    2,
+                    " m",
+                ),
+            )
+
+            self._row(
+                "First in range",
+                self._time(
+                    analysis
+                    .rangefinder_first_in_range_time_us
+                ),
+            )
+
+            self._row(
+                "In-range distance",
+                self._value(
+                    analysis
+                    .rangefinder_first_in_range_distance,
+                    2,
+                    " m",
+                ),
+            )
+
+            self._row(
+                "Continuous from",
+                self._time(
+                    analysis
+                    .rangefinder_continuous_time_us
+                ),
+            )
+
+        #
+        # Landing / rollout completion
+        #
+
+        print()
+        print("LANDING / ROLLOUT COMPLETION")
+
+        if analysis.gps_stop_time_us is not None:
+
+            self._row(
+                "GPS stop",
+                self._time(
+                    analysis.gps_stop_time_us
+                ),
+            )
+
+            self._row(
+                "Flare -> stop",
+                self._value(
+                    analysis.flare_to_gps_stop_s,
+                    2,
+                    " s",
+                ),
+            )
+
+            self._row(
+                "Distance from target",
+                self._value(
+                    analysis
+                    .landing_end_target_distance_m,
+                    1,
+                    " m",
+                ),
+            )
+
+        self._row(
+            "End reason",
+            self._end_reason(
+                analysis.end_reason
+            ),
+        )
+
     def run(self):
+        """
+        Run landing analysis from the CLI menu.
+        """
 
         logs = self.select_logs()
 
@@ -222,15 +432,21 @@ class LandingAnalysis:
         results = []
         framework_errors = 0
 
-        print("\nLanding Analysis")
-        print("----------------")
-        print(f"Found {len(logs)} log(s)\n")
+        print()
+        print("Landing Analysis")
+        print("=" * 70)
+
+        print()
+        print(
+            f"Found {len(logs)} log(s)"
+        )
 
         for log_index, log_path in enumerate(
             logs,
             start=1,
         ):
 
+            print()
             print(
                 f"[{log_index:>3}/{len(logs)}] "
                 f"{log_path.name}"
@@ -243,17 +459,21 @@ class LandingAnalysis:
                 )
 
                 print(
-                    f"  ✓ Loaded     : "
-                    f"{len(flight_log.flights)} flight(s)"
+                    f"Loaded: "
+                    f"{len(flight_log.flights)} "
+                    f"flight(s)"
                 )
 
                 if not flight_log.flights:
-
-                    print("  ✗ No flights detected")
-                    print()
+                    print(
+                        "No flights detected."
+                    )
                     continue
 
-                for flight_index, flight_window in enumerate(
+                for (
+                    flight_index,
+                    flight_window,
+                ) in enumerate(
                     flight_log.flights,
                     start=1,
                 ):
@@ -263,7 +483,9 @@ class LandingAnalysis:
                         flight_window,
                     )
 
-                    results.append(result)
+                    results.append(
+                        result
+                    )
 
                     self.present_result(
                         result,
@@ -272,20 +494,39 @@ class LandingAnalysis:
 
             except Exception as ex:
 
-                print(f"  ✗ {ex}")
+                print(
+                    f"Analysis error: {ex}"
+                )
+
                 framework_errors += 1
 
-            print()
+        print()
+        print("=" * 70)
+        print()
+        print("SUMMARY")
+        print()
 
-        print("Summary")
-        print("-------")
-        print(f"Logs            : {len(logs)}")
-        print(f"Flight Results  : {len(results)}")
-        print(f"Framework Errors: {framework_errors}")
+        self._row(
+            "Logs",
+            str(len(logs)),
+        )
+
+        self._row(
+            "Flight results",
+            str(len(results)),
+        )
+
+        self._row(
+            "Framework errors",
+            str(framework_errors),
+        )
 
         return results
 
     def select_logs(self):
+        """
+        Select one BIN log or all BIN logs in a directory.
+        """
 
         entry = input(
             "\nLog file or directory: "
@@ -293,19 +534,27 @@ class LandingAnalysis:
 
         if not entry:
 
-            print("No log selected.")
+            print(
+                "No log selected."
+            )
+
             return []
 
         path = Path(entry)
 
         if not path.exists():
 
-            print("Path not found.")
+            print(
+                "Path not found."
+            )
+
             return []
 
         if path.is_file():
 
-            return [path]
+            return [
+                path
+            ]
 
         logs = sorted(
             path.glob("*.BIN")
@@ -319,7 +568,10 @@ class LandingAnalysis:
 
         if not logs:
 
-            print("No log files found.")
+            print(
+                "No log files found."
+            )
+
             return []
 
         return logs
@@ -328,9 +580,110 @@ class LandingAnalysis:
         self,
         log_path,
     ):
+        """
+        Load one ArduPilot BIN log.
+        """
 
         reader = FlightReader(
             log_path
         )
 
         return reader.read()
+
+    @staticmethod
+    def _row(
+        label,
+        value,
+    ):
+        """
+        Print one aligned report row.
+        """
+
+        print(
+            f"{label:<28}{value}"
+        )
+
+    @staticmethod
+    def _value(
+        value,
+        decimals=2,
+        suffix="",
+    ):
+        """
+        Format an optional numeric value.
+        """
+
+        if value is None:
+            return "Unavailable"
+
+        return (
+            f"{value:.{decimals}f}"
+            f"{suffix}"
+        )
+
+    @staticmethod
+    def _time(
+        time_us,
+    ):
+        """
+        Format an optional TimeUS value.
+        """
+
+        if time_us is None:
+            return "Unavailable"
+
+        return format_time_us(
+            time_us
+        )
+
+    @staticmethod
+    def _has_rangefinder_evidence(
+        analysis,
+    ):
+        """
+        True when the attempt contains rangefinder evidence.
+
+        Rangefinder is an optional sensor.
+        """
+
+        return any(
+            value is not None
+            for value in (
+                analysis
+                .rangefinder_first_nonzero_time_us,
+
+                analysis
+                .rangefinder_first_nonzero_distance,
+
+                analysis
+                .rangefinder_first_in_range_time_us,
+
+                analysis
+                .rangefinder_first_in_range_distance,
+
+                analysis
+                .rangefinder_continuous_time_us,
+            )
+        )
+
+    @staticmethod
+    def _end_reason(
+        reason,
+    ):
+        """
+        Convert internal landing-window termination reason into
+        user-facing factual wording.
+        """
+
+        labels = {
+            "gps": "GPS stop",
+            "abort": "Landing aborted",
+            "flight_window_end": (
+                "Flight ended before landing stop detected"
+            ),
+        }
+
+        return labels.get(
+            reason,
+            str(reason),
+        )
