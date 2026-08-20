@@ -16,9 +16,13 @@ class UnsupportedFirmwareError(ValueError):
 
 class FlightReader:
 
-    def __init__(self, filename):
+    def __init__(
+        self,
+        filename,
+        config=None,
+    ):
         self.filename = Path(filename)
-        self.config = Config("Config/landing.yaml")
+        self.config = config or Config("Config/landing.yaml")
 
     def read(self):
         flight = FlightLog()

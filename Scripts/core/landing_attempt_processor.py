@@ -1,6 +1,4 @@
 import math
-
-from core.config import Config
 from core.events import EventType
 from core.event_extractor import EventExtractor
 from core.landing_attempt import LandingAttempt
@@ -63,10 +61,6 @@ class LandingAttemptProcessor:
         self.landing_window = landing_window
         self.attempt = attempt
         self.config = config
-
-        self.landing_config = Config(
-            "Config/landing.yaml"
-        )
 
     def build(self) -> LandingAttemptAnalysis:
 
@@ -421,14 +415,14 @@ class LandingAttemptProcessor:
             )
 
         speed_limit = float(
-            self.landing_config.get(
+            self.config.get(
                 "landing_window.end_speed",
                 3.0,
             )
         )
 
         persistence_s = float(
-            self.landing_config.get(
+            self.config.get(
                 "landing_window.end_speed_seconds",
                 2.0,
             )
@@ -549,9 +543,13 @@ class LandingAttemptProcessor:
         """
         Return the LAND target applicable to this landing attempt.
 
-        CMD records may contain multiple mission snapshots during a
-        log. Use the latest MAV_CMD_NAV_LAND command present at or
-        before the attempt start.
+        CMD records are mission snapshots, not independent target
+        updates. A snapshot is accepted only when its consecutive CMD
+        records have one common CTot and exactly one CNum for every
+        command from zero through CTot - 1. The latest snapshot completed
+        at or before the attempt start is applicable. It must contain
+        exactly one MAV_CMD_NAV_LAND command with usable coordinates;
+        otherwise the target is unavailable rather than guessed.
         """
 
         cmd = self.flight_log.get("CMD")
@@ -561,6 +559,8 @@ class LandingAttemptProcessor:
 
         if not {
             "TimeUS",
+            "CTot",
+            "CNum",
             "CId",
             "Lat",
             "Lng",
@@ -569,20 +569,33 @@ class LandingAttemptProcessor:
         ):
             return None
 
-        land_rows = cmd[
-            (cmd["CId"] == 21)
-            & (
-                cmd["TimeUS"]
-                <= self.attempt.start_us
-            )
+        snapshots = self._complete_cmd_snapshots(cmd)
+
+        applicable = [
+            snapshot
+            for snapshot in snapshots
+            if snapshot[-1]["TimeUS"] <= self.attempt.start_us
         ]
 
-        if land_rows.empty:
+        if not applicable:
             return None
 
-        row = land_rows.sort_values(
-            "TimeUS"
-        ).iloc[-1]
+        snapshot = applicable[-1]
+        land_rows = []
+
+        for row in snapshot:
+            try:
+                is_land = int(row["CId"]) == 21
+            except (TypeError, ValueError):
+                return None
+
+            if is_land:
+                land_rows.append(row)
+
+        if len(land_rows) != 1:
+            return None
+
+        row = land_rows[0]
 
         try:
 
@@ -611,6 +624,55 @@ class LandingAttemptProcessor:
             lat,
             lng,
         )
+
+    @staticmethod
+    def _complete_cmd_snapshots(cmd):
+        """Return complete, consecutive CMD mission snapshots in time order."""
+        snapshots = []
+        current = []
+        expected_total = None
+        expected_number = 0
+
+        for _, row in cmd.sort_values("TimeUS").iterrows():
+            try:
+                total = int(row["CTot"])
+                number = int(row["CNum"])
+            except (TypeError, ValueError):
+                current = []
+                expected_total = None
+                expected_number = 0
+                continue
+
+            if total <= 0 or number < 0 or number >= total:
+                current = []
+                expected_total = None
+                expected_number = 0
+                continue
+
+            if number == 0:
+                current = [row]
+                expected_total = total
+                expected_number = 1
+            elif (
+                not current
+                or total != expected_total
+                or number != expected_number
+            ):
+                current = []
+                expected_total = None
+                expected_number = 0
+                continue
+            else:
+                current.append(row)
+                expected_number += 1
+
+            if expected_number == expected_total:
+                snapshots.append(current)
+                current = []
+                expected_total = None
+                expected_number = 0
+
+        return snapshots
 
     def _horizontal_distance(
         self,

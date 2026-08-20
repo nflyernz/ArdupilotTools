@@ -18,7 +18,10 @@ from core.landing_attempt_processor import (
 from core.landing_window_detector import (
     LandingWindowDetector,
 )
-from core.log_reader import FlightReader
+from core.log_reader import (
+    FlightReader,
+    UnsupportedFirmwareError,
+)
 from core.time import format_time_us
 
 
@@ -40,10 +43,11 @@ class LandingAnalysis:
     event extraction. This class handles workflow and presentation.
     """
 
-    def __init__(self):
-        self.config = Config(
-            "Config/landing.yaml"
-        )
+    def __init__(
+        self,
+        config=None,
+    ):
+        self.config = config or Config("Config/landing.yaml")
 
     def analyse(
         self,
@@ -58,7 +62,7 @@ class LandingAnalysis:
         """
 
         landing_windows = (
-            LandingWindowDetector().detect(
+            LandingWindowDetector(self.config).detect(
                 flight_log,
                 flight_window,
             )
@@ -492,10 +496,18 @@ class LandingAnalysis:
                         flight_index,
                     )
 
-            except Exception as ex:
+            except UnsupportedFirmwareError as ex:
 
                 print(
-                    f"Analysis error: {ex}"
+                    f"Unsupported firmware: {ex}"
+                )
+
+                framework_errors += 1
+
+            except OSError as ex:
+
+                print(
+                    f"Unable to read log: {ex}"
                 )
 
                 framework_errors += 1
@@ -585,7 +597,8 @@ class LandingAnalysis:
         """
 
         reader = FlightReader(
-            log_path
+            log_path,
+            config=self.config,
         )
 
         return reader.read()

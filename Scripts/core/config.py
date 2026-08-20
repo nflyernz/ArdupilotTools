@@ -1,4 +1,5 @@
 from pathlib import Path
+
 import yaml
 
 
@@ -6,7 +7,17 @@ class Config:
 
     def __init__(self, filename):
 
-        with open(filename, "r") as f:
+        path = Path(filename)
+
+        if not path.is_absolute():
+            # Core modules may be invoked from the menu, a regression
+            # harness, or another working directory. Configuration paths
+            # are repository-relative, not process-CWD-relative.
+            path = Path(__file__).resolve().parents[2] / path
+
+        self.filename = path
+
+        with open(path, "r") as f:
             self.data = yaml.safe_load(f)
 
     def get(self, key, default=None):

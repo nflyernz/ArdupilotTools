@@ -11,11 +11,12 @@ from core.scope import validate_flight_window
 
 class LandingWindowDetector:
 
-    def __init__(self):
+    def __init__(
+        self,
+        config=None,
+    ):
 
-        self.config = Config(
-            "Config/landing.yaml"
-        )
+        self.config = config or Config("Config/landing.yaml")
 
     def detect(
         self,

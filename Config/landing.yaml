@@ -20,6 +20,17 @@ landing_window:
   end_speed_seconds: 2.0
 
 #
+# Optional rangefinder evidence used by LandingAttemptProcessor.
+#
+
+rangefinder:
+
+  events:
+
+    zero_threshold: 0.05
+    continuous_seconds: 1.0
+
+#
 # MAVLink messages required
 #
 
