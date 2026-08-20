@@ -23,6 +23,8 @@ class EventType(Enum):
 
     RFND_CONTINUOUS = "RFND_CONTINUOUS"
 
+    RFND_DISENGAGED = "RFND_DISENGAGED"
+
     # Derived events
     TOUCHDOWN = "TOUCHDOWN"
 

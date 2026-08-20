@@ -1,6 +1,5 @@
 from core.events import TimelineEvent, EventType
 from core.flight_window import FlightWindow
-from core.landing_window import LandingWindow
 from core.flight_data import FlightLog
 from core.scope import (
     filter_telemetry,
@@ -11,8 +10,8 @@ from core.scope import (
 
 class RangefinderEvents:
     """
-    Detect significant rangefinder events during a LandingWindow
-    within a selected FlightWindow.
+    Detect significant rangefinder events within a bounded child
+    window of a selected FlightWindow.
 
     Published events
 
@@ -21,13 +20,15 @@ class RangefinderEvents:
         RFND_FIRST_IN_RANGE
 
         RFND_CONTINUOUS
+
+        RFND_DISENGAGED
     """
 
     def __init__(
         self,
         flight_log: FlightLog,
         flight_window: FlightWindow,
-        landing_window: LandingWindow,
+        window,
         config,
     ):
 
@@ -38,12 +39,12 @@ class RangefinderEvents:
 
         validate_child_window(
             flight_window,
-            landing_window,
+            window,
         )
 
         self.flight_log = flight_log
         self.flight_window = flight_window
-        self.landing_window = landing_window
+        self.window = window
         self.config = config
 
     def publish(
@@ -91,7 +92,7 @@ class RangefinderEvents:
 
         rfnd = filter_telemetry(
             self.flight_log.get("RFND"),
-            self.landing_window,
+            self.window,
         )
 
         if rfnd is None or rfnd.empty:
@@ -101,21 +102,22 @@ class RangefinderEvents:
             "rangefinder",
             {},
         )
-        
+
         event_cfg = cfg.get(
             "events",
             {},
         )
-        
+
         zero_threshold = event_cfg.get(
             "zero_threshold",
             0.05,
         )
-        
+
         continuous_seconds = event_cfg.get(
             "continuous_seconds",
             1.0,
         )
+
         sample_rate = self.estimate_sample_rate(
             rfnd
         )
@@ -151,15 +153,28 @@ class RangefinderEvents:
         run_start_time = None
         run_samples = 0
 
+        rangefinder_active = False
+
         for _, row in rfnd.iterrows():
 
             dist = float(row["Dist"])
             time_us = int(row["TimeUS"])
 
             #
-            # Zero reading
+            # Zero or invalid reading.
             #
             if dist <= zero_threshold:
+
+                if rangefinder_active:
+
+                    self.publish(
+                        events,
+                        time_us,
+                        EventType.RFND_DISENGAGED,
+                        f"{dist:.2f} m",
+                    )
+
+                    rangefinder_active = False
 
                 run_samples = 0
                 run_start_time = None
@@ -167,7 +182,12 @@ class RangefinderEvents:
                 continue
 
             #
-            # First non-zero sample
+            # Valid non-zero reading.
+            #
+            rangefinder_active = True
+
+            #
+            # First non-zero sample.
             #
             if not found_nonzero:
 
@@ -181,7 +201,7 @@ class RangefinderEvents:
                 )
 
             #
-            # First sample inside configured range
+            # First sample inside configured maximum range.
             #
             if (
                 not found_in_range
@@ -199,7 +219,7 @@ class RangefinderEvents:
                 )
 
             #
-            # Continuous valid measurements
+            # Continuous valid measurements.
             #
             if run_samples == 0:
 
