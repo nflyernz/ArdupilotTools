@@ -1,3 +1,5 @@
+import math
+
 from core.config import Config
 from core.events import EventType
 from core.event_extractor import EventExtractor
@@ -299,10 +301,6 @@ class LandingAttemptProcessor:
         #
         # GPS landing / rollout completion evidence.
         #
-        # LandingWindowDetector has already confirmed the configured
-        # low-speed persistence. Do not try to detect it again inside
-        # the already-bounded attempt.
-        #
         (
             gps_stop_time_us,
             gps_stop_speed_limit,
@@ -310,6 +308,15 @@ class LandingAttemptProcessor:
             flare_to_gps_stop_s,
         ) = self._gps_stop_evidence(
             flare_time_us
+        )
+
+        #
+        # Final position relative to the intended LAND target.
+        #
+        landing_end_target_distance_m = (
+            self._landing_end_target_distance(
+                gps_stop_time_us
+            )
         )
 
         return LandingAttemptAnalysis(
@@ -379,6 +386,9 @@ class LandingAttemptProcessor:
             ),
             flare_to_gps_stop_s=(
                 flare_to_gps_stop_s
+            ),
+            landing_end_target_distance_m=(
+                landing_end_target_distance_m
             ),
 
             end_reason=end_reason,
@@ -451,6 +461,213 @@ class LandingAttemptProcessor:
             flare_to_gps_stop_s,
         )
 
+    def _landing_end_target_distance(
+        self,
+        gps_stop_time_us,
+    ):
+        """
+        Return horizontal distance from the aircraft position at the
+        authoritative GPS-stop boundary to the applicable LAND
+        mission target.
+
+        This represents final landing / rollout position relative to
+        the intended LAND point. It is not touchdown accuracy.
+        """
+
+        if gps_stop_time_us is None:
+            return None
+
+        target = self._land_target()
+
+        if target is None:
+            return None
+
+        target_lat, target_lng = target
+
+        gps = self.flight_log.get("GPS")
+
+        if gps is None or gps.empty:
+            return None
+
+        if not {
+            "TimeUS",
+            "Lat",
+            "Lng",
+        }.issubset(
+            gps.columns
+        ):
+            return None
+
+        valid = gps[
+            gps["Lat"].notna()
+            & gps["Lng"].notna()
+        ]
+
+        if valid.empty:
+            return None
+
+        offsets = (
+            valid["TimeUS"]
+            - gps_stop_time_us
+        ).abs()
+
+        index = offsets.idxmin()
+
+        try:
+
+            aircraft_lat = float(
+                valid.loc[
+                    index,
+                    "Lat",
+                ]
+            )
+
+            aircraft_lng = float(
+                valid.loc[
+                    index,
+                    "Lng",
+                ]
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
+            return None
+
+        return self._horizontal_distance(
+            target_lat,
+            target_lng,
+            aircraft_lat,
+            aircraft_lng,
+        )
+
+    def _land_target(
+        self,
+    ):
+        """
+        Return the LAND target applicable to this landing attempt.
+
+        CMD records may contain multiple mission snapshots during a
+        log. Use the latest MAV_CMD_NAV_LAND command present at or
+        before the attempt start.
+        """
+
+        cmd = self.flight_log.get("CMD")
+
+        if cmd is None or cmd.empty:
+            return None
+
+        if not {
+            "TimeUS",
+            "CId",
+            "Lat",
+            "Lng",
+        }.issubset(
+            cmd.columns
+        ):
+            return None
+
+        land_rows = cmd[
+            (cmd["CId"] == 21)
+            & (
+                cmd["TimeUS"]
+                <= self.attempt.start_us
+            )
+        ]
+
+        if land_rows.empty:
+            return None
+
+        row = land_rows.sort_values(
+            "TimeUS"
+        ).iloc[-1]
+
+        try:
+
+            lat = float(
+                row["Lat"]
+            )
+
+            lng = float(
+                row["Lng"]
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
+            return None
+
+        if (
+            lat == 0.0
+            and lng == 0.0
+        ):
+            return None
+
+        return (
+            lat,
+            lng,
+        )
+
+    def _horizontal_distance(
+        self,
+        lat1,
+        lng1,
+        lat2,
+        lng2,
+    ):
+        """
+        Return great-circle horizontal distance in metres.
+        """
+
+        earth_radius_m = 6_371_000.0
+
+        lat1_rad = math.radians(
+            lat1
+        )
+
+        lat2_rad = math.radians(
+            lat2
+        )
+
+        delta_lat = math.radians(
+            lat2 - lat1
+        )
+
+        delta_lng = math.radians(
+            lng2 - lng1
+        )
+
+        a = (
+            math.sin(
+                delta_lat / 2.0
+            ) ** 2
+            + math.cos(
+                lat1_rad
+            )
+            * math.cos(
+                lat2_rad
+            )
+            * math.sin(
+                delta_lng / 2.0
+            ) ** 2
+        )
+
+        c = 2.0 * math.atan2(
+            math.sqrt(a),
+            math.sqrt(
+                1.0 - a
+            ),
+        )
+
+        return (
+            earth_radius_m
+            * c
+        )
+
     def _barometric_sink_rate(
         self,
         target_time_us,
@@ -518,10 +735,6 @@ class LandingAttemptProcessor:
             - float(first["Alt"])
         ) / elapsed_s
 
-        #
-        # BARO altitude decreases while descending. Convert to a
-        # positive-down sink rate to match the flare message.
-        #
         return -altitude_rate
 
     def _approach_start_altitude(
@@ -530,10 +743,6 @@ class LandingAttemptProcessor:
         """
         Return the latest firmware approach-start altitude emitted
         immediately before the landing attempt begins.
-
-        The lookup is constrained to the parent FlightWindow and to
-        a short interval before the attempt start. It does not widen
-        the LandingAttempt itself.
         """
 
         msg = self.flight_log.get("MSG")
@@ -590,10 +799,7 @@ class LandingAttemptProcessor:
         target_time_us,
     ):
         """
-        Return the value from the telemetry sample nearest to a
-        target event time, using only samples inside this attempt.
-
-        No interpolation is performed.
+        Return the nearest scoped telemetry value to the target time.
         """
 
         telemetry = filter_telemetry(

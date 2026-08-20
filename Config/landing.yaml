@@ -39,6 +39,7 @@ messages:
   - LAND
   - ARM
   - VER
+  - CMD
 
 #
 # Parameter groups required

@@ -12,7 +12,308 @@ from core.log_reader import FlightReader
 from core.time import format_time
 
 
-LOG_PATH = "Logs/log_17.bin"
+LOG_PATH = "Logs/log_26.bin"
+
+
+def fmt_value(
+    value,
+    decimals=2,
+    suffix="",
+):
+    if value is None:
+        return "Unavailable"
+
+    return (
+        f"{value:.{decimals}f}"
+        f"{suffix}"
+    )
+
+
+def fmt_time(
+    time_us,
+):
+    if time_us is None:
+        return "Unavailable"
+
+    return format_time(
+        time_us
+    )
+
+
+def end_reason_label(
+    reason,
+):
+    labels = {
+        "gps": "GPS stop",
+        "abort": "Landing aborted",
+        "disarm": "Throttle disarmed",
+        "mode": "Mode change",
+        "flight_window_end": (
+            "Flight ended before landing stop detected"
+        ),
+    }
+
+    if reason is None:
+        return "Unavailable"
+
+    return labels.get(
+        reason,
+        reason,
+    )
+
+
+def print_attempt(
+    landing_number,
+    attempt_number,
+    analysis,
+):
+    attempt = analysis.attempt
+
+    print()
+    print(
+        f"Landing {landing_number} "
+        f"Attempt {attempt_number}"
+    )
+    print("-" * 70)
+
+    print(
+        f"Window                  "
+        f"{fmt_time(attempt.start_us)}"
+        f" -> "
+        f"{fmt_time(attempt.end_us)}"
+    )
+
+    print(
+        f"Duration                "
+        f"{fmt_value(
+            analysis.duration_s,
+            2,
+            ' s',
+        )}"
+    )
+
+    print()
+    print("APPROACH")
+    print()
+
+    print(
+        f"Approach altitude       "
+        f"{fmt_value(
+            analysis.approach_start_altitude,
+            1,
+            ' m',
+        )}"
+    )
+
+    print(
+        f"Glide slope             "
+        f"{fmt_value(
+            analysis.glide_slope_degrees,
+            1,
+            ' deg',
+        )}"
+    )
+
+    print()
+    print("PREFLARE")
+    print()
+
+    print(
+        f"Time                    "
+        f"{fmt_time(
+            analysis.preflare_time_us
+        )}"
+    )
+
+    print(
+        f"Preflare height         "
+        f"{fmt_value(
+            analysis.preflare_altitude,
+            2,
+            ' m',
+        )}"
+    )
+
+    print(
+        f"Airspeed                "
+        f"{fmt_value(
+            analysis.preflare_airspeed,
+            2,
+            ' m/s',
+        )}"
+    )
+
+    print(
+        f"GPS groundspeed         "
+        f"{fmt_value(
+            analysis.preflare_gps_speed,
+            2,
+            ' m/s',
+        )}"
+    )
+
+    print(
+        f"Sink rate               "
+        f"{fmt_value(
+            analysis.preflare_sink_rate,
+            2,
+            ' m/s',
+        )}"
+    )
+
+    print()
+    print("FLARE")
+    print()
+
+    print(
+        f"Time                    "
+        f"{fmt_time(
+            analysis.flare_time_us
+        )}"
+    )
+
+    print(
+        f"Flare-timing height     "
+        f"{fmt_value(
+            analysis.flare_altitude,
+            2,
+            ' m',
+        )}"
+    )
+
+    print(
+        f"Sink rate               "
+        f"{fmt_value(
+            analysis.flare_sink_rate,
+            2,
+            ' m/s',
+        )}"
+    )
+
+    print(
+        f"Airspeed                "
+        f"{fmt_value(
+            analysis.flare_airspeed,
+            2,
+            ' m/s',
+        )}"
+    )
+
+    print(
+        f"GPS groundspeed         "
+        f"{fmt_value(
+            analysis.flare_gps_speed,
+            2,
+            ' m/s',
+        )}"
+    )
+
+    print(
+        f"Flare distance to target "
+        f"{fmt_value(
+            analysis.flare_distance,
+            1,
+            ' m',
+        )}"
+    )
+
+    #
+    # Optional rangefinder evidence.
+    #
+    has_rangefinder = any(
+        value is not None
+        for value in (
+            analysis.rangefinder_first_nonzero_time_us,
+            analysis.rangefinder_first_in_range_time_us,
+            analysis.rangefinder_continuous_time_us,
+        )
+    )
+
+    if has_rangefinder:
+
+        print()
+        print("RANGEFINDER")
+        print()
+
+        print(
+            f"First non-zero          "
+            f"{fmt_time(
+                analysis.rangefinder_first_nonzero_time_us
+            )}"
+        )
+
+        print(
+            f"First distance          "
+            f"{fmt_value(
+                analysis.rangefinder_first_nonzero_distance,
+                2,
+                ' m',
+            )}"
+        )
+
+        print(
+            f"First in range          "
+            f"{fmt_time(
+                analysis.rangefinder_first_in_range_time_us
+            )}"
+        )
+
+        print(
+            f"In-range distance       "
+            f"{fmt_value(
+                analysis.rangefinder_first_in_range_distance,
+                2,
+                ' m',
+            )}"
+        )
+
+        print(
+            f"Continuous from         "
+            f"{fmt_time(
+                analysis.rangefinder_continuous_time_us
+            )}"
+        )
+
+    print()
+    print("LANDING / ROLLOUT COMPLETION")
+    print()
+
+    if (
+        analysis.gps_stop_time_us
+        is not None
+    ):
+
+        print(
+            f"GPS stop                "
+            f"{fmt_time(
+                analysis.gps_stop_time_us
+            )}"
+        )
+
+        print(
+            f"Flare -> stop           "
+            f"{fmt_value(
+                analysis.flare_to_gps_stop_s,
+                2,
+                ' s',
+            )}"
+        )
+
+        print(
+            f"Distance from target    "
+            f"{fmt_value(
+                analysis.landing_end_target_distance_m,
+                1,
+                ' m',
+            )}"
+        )
+
+    print(
+        f"End reason              "
+        f"{end_reason_label(
+            analysis.end_reason
+        )}"
+    )
 
 
 flight_log = FlightReader(
@@ -24,7 +325,7 @@ config = Config(
 )
 
 print()
-print("Landing Attempt Analysis")
+print("Landing Analysis Prototype")
 print("=" * 70)
 
 for flight_number, flight_window in enumerate(
@@ -43,9 +344,11 @@ for flight_number, flight_window in enumerate(
         continue
 
     print()
+    print("=" * 70)
     print(
-        f"Flight {flight_number}"
+        f"FLIGHT {flight_number}"
     )
+    print("=" * 70)
 
     for landing_number, landing_window in enumerate(
         landing_windows,
@@ -71,171 +374,10 @@ for flight_number, flight_window in enumerate(
                 config=config,
             ).build()
 
-            print()
-            print(
-                f"  Landing {landing_number} "
-                f"Attempt {attempt_number}"
+            print_attempt(
+                landing_number,
+                attempt_number,
+                analysis,
             )
 
-            print(
-                f"    Window     : "
-                f"{format_time(attempt.start_us)}"
-                f" -> "
-                f"{format_time(attempt.end_us)}"
-            )
-
-            print(
-                f"    Duration   : "
-                f"{analysis.duration_s:.2f} s"
-            )
-
-            print()
-            print("    Geometry")
-
-            print(
-                f"      Approach altitude : "
-                f"{analysis.approach_start_altitude}"
-            )
-
-            print(
-                f"      Glide slope       : "
-                f"{analysis.glide_slope_degrees}"
-            )
-
-            print()
-            print("    Preflare")
-
-            print(
-                f"      Time              : "
-                f"{format_time(analysis.preflare_time_us) if analysis.preflare_time_us is not None else 'Unavailable'}"
-            )
-
-            print(
-                f"      Altitude          : "
-                f"{analysis.preflare_altitude}"
-            )
-
-            print(
-                f"      Airspeed          : "
-                f"{analysis.preflare_airspeed}"
-            )
-
-            print(
-                f"      GPS speed         : "
-                f"{analysis.preflare_gps_speed}"
-            )
-            
-            print(
-                f"      Sink rate         : "
-                f"{analysis.preflare_sink_rate}"
-            )
-
-            print()
-            print("    Flare")
-
-            print(
-                f"      Time              : "
-                f"{format_time(analysis.flare_time_us) if analysis.flare_time_us is not None else 'Unavailable'}"
-            )
-
-            print(
-                f"      Altitude          : "
-                f"{analysis.flare_altitude}"
-            )
-
-            print(
-                f"      Sink rate         : "
-                f"{analysis.flare_sink_rate}"
-            )
-
-            print(
-                f"      Airspeed          : "
-                f"{analysis.flare_airspeed}"
-            )
-
-            print(
-                f"      GPS speed         : "
-                f"{analysis.flare_gps_speed}"
-            )
-
-            print(
-                f"      Distance          : "
-                f"{analysis.flare_distance}"
-            )
-
-            print()
-            print("    Rangefinder")
-
-            print(
-                f"      First non-zero    : "
-                f"{format_time(analysis.rangefinder_first_nonzero_time_us) if analysis.rangefinder_first_nonzero_time_us is not None else 'Unavailable'}"
-            )
-
-            print(
-                f"      First distance    : "
-                f"{analysis.rangefinder_first_nonzero_distance}"
-            )
-
-            print(
-                f"      First in range    : "
-                f"{format_time(analysis.rangefinder_first_in_range_time_us) if analysis.rangefinder_first_in_range_time_us is not None else 'Unavailable'}"
-            )
-
-            print(
-                f"      In-range distance : "
-                f"{analysis.rangefinder_first_in_range_distance}"
-            )
-
-            print(
-                f"      Continuous from   : "
-                f"{format_time(analysis.rangefinder_continuous_time_us) if analysis.rangefinder_continuous_time_us is not None else 'Unavailable'}"
-            )
-
-            print(
-                f"      Continuous samples: "
-                f"{analysis.rangefinder_continuous_samples}"
-            )
-
-            print(
-                f"      Dropout events    : "
-                f"{analysis.rangefinder_disengage_events}"
-            )
-
-            print(
-                f"      Last dropout      : "
-                f"{format_time(analysis.rangefinder_last_disengage_time_us) if analysis.rangefinder_last_disengage_time_us is not None else 'Unavailable'}"
-            )
-
-            print(
-                f"      Last dropout dist : "
-                f"{analysis.rangefinder_last_disengage_distance}"
-            )
-            
-            print()
-            print("    Landing / rollout completion")
-            
-            print(
-                f"      GPS stop time     : "
-                f"{format_time(analysis.gps_stop_time_us) if analysis.gps_stop_time_us is not None else 'Unavailable'}"
-            )
-            
-            print(
-                f"      Speed threshold   : "
-                f"{analysis.gps_stop_speed_limit}"
-            )
-            
-            print(
-                f"      Persistence       : "
-                f"{analysis.gps_stop_persistence_s}"
-            )
-            
-            print(
-                f"      Flare -> GPS stop : "
-                f"{analysis.flare_to_gps_stop_s}"
-            )
-
-            print()
-            print(
-                f"    End reason : "
-                f"{analysis.end_reason}"
-            )
+print()

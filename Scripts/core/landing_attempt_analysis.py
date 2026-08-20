@@ -91,6 +91,7 @@ class LandingAttemptAnalysis:
     gps_stop_persistence_s: float | None
 
     flare_to_gps_stop_s: float | None
+    landing_end_target_distance_m: float | None
 
     # ------------------------------------------------------------------
     # Attempt termination
