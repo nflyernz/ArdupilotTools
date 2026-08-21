@@ -31,3 +31,7 @@ Output/
 .DS_Store
 ._*
 __MACOSX/
+
+# Private flight data
+/Logs/
+/Params/
