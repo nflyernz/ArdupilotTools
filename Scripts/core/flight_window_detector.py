@@ -8,6 +8,8 @@ Detection is based solely on GPS ground speed and is independent
 of flight mode, mission state or analysis type.
 """
 
+import math
+
 from .flight_data import FlightLog
 from .flight_window import FlightWindow
 
@@ -33,6 +35,32 @@ class FlightWindowDetector:
             speed_threshold
         )
 
+    def _effective_speed_threshold(
+        self,
+        flight_log,
+        time_us,
+    ):
+        stall_speed = (
+            flight_log
+            .parameter_history
+            .value_at(
+                "AIRSPEED_STALL",
+                time_us,
+            )
+        )
+
+        if (
+            stall_speed is None
+            or not math.isfinite(stall_speed)
+            or stall_speed <= 0
+        ):
+            return self.speed_threshold
+
+        return max(
+            self.speed_threshold,
+            0.5 * stall_speed,
+        )
+
     def detect(
         self,
         flight_log: FlightLog,
@@ -42,18 +70,6 @@ class FlightWindowDetector:
 
         if gps.empty:
             return []
-
-        #
-        # AIRSPEED_STALL may raise the effective threshold,
-        # but never lower the configured minimum threshold.
-        #
-        threshold = max(
-            self.speed_threshold,
-            0.5 * flight_log.param(
-                "AIRSPEED_STALL",
-                self.speed_threshold * 2,
-            ),
-        )
 
         windows = []
 
@@ -66,6 +82,13 @@ class FlightWindowDetector:
 
             time_us = int(row["TimeUS"])
             speed = float(row["Spd"])
+
+            threshold = (
+                self._effective_speed_threshold(
+                    flight_log,
+                    time_us,
+                )
+            )
 
             above_threshold = (
                 speed > threshold
