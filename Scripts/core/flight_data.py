@@ -4,6 +4,7 @@ from typing import Dict, List, Any
 import pandas as pd
 
 from .flight_window import FlightWindow
+from .params import ParameterHistory
 
 
 @dataclass
@@ -19,6 +20,11 @@ class FlightLog:
 
     # Loaded from matching .params file
     parameters: Dict[str, Any] = field(default_factory=dict)
+
+    # Reconstructed from timestamped PARM records in the BIN log
+    parameter_history: ParameterHistory = field(
+        default_factory=ParameterHistory
+    )
 
     # Individual flights detected within the log
     flights: List[FlightWindow] = field(default_factory=list)

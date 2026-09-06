@@ -5,7 +5,7 @@ from pymavlink import mavutil
 
 from .config import Config
 from .flight_data import FlightLog
-from .params import ParameterReader
+from .params import ParameterHistory, ParameterReader
 from .flight_segmenter import FlightSegmenter
 from .flight_window_detector import FlightWindowDetector
 
@@ -27,7 +27,10 @@ class FlightReader:
     def read(self):
         flight = FlightLog()
 
-        flight.messages = self._read_messages()
+        (
+            flight.messages,
+            flight.parameter_history,
+        ) = self._read_messages()
 
         self._validate_firmware(flight)
         self._read_parameters(flight)
@@ -60,6 +63,7 @@ class FlightReader:
 
     def _read_messages(self):
         wanted = set(self.config.get("messages"))
+        wanted.add("PARM")
         rows = {name: [] for name in wanted}
 
         log = mavutil.mavlink_connection(str(self.filename))
@@ -84,7 +88,9 @@ class FlightReader:
                 else pd.DataFrame()
             )
 
-        return messages
+        parameter_history = ParameterHistory.from_records(rows["PARM"])
+
+        return messages, parameter_history
 
     def _read_parameters(self, flight):
         paramfile = Path("Params") / (
