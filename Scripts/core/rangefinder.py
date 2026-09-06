@@ -1,3 +1,5 @@
+import math
+
 from core.events import TimelineEvent, EventType
 from core.flight_window import FlightWindow
 from core.flight_data import FlightLog
@@ -136,16 +138,6 @@ class RangefinderEvents:
                 ),
             )
 
-        max_range = None
-
-        if self.flight_log.has_param(
-            "RNGFND1_MAX"
-        ):
-
-            max_range = self.flight_log.param(
-                "RNGFND1_MAX"
-            )
-
         found_nonzero = False
         found_in_range = False
         found_continuous = False
@@ -203,9 +195,22 @@ class RangefinderEvents:
             #
             # First sample inside configured maximum range.
             #
+            if not found_in_range:
+
+                max_range = (
+                    self.flight_log
+                    .parameter_history
+                    .value_at(
+                        "RNGFND1_MAX",
+                        time_us,
+                    )
+                )
+
             if (
                 not found_in_range
                 and max_range is not None
+                and math.isfinite(max_range)
+                and max_range > 0
                 and dist <= max_range
             ):
 
