@@ -194,7 +194,6 @@ for log_path in log_paths:
         processed_supported_logs.add(log_path.name)
 
     firmware = flight_log.firmware_version()
-    rngfnd_max = flight_log.param("RNGFND1_MAX")
 
     if firmware:
         print(
@@ -203,16 +202,6 @@ for log_path in log_paths:
     else:
         print(
             "Firmware : unavailable"
-        )
-
-    if rngfnd_max is not None:
-        print(
-            f"RNGFND1_MAX : "
-            f"{float(rngfnd_max):.1f} m"
-        )
-    else:
-        print(
-            "RNGFND1_MAX : unavailable"
         )
 
     print(
