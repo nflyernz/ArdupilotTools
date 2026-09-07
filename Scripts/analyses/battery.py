@@ -2,8 +2,10 @@ from pathlib import Path
 
 from core.battery import (
     BatteryAnalysis,
+    BatteryLoadEventType,
     BatteryProcessor,
 )
+from core.config import Config
 from core.log_reader import (
     FlightReader,
     UnsupportedFirmwareError,
@@ -37,6 +39,10 @@ class BatteryAnalysisPresentation:
     Present battery analysis for a selected flight and battery instance.
     """
 
+    def __init__(self, pack_id=None, config=None):
+        self.pack_id = pack_id
+        self.config = config or Config("Config/battery.yaml")
+
     def run(self):
 
         log_path = self._select_log()
@@ -46,7 +52,8 @@ class BatteryAnalysisPresentation:
 
         try:
             flight_log = FlightReader(
-                str(log_path)
+                str(log_path),
+                config=self.config,
             ).read()
 
         except UnsupportedFirmwareError as exc:
@@ -94,6 +101,7 @@ class BatteryAnalysisPresentation:
             flight_log,
             flight_window,
             instance,
+            config=self.config,
         ).analyse()
 
         self._print_report(
@@ -283,6 +291,33 @@ class BatteryAnalysisPresentation:
             f"Battery instance : {analysis.instance}"
         )
 
+        configuration = analysis.session_configuration
+
+        if self.pack_id is not None:
+            print(f"Pack ID          : {self.pack_id}")
+
+        if configuration is not None:
+            print(
+                "Capacity         : "
+                f"{_format_value(
+                    configuration.capacity_mah,
+                    ' mAh',
+                    0,
+                )}"
+            )
+            print(
+                "Low voltage      : "
+                f"{self._format_threshold(
+                    configuration.low_voltage
+                )}"
+            )
+            print(
+                "Critical voltage : "
+                f"{self._format_threshold(
+                    configuration.critical_voltage
+                )}"
+            )
+
         print()
         print(
             "Flight duration       "
@@ -384,3 +419,125 @@ class BatteryAnalysisPresentation:
             for warning in analysis.counter_warnings:
                 print()
                 print(f"- {warning}")
+
+        self._print_bounded_load_events(
+            analysis.bounded_load_events
+        )
+
+        if (
+            configuration is not None
+            and configuration.warnings
+        ):
+            print()
+            print("CONFIGURATION WARNINGS")
+
+            for warning in configuration.warnings:
+                print()
+                print(f"- {warning}")
+
+    @staticmethod
+    def _format_threshold(value):
+        if value is None:
+            return "Unavailable"
+        if value == 0:
+            return "Disabled"
+        return f"{value:.2f} V"
+
+    @staticmethod
+    def _print_bounded_load_events(events):
+        print()
+        print("BOUNDED LOAD EVENTS")
+
+        if not events:
+            print()
+            print("No bounded load events detected.")
+            return
+
+        for index, event in enumerate(events, start=1):
+            print()
+            print(
+                f"{index}. {event.event_type.value}"
+            )
+
+            if (
+                event.event_type == BatteryLoadEventType.TAKEOFF
+                and event.takeoff_type is not None
+            ):
+                print(
+                    f"   Context              "
+                    f"{event.takeoff_type.value}"
+                )
+
+            print(
+                "   Time                 "
+                f"{format_time_us(event.start_us)} -> "
+                f"{format_time_us(event.end_us)}"
+            )
+            print(
+                "   Duration             "
+                f"{_format_value(event.duration_s, ' s', 3)}"
+            )
+            print(
+                "   Consumed at start    "
+                f"{_format_value(
+                    event.consumed_mah_at_start,
+                    ' mAh',
+                )}"
+            )
+            print(
+                "   Maximum throttle     "
+                f"{_format_value(event.maximum_throttle, ' %')}"
+            )
+            print(
+                "   Average throttle     "
+                f"{_format_value(event.average_throttle, ' %')}"
+            )
+            print(
+                "   Pre-load voltage     "
+                f"{_format_value(event.pre_load_voltage, ' V')}"
+            )
+            print(
+                "   Minimum voltage      "
+                f"{_format_value(event.minimum_voltage, ' V')}"
+            )
+            print(
+                "   Voltage sag          "
+                f"{_format_value(event.voltage_sag, ' V')}"
+            )
+            print(
+                "   Peak current         "
+                f"{_format_value(event.peak_current, ' A')}"
+            )
+            print(
+                "   Average current      "
+                f"{_format_value(event.average_current, ' A')}"
+            )
+            print(
+                "   Current at min V     "
+                f"{_format_value(
+                    event.current_at_minimum_voltage,
+                    ' A',
+                )}"
+            )
+            print(
+                "   Voltage after 5 s    "
+                f"{_format_value(
+                    event.voltage_after_recovery,
+                    ' V',
+                )}"
+            )
+            print(
+                "   Voltage recovery     "
+                f"{_format_value(event.voltage_recovery, ' V')}"
+            )
+            print(
+                "   Margin to LOW        "
+                f"{_format_value(event.low_voltage_margin, ' V')}"
+            )
+            print(
+                "   Margin to CRITICAL   "
+                f"{_format_value(
+                    event.critical_voltage_margin,
+                    ' V',
+                )}"
+            )

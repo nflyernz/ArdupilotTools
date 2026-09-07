@@ -5,11 +5,14 @@ BAT counters are cumulative across a log, so consumption values are
 calculated as deltas from the selected FlightWindow baseline.
 """
 
+import math
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Optional
 
 import pandas as pd
 
+from .config import Config
 from .flight_data import FlightLog
 from .flight_window import FlightWindow
 from .scope import filter_telemetry, validate_flight_window
@@ -27,6 +30,73 @@ class BatteryLoadEvent:
     sag_per_ampere: Optional[float]
     voltage_after_recovery: Optional[float]
     voltage_recovery: Optional[float]
+
+
+class BatteryLoadEventType(Enum):
+    """Supported bounded battery load-event families."""
+
+    TAKEOFF = "TAKEOFF"
+    SUSTAINED_HIGH_THROTTLE = "SUSTAINED_HIGH_THROTTLE"
+
+
+class TakeoffType(Enum):
+    """Takeoff classifications supported by validated evidence."""
+
+    AUTO = "AUTO"
+
+
+@dataclass(frozen=True)
+class BatterySessionConfiguration:
+    """Stable embedded battery configuration for one analysed session."""
+
+    lookup_time_us: int
+    capacity_mah: Optional[float]
+    low_voltage: Optional[float]
+    critical_voltage: Optional[float]
+    failsafe_voltage_source: Optional[float]
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def raw_voltage_margins_supported(self) -> bool:
+        """Return whether configured thresholds apply to raw BAT.Volt."""
+        return self.failsafe_voltage_source == 0.0
+
+
+@dataclass(frozen=True)
+class BatteryLoadInterval:
+    """Battery evidence measured over one bounded load interval."""
+
+    event_type: BatteryLoadEventType
+    takeoff_type: Optional[TakeoffType]
+    flight_number: int
+    instance: int
+    start_us: int
+    end_us: int
+    duration_s: float
+    consumed_mah_at_start: Optional[float]
+    pre_load_voltage: Optional[float]
+    minimum_voltage: Optional[float]
+    current_at_minimum_voltage: Optional[float]
+    peak_current: Optional[float]
+    average_current: Optional[float]
+    maximum_throttle: Optional[float]
+    average_throttle: Optional[float]
+    voltage_sag: Optional[float]
+    recovery_time_us: Optional[int]
+    voltage_after_recovery: Optional[float]
+    voltage_recovery: Optional[float]
+    low_voltage_margin: Optional[float]
+    critical_voltage_margin: Optional[float]
+
+
+@dataclass(frozen=True)
+class _BatteryLoadBounds:
+    """Internal event bounds produced before telemetry evaluation."""
+
+    event_type: BatteryLoadEventType
+    takeoff_type: Optional[TakeoffType]
+    start_us: int
+    end_us: int
 
 
 @dataclass
@@ -48,6 +118,10 @@ class BatteryAnalysis:
     mah_per_minute: Optional[float]
     load_event: Optional[BatteryLoadEvent]
     counter_warnings: list[str] = field(default_factory=list)
+    session_configuration: Optional[BatterySessionConfiguration] = None
+    bounded_load_events: list[BatteryLoadInterval] = field(
+        default_factory=list
+    )
 
 
 class BatteryProcessor:
@@ -66,12 +140,14 @@ class BatteryProcessor:
         flight_log: FlightLog,
         flight_window: FlightWindow,
         instance: int,
+        config=None,
     ):
         validate_flight_window(flight_log, flight_window)
 
         self.flight_log = flight_log
         self.flight_window = flight_window
         self.instance = int(instance)
+        self.config = config or Config("Config/battery.yaml")
 
     def available_instances(self) -> list[int]:
         """Return BAT instances with valid instance identifiers."""
@@ -139,6 +215,8 @@ class BatteryProcessor:
         ):
             mah_per_minute = consumed_mah / (duration_s / 60.0)
 
+        session_configuration = self._session_configuration()
+
         return BatteryAnalysis(
             instance=self.instance,
             start_us=self.flight_window.start_us,
@@ -155,7 +233,442 @@ class BatteryProcessor:
             mah_per_minute=mah_per_minute,
             load_event=self._load_event(scoped),
             counter_warnings=warnings,
+            session_configuration=session_configuration,
+            bounded_load_events=self._bounded_load_events(
+                all_instance,
+                session_configuration,
+            ),
         )
+
+    def _session_configuration(self) -> BatterySessionConfiguration:
+        """Resolve stable primary-battery configuration from BIN PARM."""
+        lookup_time_us = min(
+            window.start_us for window in self.flight_log.flights
+        )
+        session_end_us = max(
+            window.end_us for window in self.flight_log.flights
+        )
+        warnings: list[str] = []
+
+        if self.instance != 0:
+            warnings.append(
+                "Embedded battery configuration is unavailable for "
+                f"BAT instance {self.instance}."
+            )
+            return BatterySessionConfiguration(
+                lookup_time_us=lookup_time_us,
+                capacity_mah=None,
+                low_voltage=None,
+                critical_voltage=None,
+                failsafe_voltage_source=None,
+                warnings=tuple(warnings),
+            )
+
+        def stable_value(parameter_name: str) -> Optional[float]:
+            history = self.flight_log.parameter_history
+            value = history.value_at(parameter_name, lookup_time_us)
+
+            if value is None or not math.isfinite(value):
+                return None
+
+            for change in history.changes.get(parameter_name, ()):
+                if not (
+                    lookup_time_us < change.time_us <= session_end_us
+                ):
+                    continue
+
+                if change.value != value:
+                    warnings.append(
+                        f"{parameter_name} changes after session "
+                        "configuration lookup."
+                    )
+                    return None
+
+            return float(value)
+
+        capacity_mah = stable_value("BATT_CAPACITY")
+        if capacity_mah is not None and capacity_mah <= 0:
+            capacity_mah = None
+
+        low_voltage = stable_value("BATT_LOW_VOLT")
+        if low_voltage is not None and low_voltage < 0:
+            low_voltage = None
+
+        critical_voltage = stable_value("BATT_CRT_VOLT")
+        if critical_voltage is not None and critical_voltage < 0:
+            critical_voltage = None
+
+        return BatterySessionConfiguration(
+            lookup_time_us=lookup_time_us,
+            capacity_mah=capacity_mah,
+            low_voltage=low_voltage,
+            critical_voltage=critical_voltage,
+            failsafe_voltage_source=stable_value(
+                "BATT_FS_VOLTSRC"
+            ),
+            warnings=tuple(warnings),
+        )
+
+    def _bounded_load_events(
+        self,
+        all_instance: pd.DataFrame,
+        session_configuration: BatterySessionConfiguration,
+    ) -> list[BatteryLoadInterval]:
+        bounds = self._auto_takeoff_bounds()
+        bounds.extend(self._sustained_load_bounds())
+        bounds.sort(key=lambda item: item.start_us)
+
+        return [
+            self._evaluate_load_interval(
+                event_bounds,
+                all_instance,
+                session_configuration,
+            )
+            for event_bounds in bounds
+        ]
+
+    def _auto_takeoff_bounds(self) -> list[_BatteryLoadBounds]:
+        """Return one unambiguous AUTO takeoff interval, when present."""
+        mode = self._time_ordered(self.flight_log.get("MODE"))
+        msg = self._time_ordered(self.flight_log.get("MSG"))
+
+        if (
+            mode.empty
+            or msg.empty
+            or "ModeNum" not in mode.columns
+            or "Message" not in msg.columns
+        ):
+            return []
+
+        mode_numbers = pd.to_numeric(
+            mode["ModeNum"],
+            errors="coerce",
+        )
+        mode = mode.loc[self._finite_mask(mode_numbers)].copy()
+        mode["_mode_number"] = mode_numbers.loc[mode.index]
+
+        prior_modes = mode[
+            mode["TimeUS"] <= self.flight_window.start_us
+        ]
+        if (
+            prior_modes.empty
+            or int(prior_modes.iloc[-1]["_mode_number"]) != 13
+        ):
+            return []
+
+        sequence_start_us = int(prior_modes.iloc[-1]["TimeUS"])
+        for _, row in prior_modes.iloc[::-1].iterrows():
+            if int(row["_mode_number"]) != 13:
+                break
+            sequence_start_us = int(row["TimeUS"])
+
+        messages = msg["Message"].astype(str)
+        triggers = msg[
+            (msg["TimeUS"] >= sequence_start_us)
+            & (msg["TimeUS"] <= self.flight_window.start_us)
+            & messages.str.startswith("Triggered AUTO")
+        ]
+        if len(triggers) != 1:
+            return []
+
+        end_rows = mode[
+            (mode["TimeUS"] > self.flight_window.start_us)
+            & (mode["TimeUS"] <= self.flight_window.end_us)
+            & (mode["_mode_number"] != 13)
+        ]
+        if end_rows.empty:
+            return []
+
+        start_us = self.flight_window.start_us
+        end_us = int(end_rows.iloc[0]["TimeUS"])
+        if start_us >= end_us:
+            return []
+
+        return [
+            _BatteryLoadBounds(
+                event_type=BatteryLoadEventType.TAKEOFF,
+                takeoff_type=TakeoffType.AUTO,
+                start_us=start_us,
+                end_us=end_us,
+            )
+        ]
+
+    def _sustained_load_bounds(self) -> list[_BatteryLoadBounds]:
+        """Detect exact, unmerged continuous CTUN.ThO intervals."""
+        ctun = self._time_ordered(self.flight_log.get("CTUN"))
+        if ctun.empty or "ThO" not in ctun.columns:
+            return []
+
+        throttle_min = float(
+            self.config.get(
+                "battery_analysis.sustained_load.throttle_min_pct",
+                90,
+            )
+        )
+        minimum_duration_s = float(
+            self.config.get(
+                "battery_analysis.sustained_load.min_duration_s",
+                8.0,
+            )
+        )
+        if (
+            not math.isfinite(throttle_min)
+            or not 0 <= throttle_min <= 100
+            or not math.isfinite(minimum_duration_s)
+            or minimum_duration_s <= 0
+        ):
+            raise ValueError("Invalid sustained-load detector configuration")
+
+        minimum_duration_us = minimum_duration_s * 1_000_000
+        ctun = filter_telemetry(ctun, self.flight_window)
+        throttle = pd.to_numeric(ctun["ThO"], errors="coerce")
+        events: list[_BatteryLoadBounds] = []
+        run_start_us = None
+        run_end_us = None
+
+        def finish_run() -> None:
+            nonlocal run_start_us, run_end_us
+            if (
+                run_start_us is not None
+                and run_end_us is not None
+                and run_end_us - run_start_us >= minimum_duration_us
+            ):
+                events.append(
+                    _BatteryLoadBounds(
+                        event_type=(
+                            BatteryLoadEventType.SUSTAINED_HIGH_THROTTLE
+                        ),
+                        takeoff_type=None,
+                        start_us=run_start_us,
+                        end_us=run_end_us,
+                    )
+                )
+            run_start_us = None
+            run_end_us = None
+
+        for index, row in ctun.iterrows():
+            value = throttle.loc[index]
+            is_high = math.isfinite(value) and value >= throttle_min
+            time_us = int(row["TimeUS"])
+
+            if is_high:
+                if run_start_us is None:
+                    run_start_us = time_us
+                run_end_us = time_us
+            else:
+                finish_run()
+
+        finish_run()
+        return events
+
+    def _evaluate_load_interval(
+        self,
+        bounds: _BatteryLoadBounds,
+        all_instance: pd.DataFrame,
+        session_configuration: BatterySessionConfiguration,
+    ) -> BatteryLoadInterval:
+        bat = self._time_ordered(all_instance)
+        event_bat = bat[
+            (bat["TimeUS"] >= bounds.start_us)
+            & (bat["TimeUS"] <= bounds.end_us)
+        ]
+
+        voltage = self._finite_numeric(bat, "Volt")
+        current = self._finite_numeric(event_bat, "Curr")
+        event_voltage = self._finite_numeric(event_bat, "Volt")
+
+        before = bat[
+            (bat["TimeUS"] < bounds.start_us)
+            & voltage.notna()
+        ]
+        pre_load_voltage = (
+            float(voltage.loc[before.index[-1]])
+            if not before.empty
+            else None
+        )
+
+        minimum_voltage = None
+        current_at_minimum_voltage = None
+        if not event_voltage.dropna().empty:
+            minimum_index = event_voltage.idxmin()
+            minimum_voltage = float(event_voltage.loc[minimum_index])
+            current_at_minimum = self._finite_numeric(
+                event_bat.loc[[minimum_index]],
+                "Curr",
+            )
+            if not current_at_minimum.dropna().empty:
+                current_at_minimum_voltage = float(
+                    current_at_minimum.loc[minimum_index]
+                )
+
+        valid_current = current.dropna()
+        peak_current = (
+            float(valid_current.max())
+            if not valid_current.empty
+            else None
+        )
+        average_current = (
+            float(valid_current.mean())
+            if not valid_current.empty
+            else None
+        )
+
+        recovery_target_us = bounds.end_us + self.RECOVERY_US
+        recovery_rows = bat[
+            (bat["TimeUS"] >= recovery_target_us)
+            & (bat["TimeUS"] <= self.flight_window.end_us)
+            & voltage.notna()
+        ]
+        recovery_time_us = None
+        voltage_after_recovery = None
+        if not recovery_rows.empty:
+            recovery_index = recovery_rows.index[0]
+            recovery_time_us = int(
+                recovery_rows.loc[recovery_index, "TimeUS"]
+            )
+            voltage_after_recovery = float(
+                voltage.loc[recovery_index]
+            )
+
+        voltage_sag = self._difference(
+            pre_load_voltage,
+            minimum_voltage,
+        )
+        voltage_recovery = self._difference(
+            voltage_after_recovery,
+            minimum_voltage,
+        )
+
+        low_voltage_margin = None
+        critical_voltage_margin = None
+        if session_configuration.raw_voltage_margins_supported:
+            if (
+                minimum_voltage is not None
+                and session_configuration.low_voltage is not None
+                and session_configuration.low_voltage > 0
+            ):
+                low_voltage_margin = (
+                    minimum_voltage
+                    - session_configuration.low_voltage
+                )
+            if (
+                minimum_voltage is not None
+                and session_configuration.critical_voltage is not None
+                and session_configuration.critical_voltage > 0
+            ):
+                critical_voltage_margin = (
+                    minimum_voltage
+                    - session_configuration.critical_voltage
+                )
+
+        throttle = self._time_ordered(self.flight_log.get("CTUN"))
+        if not throttle.empty:
+            throttle = throttle[
+                (throttle["TimeUS"] >= bounds.start_us)
+                & (throttle["TimeUS"] <= bounds.end_us)
+            ]
+        throttle_values = self._finite_numeric(throttle, "ThO").dropna()
+
+        return BatteryLoadInterval(
+            event_type=bounds.event_type,
+            takeoff_type=bounds.takeoff_type,
+            flight_number=self._flight_number(),
+            instance=self.instance,
+            start_us=bounds.start_us,
+            end_us=bounds.end_us,
+            duration_s=(bounds.end_us - bounds.start_us) / 1_000_000,
+            consumed_mah_at_start=self._counter_at(
+                bat,
+                "CurrTot",
+                bounds.start_us,
+            ),
+            pre_load_voltage=pre_load_voltage,
+            minimum_voltage=minimum_voltage,
+            current_at_minimum_voltage=current_at_minimum_voltage,
+            peak_current=peak_current,
+            average_current=average_current,
+            maximum_throttle=(
+                float(throttle_values.max())
+                if not throttle_values.empty
+                else None
+            ),
+            average_throttle=(
+                float(throttle_values.mean())
+                if not throttle_values.empty
+                else None
+            ),
+            voltage_sag=voltage_sag,
+            recovery_time_us=recovery_time_us,
+            voltage_after_recovery=voltage_after_recovery,
+            voltage_recovery=voltage_recovery,
+            low_voltage_margin=low_voltage_margin,
+            critical_voltage_margin=critical_voltage_margin,
+        )
+
+    def _flight_number(self) -> int:
+        return next(
+            index
+            for index, window in enumerate(self.flight_log.flights, start=1)
+            if window is self.flight_window
+        )
+
+    @staticmethod
+    def _finite_mask(values: pd.Series) -> pd.Series:
+        return values.map(
+            lambda value: pd.notna(value) and math.isfinite(value)
+        )
+
+    @classmethod
+    def _finite_numeric(
+        cls,
+        data: pd.DataFrame,
+        column: str,
+    ) -> pd.Series:
+        if column not in data.columns:
+            return pd.Series(index=data.index, dtype=float)
+
+        values = pd.to_numeric(data[column], errors="coerce")
+        return values.where(cls._finite_mask(values))
+
+    @classmethod
+    def _time_ordered(cls, data: pd.DataFrame) -> pd.DataFrame:
+        if data is None or data.empty or "TimeUS" not in data.columns:
+            return pd.DataFrame()
+
+        times = pd.to_numeric(data["TimeUS"], errors="coerce")
+        result = data.loc[cls._finite_mask(times)].copy()
+        result["TimeUS"] = times.loc[result.index]
+        return result.sort_values("TimeUS", kind="stable")
+
+    @classmethod
+    def _counter_at(
+        cls,
+        data: pd.DataFrame,
+        column: str,
+        time_us: int,
+    ) -> Optional[float]:
+        counter = cls._finite_numeric(data, column)
+        rows = data[
+            (data["TimeUS"] <= time_us)
+            & counter.notna()
+        ]
+        if rows.empty:
+            return None
+
+        values = counter.loc[rows.index]
+        if (values.diff().dropna() < 0).any():
+            return None
+
+        return float(values.iloc[-1])
+
+    @staticmethod
+    def _difference(
+        minuend: Optional[float],
+        subtrahend: Optional[float],
+    ) -> Optional[float]:
+        if minuend is None or subtrahend is None:
+            return None
+        return minuend - subtrahend
 
     def _instance_rows(self, bat: pd.DataFrame) -> pd.DataFrame:
         instances = pd.to_numeric(bat["Inst"], errors="coerce")

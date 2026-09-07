@@ -1,0 +1,32 @@
+#
+# Battery Analysis
+#
+
+battery_analysis:
+
+  sustained_load:
+
+    throttle_min_pct: 90
+    min_duration_s: 8.0
+
+
+#
+# MAVLink messages required
+#
+
+messages:
+
+  - BAT
+  - GPS
+  - MODE
+  - CTUN
+  - MSG
+  - VER
+
+
+#
+# Companion parameter snapshots are not evidence for Battery Analysis.
+# Embedded PARM records are always read into ParameterHistory.
+#
+
+parameters: []
