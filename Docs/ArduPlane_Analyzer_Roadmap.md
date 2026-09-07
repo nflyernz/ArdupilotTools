@@ -11,6 +11,271 @@ provide a reusable framework for analyses such as landing, TECS, cruise
 performance, RTL, autotune, launch, power systems, navigation and sensor
 diagnostics.
 
+
+------------------------------------------------------------------------
+
+# Current Project Role — 2026-09-07
+
+ArduPilotTools (APT) is now retained as the **Plane log-analysis research,
+development and validation environment**.
+
+APT is not being retired after the AMC landing migration. Its purpose is to
+provide a controlled place to:
+
+- prototype new Plane-analysis ideas;
+- inspect raw log evidence and ArduPilot semantics;
+- define detector and evidence contracts;
+- exercise synthetic edge cases;
+- validate behaviour against representative real logs;
+- build repeatable regression evidence before proposing upstream work.
+
+The preferred development path is now:
+
+``` text
+Engineering question / observed anomaly
+    │
+    ▼
+APT research and prototype
+    │
+    ▼
+Real-log validation + explicit evidence semantics
+    │
+    ▼
+Maintainer discussion where relevant
+    │
+    ▼
+AMC-native implementation only if accepted/useful
+```
+
+APT behaviour is therefore **not automatically an AMC implementation plan**.
+New APT work may remain APT-only when it is experimental, diagnostic, or not
+yet justified for AMC.
+
+The existing APT landing implementation remains a validated behavioural
+reference, but AMC architecture and maintainer direction take precedence when
+a feature is promoted upstream.
+
+## Current AMC Status
+
+The legacy APT landing-analysis migration to ArduPilot Methodic Configurator
+(AMC) is complete from the APT side.
+
+The Plane landing-analysis pull request is pending review:
+
+``` text
+ArduPilot/MethodicConfigurator PR #2024
+```
+
+The migration preserves the validated landing evidence semantics while using
+AMC-native flight scoping, log-analysis models and flat `LogAnalysisResult`
+presentation.
+
+No further legacy APT-to-AMC landing migration work should be started unless
+review identifies a specific gap.
+
+After merge, representative AMC screenshots should be captured for the
+maintainer's public announcement.
+
+## Timestamped Parameter Evidence
+
+APT now has embedded-BIN timestamped parameter history.
+
+Completed commits:
+
+``` text
+e13fc73  feat(params): add timestamped parameter history
+7bb0d26  refactor(rangefinder): use event-time parameter history
+0b660ec  refactor(flight): use event-time stall speed
+```
+
+The public evidence API is:
+
+``` python
+flight_log.parameter_history.value_at(parameter_name, time_us)
+```
+
+APT uses absolute raw `TimeUS` microseconds.
+
+### Rangefinder
+
+`RangefinderEvents` now evaluates `RNGFND1_MAX` at each candidate RFND sample
+using embedded parameter history.
+
+The companion `.params` snapshot is not used as historical fallback for this
+consumer.
+
+### Flight detection
+
+`FlightWindowDetector` now evaluates `AIRSPEED_STALL` at each GPS sample.
+
+For a finite positive logged stall speed:
+
+``` text
+effective_threshold = max(5.0 m/s, 0.5 × AIRSPEED_STALL)
+```
+
+More generally the configured detector floor is used instead of 5.0 m/s.
+
+If event-time stall evidence is missing, non-finite, zero or negative, the
+detector uses its configured minimum-speed heuristic directly. It does **not**
+invent a 10 m/s stall-speed value.
+
+The four validated logs retain their exact pre-migration flight boundaries.
+
+### Companion `.params`
+
+The companion parameter reader remains in APT.
+
+It must **not** be removed merely because current Landing Analysis is now
+byte-identical with and without companion `.params` for:
+
+``` text
+log_11
+log_17
+log_19
+log_26
+```
+
+That result establishes independence for the currently exercised Landing
+Analysis path, not repository-wide redundancy.
+
+Before any deprecation/removal decision:
+
+1. audit every remaining `FlightLog.param()`, `has_param()` and
+   `parameters` consumer;
+2. classify whether each consumer requires historical parameter evidence,
+   current/snapshot configuration, or neither;
+3. migrate only where embedded event-time evidence is the correct semantic
+   source;
+4. validate against real logs and synthetic edge cases;
+5. retain companion-only information where it remains materially useful.
+
+### Repository-wide companion-parameter audit
+
+The repository-wide consumer audit is complete.
+
+No current production analysis consumes values from
+`FlightLog.parameters`, `FlightLog.param()` or `FlightLog.has_param()`.
+
+Landing Analysis, Event Timeline, Battery Analysis, flight detection and
+rangefinder evidence now obtain their required evidence from telemetry or
+embedded timestamped `ParameterHistory`.
+
+`ParameterReader` is therefore **probably redundant for normal production
+analysis**, but removal is deliberately deferred.
+
+Removal requires a separate deprecation/design decision covering:
+
+- `FlightLog.parameters`;
+- `FlightLog.param()`;
+- `FlightLog.has_param()`;
+- companion parameter metadata;
+- remaining diagnostic/test tooling;
+- legacy `RNGFND1_MAX_CM` normalisation;
+- the possible future value of genuinely external configuration snapshots.
+
+Companion snapshots must not be reintroduced as fallback evidence for an
+event-time parameter lookup.
+
+The absence of current production consumers is evidence that the companion
+system is not presently required by analysis. It is not, by itself, a reason
+to remove the API or external-snapshot capability without a deliberate
+cleanup decision.
+
+### `Config/landing.yaml` parameter filters
+
+Keep `Config/landing.yaml` and its existing parameter configuration unchanged.
+
+The YAML has responsibilities beyond companion parameter loading and must not
+be treated as obsolete merely because production analysis no longer consumes
+the filtered companion snapshot.
+
+Its companion-parameter filter section currently retains parameter families
+such as:
+
+    AHRS_*
+    ARSPD_*
+    EK3_*
+    LAND_*
+    RNGFND*
+    TECS_*
+
+Those filters are now legacy infrastructure associated with
+`ParameterReader`, because no current production analysis consumes the
+resulting filtered `FlightLog.parameters` dictionary.
+
+Do **not** remove or simplify these filters opportunistically.
+
+Reconsider the companion-parameter filter section only as part of a deliberate
+`ParameterReader` deprecation/removal task, with its own architecture review
+and regression validation.
+
+In particular, future Battery Analysis / battery-pack history work must not
+modify these filters merely to obtain `BATT_*` parameters. If battery
+parameter evidence is required, determine the correct evidence source and
+time semantics independently.
+
+## Immediate APT Research Priorities
+
+### 1. Rangefinder acquisition / `LAND.fh` anomaly
+
+A previously observed landing anomaly is now a dedicated bug-reproduction
+research item:
+
+- on rangefinder acquisition, RFND has sometimes shown a brief drop to about
+  5 m;
+- at the same time `LAND.fh` has reportedly excursioned to about `-167`.
+
+Treat this as a suspected ArduPilot firmware bug until reproduced and traced.
+
+The next step is **read-only evidence audit and reproduction**, not a generic
+sensor-health score.
+
+Required evidence should include synchronized:
+
+- RFND acquisition state and raw distance samples;
+- `LAND.fh`;
+- LAND stage;
+- BARO altitude and other relevant altitude evidence;
+- event-time rangefinder parameters;
+- exact timestamps and transient duration;
+- repeatability across attempts/logs.
+
+Do not infer the cause before source/log evidence establishes it.
+
+### 2. Battery pack identity and longitudinal history
+
+APT Battery Analysis already provides objective per-flight measurements.
+
+Planned research is to add optional physical-pack identity (for example
+Pack 1 / Pack 2 / Pack 3) and a separate longitudinal persistence layer.
+
+The analyzer should continue to report measurements such as voltage, current,
+consumed capacity, sag and recovery without inventing a battery-health score.
+
+### 3. Remaining companion-parameter consumer audit
+
+Continue auditing remaining uses of the legacy companion parameter API before
+deciding whether `ParameterReader` is redundant in APT.
+
+This is a cleanup/evidence task, not a mandate to remove the reader.
+
+## Working Rules for New APT Work
+
+For new analysis or diagnostic work:
+
+- begin with a concrete engineering question;
+- inspect current code and log evidence before implementation;
+- define units and time semantics explicitly;
+- preserve measured versus derived evidence;
+- use `Unavailable` rather than guessed values;
+- avoid score/health/tuning judgements until validated;
+- use real logs plus synthetic edge cases;
+- keep production changes narrow;
+- do not combine unrelated cleanup with semantic changes;
+- do not assume an APT prototype should migrate to AMC.
+
+
 ------------------------------------------------------------------------
 
 # Design Principles
@@ -54,6 +319,7 @@ FlightReader
 FlightLog
     ├── telemetry
     ├── parameters
+    ├── parameter_history
     ├── mode segments
     ├── metadata
     │
@@ -643,6 +909,100 @@ Presentation / Report
 
 ------------------------------------------------------------------------
 
+------------------------------------------------------------------------
+
+# Proposed Broader Analysis --- Radio Link Health / RC Failsafe
+
+## Objective
+
+Add a flight-scoped analysis for objectively examining RC-link degradation,
+RC failsafe entry/recovery, and the aircraft response to loss of the control
+link.
+
+The analysis should preserve the project-wide distinction between RF/link
+evidence and ArduPilot's response. It should not infer transmitter-side
+behaviour that is not present in the flight log.
+
+Engineering questions include:
+
+-   At what recorded link conditions did packet loss become significant?
+-   When did ArduPilot declare RC failsafe?
+-   How long did each RC failsafe last?
+-   What flight-mode or failsafe response followed?
+-   When was RC control recovered?
+-   What link evidence was available immediately before loss and after recovery?
+
+## Candidate Evidence
+
+Subject to validation against representative logs:
+
+-   [ ] RC receiver RSSI / RSSI dBm where logged.
+-   [ ] Receiver link quality (`RQLY` / LQ) where logged.
+-   [ ] RF mode / packet-rate evidence where logged.
+-   [ ] RC channel validity and loss.
+-   [ ] ArduPilot RC failsafe events/state.
+-   [ ] Flight-mode transitions associated with failsafe.
+-   [ ] Failsafe entry and recovery timestamps.
+-   [ ] Duration of each failsafe interval.
+-   [ ] Last valid link measurements before failsafe.
+-   [ ] First valid link measurements after recovery.
+-   [ ] Transmitter-power evidence only if actually present in the log; do not
+    infer Dynamic Power behaviour from receiver metrics.
+
+## Proposed Analysis Pattern
+
+``` text
+FlightLog
+    │
+    ▼
+FlightWindow
+    │
+    ▼
+RC Link / Failsafe Window(s)
+    │
+    ├── Link Evidence Processor
+    ├── RC Failsafe Detector
+    └── Mode / Response Evidence
+             │
+             ▼
+      RadioLinkAnalysis
+             │
+             ▼
+      Structured Result
+```
+
+Failsafe boundaries should be owned by a detector using explicit ArduPilot
+evidence rather than an arbitrary RSSI or LQ threshold.
+
+## Candidate Presentation
+
+-   [ ] Minimum recorded RSSI and/or LQ.
+-   [ ] Chronological link/failsafe event timeline.
+-   [ ] Failsafe duration and recovery.
+-   [ ] Mode before, during and after failsafe.
+-   [ ] Link-quality/RSSI plot with failsafe and mode-change markers.
+-   [ ] Explicit `Unavailable` for RF metrics not present in the BIN log.
+
+The analysis should distinguish:
+
+``` text
+RF signal strength          -> available link-margin evidence
+Link quality / packet loss  -> successful packet-reception evidence
+RC failsafe                 -> ArduPilot failsafe state
+Flight-mode response        -> aircraft/autopilot response
+```
+
+## Validation
+
+Initial validation should include a deliberate ground-test log in which the
+ELRS link is progressively degraded until an actual RC failsafe occurs, with
+independent observation of aircraft behaviour where practical.
+
+This module belongs under **v0.8 Broader Flight Analyses** unless earlier logs
+or community feedback establish a stronger development priority. It should not
+displace the current Community Review -> v0.6 Reporting sequence.
+
+
 # Deferred Landing Expansion
 
 The current landing analysis intentionally does **not** attempt to
@@ -701,24 +1061,35 @@ These remain deferred until they answer a demonstrated engineering need.
 
 # Deferred Architecture Work
 
-## Per-Flight Parameter Reconstruction
+## Timestamped Parameter Reconstruction ✅
 
-The current framework uses a companion `.params` file as a log-level
-parameter snapshot.
+This work is now complete.
 
-Future tuning logs may change parameters between flights in one BIN log.
+APT reads in-log `PARM` records into `FlightLog.parameter_history` and exposes
+event-time lookup in raw absolute `TimeUS` microseconds.
 
-A future milestone should:
+Established semantics include:
 
--   [ ] read in-log `PARM` changes;
--   [ ] reconstruct active parameter state for each `FlightWindow`;
--   [ ] expose parameter provenance;
--   [ ] preserve the companion `.params` file as an external snapshot;
--   [ ] prevent analysis from silently assuming one parameter state
-    where the log proves otherwise.
+- startup baseline reconstruction;
+- timestamped post-startup changes;
+- exact-timestamp changes effective at that timestamp;
+- stable duplicate-timestamp ordering;
+- late first occurrence remaining unavailable before first evidence;
+- explicit rejection of invalid/non-finite timestamps;
+- no interpolation between parameter changes.
 
-This should be implemented when parameter-dependent comparative analysis
-requires it.
+Event-time parameter history is already used by:
+
+- `RangefinderEvents` for `RNGFND1_MAX`;
+- `FlightWindowDetector` for `AIRSPEED_STALL`.
+
+The companion `.params` reader remains available as a separate untimestamped
+snapshot source until a repository-wide consumer audit demonstrates whether
+it is still required.
+
+Do not reintroduce a per-`FlightWindow` reconstructed parameter dictionary
+unless a concrete consumer requires one. Prefer direct event-time lookup from
+the shared log-level history.
 
 ------------------------------------------------------------------------
 
@@ -805,6 +1176,7 @@ complete:
 
 -   [x] `FlightLog` owns decoded telemetry.
 -   [x] `FlightLog` owns parameters.
+-   [x] `FlightLog` owns timestamped embedded parameter history.
 -   [x] `FlightLog` owns mode segments.
 -   [x] `FlightWindow` defines individual flight scope.
 -   [x] Multiple flights per log are supported.
@@ -837,46 +1209,166 @@ complete:
 
 ------------------------------------------------------------------------
 
-# Current Development Target
+# Historical Development Target
 
-## Community review → v0.6 Reporting
+The former `Community review → v0.6 Reporting` sequence below is retained only
+as project history.
 
-The project has reached a useful transition point.
+It is **not** the current instruction for Codex and should not be used to pick
+the next task.
 
-The landing detector and initial analysis are no longer the immediate
-development target.
+Standalone reporting, JSON, HTML/PDF and broad analysis expansion remain
+possible future work, but only when a concrete engineering need or the AMC
+integration direction justifies them.
 
-Current sequence:
+The authoritative current direction is the
+**Current Project Role — 2026-09-07** section near the top of this roadmap.
+
+------------------------------------------------------------------------
+
+# Direction Update — AMC Collaboration
+
+The project direction changed after discussion with the ArduPilot Methodic
+Configurator (AMC) project about collaborating and potentially moving this
+work into the AMC repository.
+
+This changes the near-term priority of standalone ArduPilotTools development.
+
+## Immediate Priority
+
+The current v0.5 landing-analysis baseline should remain stable while the
+proposed AMC collaboration is explored.
+
+Near-term work should focus on:
+
+- presenting the existing landing analysis to the ArduPilot community;
+- collecting feedback on its usefulness, terminology and assumptions;
+- exposing the current implementation to logs from other aircraft and users;
+- understanding how the analysis framework could fit into AMC;
+- identifying which parts of ArduPilotTools should be reused, adapted or
+  reorganised for that environment;
+- avoiding substantial standalone architecture work that may immediately
+  need to be reworked during integration.
+
+The existing Landing Analysis, Event Timeline and Battery Analysis remain
+useful working capabilities and provide concrete code and behaviour for
+collaboration.
+
+## Sensor Diagnostics Deferred
+
+An audit of the existing Sensor Diagnostics work found useful underlying
+sensor-processing infrastructure, but not a nearly complete user-facing
+analysis.
+
+In particular:
+
+- airspeed has the most developed validation support;
+- GPS and barometer currently provide useful descriptive processing but not
+  a complete health-validation model;
+- rangefinder processing is primarily landing evidence rather than generic
+  sensor-health assessment;
+- `SensorHealthWindow` and other sensor primitives exist but are not wired
+  into a complete Sensor Diagnostics analysis;
+- menu option 6 remains unimplemented.
+
+The audit also identified some bounded cleanup and validation work in the
+existing sensor code.
+
+This work is now deliberately deferred. It should not be expanded simply to
+complete the standalone Analyse menu before the AMC integration direction is
+clear.
+
+Sensor Diagnostics remains a valid future analysis, but its implementation
+should be reconsidered in the context of the eventual AMC architecture and
+user interface.
+
+## Reporting Milestones Reconsidered
+
+The previously planned sequence:
 
 ``` text
-v0.1  Core Framework                     COMPLETE
-  │
-v0.2  FlightWindow Integration           COMPLETE
-  │
-v0.3  Analysis Framework                 COMPLETE
-  │
-v0.4  Landing Detection                  COMPLETE
-  │
-v0.5  Analysis + Initial Presentation    COMPLETE
-  │
-  ▼
-Community Review                         CURRENT
-  │
-  ▼
-v0.6  Reporting + Structured Output
-  │
-  ▼
-v0.7  Regression + Validation Expansion
-  │
-  ▼
-v0.8  Broader Flight Analyses
+Community Review
+    ↓
+v0.6 Reporting + Structured Output
+    ↓
+v0.7 Regression + Validation Expansion
+    ↓
+v0.8 Broader Flight Analyses
 ```
 
-The immediate objective is to preserve the `ccaf123` landing baseline,
-collect feedback, and use that feedback to define the first stable
-reporting contract.
+should no longer be treated as the immediate implementation schedule.
 
-Do not expand landing analysis simply to fill out the old metric list.
+The concepts remain useful, particularly structured results, regression
+coverage and evidence-first reporting, but their implementation order may
+change as part of AMC collaboration.
 
-The next implementation milestone should begin with the **result/report
-contract**, not another detector.
+In particular, avoid building a substantial standalone HTML/PDF reporting
+layer until it is clear how results will be presented and consumed within
+AMC.
+
+## Current Working Sequence
+
+``` text
+v0.5 Landing Analysis baseline           COMPLETE
+    │
+    ▼
+Public ArduPilot review                  CURRENT
+    │
+    ├── test against additional user logs
+    ├── collect technical feedback
+    └── identify incorrect assumptions
+    │
+    ▼
+AMC collaboration / integration design  NEXT
+    │
+    ├── determine code ownership and repository structure
+    ├── identify reusable ArduPilotTools components
+    ├── determine AMC presentation requirements
+    ├── preserve evidence-first analysis semantics
+    └── establish validation / CI expectations
+    │
+    ▼
+Implementation priorities reassessed
+```
+
+Until that integration direction is established, new standalone analyses
+should be added only where there is a strong immediate engineering need.
+
+## Preservation Rule
+
+The current project remains valuable as a tested reference implementation.
+
+Any migration or integration work should preserve:
+
+- the validated landing-attempt semantics;
+- `FlightLog` / `FlightWindow` scoping principles where applicable;
+- separation of detectors, processors, analysis and presentation;
+- explicit handling of unavailable evidence;
+- optional-sensor behaviour;
+- the landing regression baseline;
+- the distinction between measurement and interpretation.
+
+Integration into a larger project is not a reason to silently change validated
+analysis behaviour.
+
+Where AMC architecture requires a different implementation structure, changes
+should be made deliberately and checked against the existing regression
+behaviour.
+
+## Roadmap Status
+
+The earlier v0.6-v0.8 sections are retained as design history and a catalogue
+of useful future work. They are not a commitment to implementation order.
+
+The AMC integration path has now been established and the legacy Plane landing
+migration is complete from the APT side, with AMC PR #2024 pending review.
+
+The current development model is:
+
+> **Keep APT as the Plane research/validation environment; promote only
+> validated and accepted functionality into AMC using AMC-native architecture.**
+
+Near-term APT work should therefore be selected by evidence and engineering
+need, currently including the rangefinder-acquisition / `LAND.fh` bug
+reproduction, battery-pack longitudinal history, and completion of the
+remaining companion-parameter consumer audit.
