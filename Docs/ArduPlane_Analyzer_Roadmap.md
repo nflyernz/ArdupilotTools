@@ -60,7 +60,8 @@ a feature is promoted upstream.
 The legacy APT landing-analysis migration to ArduPilot Methodic Configurator
 (AMC) is complete from the APT side.
 
-The Plane landing-analysis pull request is pending review:
+The Plane landing-analysis pull request remains open. The review response is
+pushed and functional CI is green; code-owner review is pending:
 
 ``` text
 ArduPilot/MethodicConfigurator PR #2024
@@ -75,6 +76,40 @@ review identifies a specific gap.
 
 After merge, representative AMC screenshots should be captured for the
 maintainer's public announcement.
+
+## Evidence Semantics Learned from AMC Review
+
+The Plane landing review established durable principles for future log-analysis
+research:
+
+1. **DataFlash is an observation, not a complete execution trace.** Firmware
+   may progress through multiple internal LAND states between log writes, so
+   stage 1 may be absent. Detectors must use observable semantics validated
+   against firmware behavior and real logs rather than assuming every internal
+   transition is logged.
+2. **Observation and firmware usability are different.** A current sensor
+   observation can be useful evidence even when firmware rejects it for a
+   particular control function. For example, RFND `Stat 3 OutOfRangeHigh`
+   with `Dist 9.24 m` is current observation, but not usable as Plane
+   landing-height evidence; it must not be relabeled unavailable.
+3. **Preserve sensor status and provenance.** When interpretation depends on
+   source selection or status, retain it. This includes RFND orientation and
+   instance, RFND `Stat`, and ARSP primary/health state; instance 0 must not be
+   assumed merely for convenience.
+4. **Flight-control use is not measurement validity.** ARSP `U` indicates
+   flight-control use, not general measurement validity. Observational evidence
+   may still use a finite, healthy primary measurement when `U == 0`.
+5. **Unavailable must mean unavailable.** Unavailable must mean unavailable. Treat evidence as unavailable only when it cannot itself be established conservatively.. Where defensible, keep the raw
+   observation, explicit status/provenance, and derived usability or validity
+   separate.
+6. **Prefer direct evidence labels.** Use explicit firmware terms such as
+   `OutOfRangeHigh (3)` instead of prematurely collapsing them into vague or
+   evaluative labels such as “in range” or “invalid,” unless the derived
+   interpretation is explicitly defined and justified.
+7. **Reusable review question:** for every derived validity rule, ask whether
+   rejected data is actually unavailable, or merely unusable for that
+   particular derivation. This applies to future APT research beyond landing
+   and RFND.
 
 ## Timestamped Parameter Evidence
 
@@ -1361,7 +1396,8 @@ The earlier v0.6-v0.8 sections are retained as design history and a catalogue
 of useful future work. They are not a commitment to implementation order.
 
 The AMC integration path has now been established and the legacy Plane landing
-migration is complete from the APT side, with AMC PR #2024 pending review.
+migration is complete from the APT side. AMC PR #2024 has its review response
+pushed and functional CI green; code-owner review is pending.
 
 The current development model is:
 
@@ -1372,3 +1408,28 @@ Near-term APT work should therefore be selected by evidence and engineering
 need, currently including the rangefinder-acquisition / `LAND.fh` bug
 reproduction, battery-pack longitudinal history, and completion of the
 remaining companion-parameter consumer audit.
+
+
+Battery Analysis / Pack History — extend the existing chemistry-neutral per-log analysis with takeoff and sustained-load evidence, optional physical Pack ID, configured voltage-threshold margins, and longitudinal whole-pack history. Cell-level diagnosis, inferred IR, and battery-health scoring are explicitly out of scope. See Docs/Implementation/Battery_Analysis_Design.md.
+
+### Parameter evidence direction
+
+New APT analysis should, where practical, operate directly from the `.bin` log
+and use embedded `PARM` records / `ParameterHistory` for logged parameter
+evidence.
+
+New analysis should not introduce a dependency on companion `.params` snapshots
+when the required evidence is already available in the BIN.
+
+If an analysis genuinely requires parameter evidence that is not available from
+the BIN, that requirement should be identified explicitly and its appropriate
+source and semantics designed before implementation rather than silently using a
+companion snapshot as fallback.
+
+Existing companion `.params` support remains legacy infrastructure. Its eventual
+deprecation or continued role is a separate architectural decision.
+
+This APT direction does not imply that external/current parameter sets are
+unnecessary in AMC, where Methodic Configurator's configuration workflow may
+legitimately provide parameter evidence that is distinct from historical values
+recorded in a flight log.
