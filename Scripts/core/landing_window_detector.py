@@ -132,7 +132,9 @@ class LandingWindowDetector:
 
         windows = []
 
-        for start in valid_starts:
+        for start_index, start in enumerate(
+            valid_starts
+        ):
 
             # ----------------------------------------------------
             # Candidate termination times.
@@ -142,6 +144,12 @@ class LandingWindowDetector:
             # ----------------------------------------------------
 
             termination_events = []
+
+            next_start = (
+                valid_starts[start_index + 1]
+                if start_index + 1 < len(valid_starts)
+                else None
+            )
 
             # ----------------------------------------------------
             # Landing abort / disarm messages.
@@ -233,6 +241,52 @@ class LandingWindowDetector:
                         break
 
             # ----------------------------------------------------
+            # A later stage-1 transition restarts the landing
+            # sequence. Observations at the shared boundary belong
+            # to the later attempt.
+            # ----------------------------------------------------
+
+            if next_start is not None:
+
+                termination_events.append(
+                    (
+                        next_start,
+                        "stage_restart",
+                    )
+                )
+
+            # ----------------------------------------------------
+            # Establish the attempt boundary before evaluating GPS
+            # persistence. Later GPS observations cannot qualify an
+            # earlier low-speed run after the attempt has ended.
+            # ----------------------------------------------------
+
+            if termination_events:
+
+                termination_events.sort(
+                    key=lambda item: (
+                        item[0],
+                        item[1]
+                        != "stage_restart",
+                    )
+                )
+
+                (
+                    provisional_end,
+                    provisional_reason,
+                ) = termination_events[0]
+
+            else:
+
+                provisional_end = (
+                    flight_window.end_us
+                )
+
+                provisional_reason = (
+                    "flight_window_end"
+                )
+
+            # ----------------------------------------------------
             # GPS groundspeed termination.
             #
             # GPSStopDetector owns the persistence algorithm and
@@ -243,13 +297,33 @@ class LandingWindowDetector:
             # the stream is absent or insufficient.
             # ----------------------------------------------------
 
-            gps_stop = (
-                gps_stop_detector.detect(
-                    flight_log,
-                    flight_window,
-                    start_us=start,
-                )
+            gps_scope_end = int(
+                provisional_end
             )
+
+            if (
+                provisional_reason
+                == "stage_restart"
+            ):
+
+                gps_scope_end -= 1
+
+            gps_stop = None
+
+            if gps_scope_end >= start:
+
+                gps_stop = (
+                    gps_stop_detector.detect(
+                        flight_log,
+                        LandingWindow(
+                            start_us=int(start),
+                            end_us=gps_scope_end,
+                            end_reason=(
+                                provisional_reason
+                            ),
+                        ),
+                    )
+                )
 
             if gps_stop is not None:
 
@@ -270,8 +344,11 @@ class LandingWindowDetector:
             if termination_events:
 
                 termination_events.sort(
-                    key=lambda item:
-                    item[0]
+                    key=lambda item: (
+                        item[0],
+                        item[1]
+                        != "stage_restart",
+                    )
                 )
 
                 (

@@ -83,7 +83,7 @@ APT landing regression:       PASS
 APT event/timeline regression PASS
 ```
 
-The sole intentional APT/AMC landing-boundary difference is:
+The sole intentional APT/AMC landing-boundary difference at merge was:
 
 ``` text
 log_17.bin flight 4
@@ -93,7 +93,9 @@ AMC: DISARM   2848866277 us
 
 This is the accepted causality correction: post-attempt GPS observations must
 not retroactively qualify an earlier low-speed run after the attempt has
-already terminated.
+already terminated. APT now incorporates the same correction, so its current
+`log_17.bin` flight 4 boundary is also DISARM at `2848866277 us` and current
+four-log boundary parity is 16/16.
 
 The final four-log AMC fingerprint remained:
 
@@ -905,14 +907,14 @@ Landing analysis regression: PASS
 ```
 
 This assertion-based harness covers all four logs, all established
-termination paths (`abort`, `flight_window_end`, `gps`), a no-flare
+termination paths (`abort`, `disarm`, `flight_window_end`, `gps`), a no-flare
 case, known completed landing measurements, optional ARSP/RFND
 unavailability, and incomplete CMD snapshot rejection.
 
-Its completed-case references include:
+Its corrected termination and completed-case references include:
 
 ``` text
-log_17.bin  flight 4  GPS stop 2848264000 us  flare→stop 8.00 s  target 22.5 m
+log_17.bin  flight 4  DISARM   2848866277 us
 log_19.bin  flight 1  GPS stop  743104000 us  flare→stop 6.70 s  target 19.1 m
 log_26.bin  flight 4  GPS stop 2775037000 us  flare→stop 5.50 s  target 29.4 m
 ```
@@ -1334,6 +1336,10 @@ The two unchanged reference GPS-stop boundaries remained:
 log_19 flight 1:  743104011 us
 log_26 flight 4: 2775037136 us
 ```
+
+APT subsequently incorporated the same reviewed causality rule. Its current
+`log_17` flight 4 boundary is DISARM at `2848866277 us`; the current APT/AMC
+comparison therefore matches 16/16 attempt boundaries.
 
 All 16 reference attempts retained dense RFND acquisition evidence (49 or 50
 samples), and stage-local ARSP/BARO/GPS evidence in the reference logs remained
@@ -1979,8 +1985,8 @@ Timestamped ParameterHistory / PR #1995          MERGED
 Plane landing analysis / PR #2024                MERGED
         ├── 208 focused Plane landing tests
         ├── mutation-backed review hardening
-        ├── 15/16 APT boundary parity
-        ├── one intentional log_17 causality correction
+        ├── 16/16 current APT boundary parity
+        ├── log_17 causality correction incorporated into APT
         ├── Tridge APPROVE — no blockers
         └── Amílcar squashed and merged
         │

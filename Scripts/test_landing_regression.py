@@ -17,11 +17,11 @@ LOGS = (
 
 # (flight number, GPS-stop TimeUS, flare-to-stop seconds, target distance m)
 COMPLETED_CASES = {
-    "log_17.bin": (4, 2_848_264_000, 8.00, 22.5),
     "log_19.bin": (1, 743_104_000, 6.70, 19.1),
     "log_26.bin": (4, 2_775_037_000, 5.50, 29.4),
 }
 
+LOG_17_FLIGHT_4_DISARM_US = 2_848_866_277
 TIME_TOLERANCE_US = 150_000
 SECONDS_TOLERANCE = 0.20
 DISTANCE_TOLERANCE_M = 1.0
@@ -77,9 +77,34 @@ for log_name in LOGS:
 
 # Existing validation cases must still represent each termination path.
 end_reasons = [analysis.end_reason for _, _, analysis in all_analyses]
-for reason in ("abort", "flight_window_end", "gps"):
+for reason in ("abort", "disarm", "flight_window_end", "gps"):
     if reason not in end_reasons:
         raise AssertionError(f"expected a {reason}-ended landing attempt")
+
+# GPS observations after disarm cannot retroactively qualify an earlier run.
+log_17_report = analyses_for(
+    loaded_logs["log_17.bin"],
+    loaded_logs["log_17.bin"].flights[3],
+)
+log_17_matches = [
+    analysis
+    for _, _, analysis in log_17_report
+    if analysis.attempt.end_us == LOG_17_FLIGHT_4_DISARM_US
+]
+
+if len(log_17_matches) != 1:
+    raise AssertionError(
+        "log_17.bin flight 4: expected one attempt ending at "
+        f"DISARM {LOG_17_FLIGHT_4_DISARM_US}, got {len(log_17_matches)}"
+    )
+
+log_17_analysis = log_17_matches[0]
+if log_17_analysis.end_reason != "disarm":
+    raise AssertionError("log_17.bin flight 4: expected DISARM end reason")
+if log_17_analysis.gps_stop_time_us is not None:
+    raise AssertionError(
+        "log_17.bin flight 4: post-disarm GPS was accepted"
+    )
 
 # At least one logged attempt has no flare event; absence is evidence, not error.
 if not any(analysis.flare_time_us is None for _, _, analysis in all_analyses):

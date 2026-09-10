@@ -35,7 +35,7 @@ EXPECTED_TERMINATIONS = {
     },
     "log_17.bin": {
         4: [
-            "GPS < 3 m/s for 2.0 s",
+            "DISARM",
         ],
     },
     "log_19.bin": {

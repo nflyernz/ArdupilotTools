@@ -98,9 +98,11 @@ APT landing regression:       PASS
 APT Event Timeline:           PASS
 ```
 
-The one intentional APT/AMC boundary difference is `log_17` flight 4, where
-AMC ends the attempt by DISARM rather than allowing post-attempt GPS samples to
-retroactively qualify an earlier `GPS_STOP` run.
+At merge, the one intentional APT/AMC boundary difference was `log_17` flight
+4, where AMC ended the attempt by DISARM rather than allowing post-attempt GPS
+samples to retroactively qualify an earlier `GPS_STOP` run. APT now incorporates
+that accepted causality correction: its current boundary is also DISARM at
+`2848866277 us`, restoring 16/16 boundary parity for the four reference logs.
 
 The four-log output fingerprint remained exactly:
 
