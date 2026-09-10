@@ -1,5 +1,9 @@
 # ArduPlane Analyzer Roadmap
 
+> **Updated:** 2026-09-11
+> **Current AMC target:** Step 66 — Everyday use / RTL correctness
+> **APT role:** Plane log-analysis R&D and validation
+
 ## Vision
 
 Build a modular engineering tool for objectively analysing ArduPilot
@@ -14,7 +18,7 @@ diagnostics.
 
 ------------------------------------------------------------------------
 
-# Current Project Role — 2026-09-07
+# Current Project Role — 2026-09-11
 
 ArduPilotTools (APT) is now retained as the **Plane log-analysis research,
 development and validation environment**.
@@ -58,24 +62,62 @@ a feature is promoted upstream.
 ## Current AMC Status
 
 The legacy APT landing-analysis migration to ArduPilot Methodic Configurator
-(AMC) is complete from the APT side.
-
-The Plane landing-analysis pull request remains open. The review response is
-pushed and functional CI is green; code-owner review is pending:
+(AMC) is **merged and complete**.
 
 ``` text
 ArduPilot/MethodicConfigurator PR #2024
+feat(log-analysis): add Plane landing analysis
+MERGED 2026-09-10
 ```
 
-The migration preserves the validated landing evidence semantics while using
-AMC-native flight scoping, log-analysis models and flat `LogAnalysisResult`
-presentation.
+Amílcar squashed the reviewed branch to a single feature commit before merge:
 
-No further legacy APT-to-AMC landing migration work should be started unless
-review identifies a specific gap.
+``` text
+7289471  feat(log-analysis): add ArduPlane landing attempt analysis
+```
 
-After merge, representative AMC screenshots should be captured for the
-maintainer's public announcement.
+GitHub records the merge into `ArduPilot:master` as `cf06392`.
+
+The last reviewed pre-squash head was `299e3797`. Tridge's final review verdict
+was:
+
+``` text
+APPROVE — no blockers. Everything I blocked on is fixed and properly pinned.
+```
+
+Final validation before merge included:
+
+``` text
+Plane landing tests:          208 passed
+Affected AMC tests:           305 passed
+Reference logs:               4
+Operational flights:          10
+Landing attempts:             16
+Historical APT boundaries:    15 / 16
+APT landing regression:       PASS
+APT Event Timeline:           PASS
+```
+
+The one intentional APT/AMC boundary difference is `log_17` flight 4, where
+AMC ends the attempt by DISARM rather than allowing post-attempt GPS samples to
+retroactively qualify an earlier `GPS_STOP` run.
+
+The four-log output fingerprint remained exactly:
+
+``` text
+8efe61136e30632afcf87e10ad2e22cdb02a1c015354df4972ef8c32ef1e53d0
+```
+
+The final review cycle used adversarial synthetic cases and mutation testing to
+turn assumptions that the four real logs could not exercise into focused
+regressions. The result is a substantially stronger evidence contract than the
+original four-log baseline alone could provide.
+
+Final CI had 16 successful checks. `Publish Tests Results` remained red only on
+the repository-wide coverage threshold (`88 < 89`), the same failure seen on
+`master`.
+
+No further legacy APT-to-AMC landing migration work is required.
 
 ## Evidence Semantics Learned from AMC Review
 
@@ -99,17 +141,99 @@ research:
 4. **Flight-control use is not measurement validity.** ARSP `U` indicates
    flight-control use, not general measurement validity. Observational evidence
    may still use a finite, healthy primary measurement when `U == 0`.
-5. **Unavailable must mean unavailable.** Unavailable must mean unavailable. Treat evidence as unavailable only when it cannot itself be established conservatively.. Where defensible, keep the raw
-   observation, explicit status/provenance, and derived usability or validity
-   separate.
+5. **Unavailable must mean unavailable.** Treat evidence as unavailable only
+   when it cannot itself be established conservatively. Where defensible, keep
+   the raw observation, explicit status/provenance, and derived usability or
+   validity separate.
 6. **Prefer direct evidence labels.** Use explicit firmware terms such as
    `OutOfRangeHigh (3)` instead of prematurely collapsing them into vague or
    evaluative labels such as “in range” or “invalid,” unless the derived
    interpretation is explicitly defined and justified.
-7. **Reusable review question:** for every derived validity rule, ask whether
-   rejected data is actually unavailable, or merely unusable for that
-   particular derivation. This applies to future APT research beyond landing
-   and RFND.
+7. **Scope before selection; validity after selection.** First restrict candidate
+   evidence to the owning flight/attempt, then select the relevant/nearest
+   observation, then decide whether that selected observation is usable. Do not
+   let out-of-scope rows suppress valid evidence and do not search farther away
+   merely to find a plausible finite/healthy value.
+8. **Causal state is not owned observation.** Earlier configuration/state can
+   seed interpretation where justified, but it does not become evidence owned by
+   a later attempt. Future state must never retroactively alter earlier evidence.
+9. **Duplicate timestamps are one instant.** Duplicate rows may be tolerated in
+   cadence estimation, but equal-time rows must not count as multiple elapsed
+   samples when claiming continuity.
+10. **Mutation testing is a useful semantic check.** A regression test is much
+    stronger when reverting the specific guard/ordering rule makes it fail while
+    positive controls remain green.
+11. **Reusable review question:** for every derived validity rule, ask whether
+    rejected data is actually unavailable, or merely unusable for that
+    particular derivation. This applies to future APT research beyond landing
+    and RFND.
+
+## Immediate AMC Priority — Step 66 Everyday use / RTL
+
+After PR #2024 merged, Amílcar asked for the ArduPlane configuration method and
+its associated `*.param` files to be improved before log analysis is wired into
+configuration guidance.
+
+The broad read-only method audit is now **COMPLETE**.
+
+The authoritative AMC metadata file is:
+
+``` text
+configuration_steps_ArduPlane.json
+```
+
+The audit found that the current method is substantially Copter-derived and
+that several fixed-wing domains lack coherent ownership. It also established
+that AMC's existing configuration infrastructure is sufficient for the first
+corrections; the immediate problem is configuration content and ordering.
+
+The complete audit is preserved in:
+
+``` text
+Docs/Implementation/ArduPlane_Configuration_Method_Audit.md
+```
+
+### First bounded configuration-method PR
+
+The next implementation target is:
+
+> **ArduPlane 4.7.x Step 66 — Everyday use / RTL correctness**
+
+The initial PR should:
+
+- validate `RTL_ALTITUDE` semantics and units against Plane 4.7.x;
+- validate `RTL_CLIMB_MIN`;
+- validate the battery-failsafe parameters already present in Step 66;
+- replace stale or incorrect Copter-derived Step 66 content;
+- update Plane-specific Step 66 guidance where needed;
+- keep the two Plane templates consistent;
+- add focused configuration-content tests.
+
+It should **not** redesign the whole sequence or absorb other audit findings.
+
+The provisional follow-up order is:
+
+``` text
+Step 66 Everyday use / RTL
+        ↓
+sequence/template conformance
+        ↓
+fixed-wing frame + output/control-surface foundation
+        ↓
+power / propulsion / failsafes
+        ↓
+airspeed + flight envelope
+        ↓
+takeoff / landing / tuning / TECS / navigation
+        ↓
+QuadPlane applicability boundaries
+        ↓
+analysis → earliest canonical configuration step
+```
+
+AMC's method owns the remedy. Plane analysis owns objective evidence and, later,
+the defensible mapping to the relevant configuration domain or canonical step.
+Direct parameter-value recommendations remain outside the immediate target.
 
 ## Timestamped Parameter Evidence
 
@@ -250,7 +374,38 @@ modify these filters merely to obtain `BATT_*` parameters. If battery
 parameter evidence is required, determine the correct evidence source and
 time semantics independently.
 
-## Immediate APT Research Priorities
+## Current Battery Analysis Status
+
+The first bounded Battery Analysis extension is complete and committed:
+
+``` text
+4e83b46  feat(battery): add bounded load-event analysis
+```
+
+Implemented scope includes:
+
+- embedded-`PARM` session configuration for `BATT_CAPACITY`,
+  `BATT_LOW_VOLT`, `BATT_CRT_VOLT`, and `BATT_FS_VOLTSRC`;
+- AUTO Takeoff Load Events bounded by existing `FlightWindow` semantics;
+- Sustained Load Events using the exact configured
+  `CTUN.ThO >= 90` for `>= 8.0 s` rule;
+- common bounded-event evidence including pre-load voltage, minimum voltage,
+  peak/average current, current at minimum voltage, sag, recovery, consumed
+  capacity at event start, and configured-threshold margins where supported;
+- optional user-supplied Pack ID at the session/presentation boundary;
+- five-log regression validation including `log_0.bin`;
+- operation from embedded BIN parameter evidence without companion `.params`
+  fallback for the implemented battery configuration path.
+
+Manual takeoff detection is deliberately deferred until genuine manual-takeoff
+log evidence exists.
+
+Persistent longitudinal Pack History is also deferred. Optional Pack ID already
+exists; the remaining research problem is how to persist and compare repeated
+sessions from the same physical pack without introducing chemistry assumptions,
+health scores, inferred internal resistance, or replacement advice.
+
+## Secondary APT Research Priorities
 
 ### 1. Rangefinder acquisition / `LAND.fh` anomaly
 
@@ -269,6 +424,7 @@ sensor-health score.
 Required evidence should include synchronized:
 
 - RFND acquisition state and raw distance samples;
+- RFND status/provenance where logged;
 - `LAND.fh`;
 - LAND stage;
 - BARO altitude and other relevant altitude evidence;
@@ -278,22 +434,32 @@ Required evidence should include synchronized:
 
 Do not infer the cause before source/log evidence establishes it.
 
-### 2. Battery pack identity and longitudinal history
+### 2. Persistent battery pack history
 
-APT Battery Analysis already provides objective per-flight measurements.
+The bounded per-log Battery Analysis and optional Pack ID are already complete.
 
-Planned research is to add optional physical-pack identity (for example
-Pack 1 / Pack 2 / Pack 3) and a separate longitudinal persistence layer.
+The remaining longitudinal research is to accumulate repeated sessions for the
+same identified physical packs and then design a separate persistence/comparison
+layer.
 
-The analyzer should continue to report measurements such as voltage, current,
-consumed capacity, sag and recovery without inventing a battery-health score.
+Do not choose a persistence format before there is enough repeated-pack evidence
+to establish what must be stored and compared. Preserve provenance to source
+log/session and continue to report objective whole-pack evidence only.
 
-### 3. Remaining companion-parameter consumer audit
+Manual takeoff detection remains a separate deferred evidence problem and must
+not be invented without a genuine manual-takeoff log.
 
-Continue auditing remaining uses of the legacy companion parameter API before
-deciding whether `ParameterReader` is redundant in APT.
+### 3. Present mature APT analysis when useful
 
-This is a cleanup/evidence task, not a mandate to remove the reader.
+Battery Analysis and Event Timeline remain useful examples of APT's
+research/validation role, but they are secondary while the maintainer-requested
+ArduPlane configuration-sequence work is active. Present them when useful; do
+not treat presentation as a request to migrate the entire APT architecture or
+every experimental feature.
+
+The repository-wide companion-parameter consumer audit is already complete. It
+is **not** an outstanding research priority. `ParameterReader` deprecation
+remains a separate optional cleanup/design decision.
 
 ## Working Rules for New APT Work
 
@@ -1244,6 +1410,52 @@ complete:
 
 ------------------------------------------------------------------------
 
+# Current Project Checkpoint
+
+``` text
+APT timestamped ParameterHistory                 COMPLETE
+        │
+        ▼
+APT bounded Battery Analysis                     COMPLETE (4e83b46)
+        │
+        ▼
+AMC Plane infrastructure
+        ├── Flight segmentation / PR #1989       MERGED
+        ├── ParameterHistory / PR #1995          MERGED
+        └── Plane landing / PR #2024             MERGED
+                ├── 208 focused Plane tests
+                ├── mutation-backed review
+                ├── Tridge APPROVE
+                └── Amílcar squash/merge
+        │
+        ▼
+ArduPlane configuration-method audit             COMPLETE
+        ├── configuration_steps_ArduPlane.json
+        ├── Plane *.param inventory
+        ├── ownership/dependency analysis
+        └── prioritized findings
+        │
+        ▼
+Step 66 Everyday use / RTL                       CURRENT / NEXT PR
+        │
+        ▼
+Remaining Plane configuration domains            LATER / SMALL PRs
+        │
+        ▼
+Map log-analysis findings to sequence steps      LATER
+        │
+        ▼
+APT remains Plane log-analysis R&D environment
+```
+
+The next implementation target is not another landing metric and not another
+broad repository audit. It is the bounded Step 66 correction defined by the
+configuration-method audit.
+
+APT research remains available for independent engineering questions, but it
+should not displace the maintainer-requested AMC method work unless a concrete
+operational need requires it.
+
 # Historical Development Target
 
 The former `Community review → v0.6 Reporting` sequence below is retained only
@@ -1257,11 +1469,11 @@ possible future work, but only when a concrete engineering need or the AMC
 integration direction justifies them.
 
 The authoritative current direction is the
-**Current Project Role — 2026-09-07** section near the top of this roadmap.
+**Current Project Role — 2026-09-11** section near the top of this roadmap.
 
 ------------------------------------------------------------------------
 
-# Direction Update — AMC Collaboration
+# Historical Direction Update — AMC Collaboration
 
 The project direction changed after discussion with the ArduPilot Methodic
 Configurator (AMC) project about collaborating and potentially moving this
@@ -1269,9 +1481,9 @@ work into the AMC repository.
 
 This changes the near-term priority of standalone ArduPilotTools development.
 
-## Immediate Priority
+## Historical Immediate Priority
 
-The current v0.5 landing-analysis baseline should remain stable while the
+At that stage, the v0.5 landing-analysis baseline was to remain stable while the
 proposed AMC collaboration is explored.
 
 Near-term work should focus on:
@@ -1341,7 +1553,7 @@ In particular, avoid building a substantial standalone HTML/PDF reporting
 layer until it is clear how results will be presented and consumed within
 AMC.
 
-## Current Working Sequence
+## Historical Working Sequence
 
 ``` text
 v0.5 Landing Analysis baseline           COMPLETE
@@ -1392,25 +1604,46 @@ behaviour.
 
 ## Roadmap Status
 
-The earlier v0.6-v0.8 sections are retained as design history and a catalogue
-of useful future work. They are not a commitment to implementation order.
+The AMC integration path is no longer exploratory. Plane landing migration is
+merged upstream in PR #2024 after mutation-backed review and maintainer
+approval.
 
-The AMC integration path has now been established and the legacy Plane landing
-migration is complete from the APT side. AMC PR #2024 has its review response
-pushed and functional CI green; code-owner review is pending.
+The current development model remains:
 
-The current development model is:
+> **Keep APT as the Plane research/validation environment; promote validated
+> work into AMC using AMC-native architecture and maintainer direction.**
 
-> **Keep APT as the Plane research/validation environment; promote only
-> validated and accepted functionality into AMC using AMC-native architecture.**
+The ArduPlane configuration-method audit requested after the landing merge is
+now complete. It found a largely Copter-derived Plane sequence, several missing
+or misplaced fixed-wing domains, and one especially clear first correction in
+Step 66.
 
-Near-term APT work should therefore be selected by evidence and engineering
-need, currently including the rangefinder-acquisition / `LAND.fh` bug
-reproduction, battery-pack longitudinal history, and completion of the
-remaining companion-parameter consumer audit.
+The immediate AMC work is therefore the narrow **ArduPlane 4.7.x Everyday use /
+RTL** PR. Broader findings from the audit are deliberately queued as later
+domain-specific PRs rather than being folded into one rewrite.
 
+Once the configuration method has stable canonical ownership, log-analysis
+findings can be linked to the earliest relevant configuration step, with
+downstream steps repeated where the method requires it. This remains
+intentionally different from turning landing analysis into a direct
+parameter-value tuning engine.
 
-Battery Analysis / Pack History — extend the existing chemistry-neutral per-log analysis with takeoff and sustained-load evidence, optional physical Pack ID, configured voltage-threshold margins, and longitudinal whole-pack history. Cell-level diagnosis, inferred IR, and battery-health scoring are explicitly out of scope. See Docs/Implementation/Battery_Analysis_Design.md.
+APT Battery Analysis, Event Timeline, rangefinder-anomaly research and future
+pack-history work remain useful but secondary to the maintainer-requested Plane
+configuration-method work.
+
+### Battery Analysis / Pack History status
+
+Bounded per-log Battery Analysis is implemented in `4e83b46`, including AUTO
+takeoff and sustained-load evidence, optional physical Pack ID, embedded
+battery-configuration evidence, and configured voltage-threshold margins.
+
+Persistent longitudinal whole-pack history remains deferred research pending
+enough repeated identified-pack sessions and a persistence-design audit.
+Cell-level diagnosis, inferred internal resistance, and battery-health scoring
+remain explicitly out of scope.
+
+See `Docs/Implementation/Battery_Analysis_Design.md`.
 
 ### Parameter evidence direction
 

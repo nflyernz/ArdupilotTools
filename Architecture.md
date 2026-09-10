@@ -281,6 +281,59 @@ No processor or detector performing per-flight analysis should use telemetry out
 
 ---
 
+# Evidence Selection Ordering
+
+Where an analysis selects telemetry near an event or inside a child window, the
+ordering is part of the evidence contract:
+
+1. **Apply scope/ownership first.** Restrict candidates to the owning
+   `FlightWindow` and any applicable analysis-specific child window before
+   nearest/relevant-sample selection.
+2. **Select the relevant observation second.** Use the established deterministic
+   time/tie rule on the in-scope candidates.
+3. **Apply validity/usability after selection.** If the selected observation is
+   non-finite, unhealthy, ambiguous, or otherwise unusable for that metric,
+   report it as unavailable rather than silently searching farther away for a
+   more convenient value.
+
+Conceptually:
+
+```text
+FlightLog telemetry
+        │
+        ▼
+scope / causal ownership filter
+        │
+        ▼
+nearest or otherwise relevant observation
+        │
+        ▼
+validity / health / usability evaluation
+        │
+        ▼
+measurement or Unavailable
+```
+
+This prevents two opposite errors:
+
+- selecting globally and applying scope afterwards can let an out-of-scope row
+  suppress valid in-scope evidence;
+- filtering invalid observations before selection can substitute a distant but
+  plausible value for an event-local unavailable observation.
+
+Causal state and owned observations must also remain distinct. Where justified,
+configuration or selector state established before a child window may seed the
+interpretation of later observations, but those earlier rows do not become
+measurements owned by the later window, and future state must never
+retroactively change earlier evidence.
+
+Duplicate timestamps represent one logged instant for elapsed-time claims. They
+may be retained as distinct rows for lifecycle/status processing where required,
+but they must not be counted as multiple units of elapsed continuity merely
+because multiple records share the same timestamp.
+
+---
+
 # Analysis-Specific Windows
 
 Some analyses require narrower windows within a flight.
