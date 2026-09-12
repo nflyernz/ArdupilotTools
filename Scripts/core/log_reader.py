@@ -5,9 +5,9 @@ from pymavlink import mavutil
 
 from .config import Config
 from .flight_data import FlightLog
-from .params import ParameterHistory, ParameterReader
 from .flight_segmenter import FlightSegmenter
 from .flight_window_detector import FlightWindowDetector
+from .params import ParameterHistory, ParameterReader
 
 
 class UnsupportedFirmwareError(ValueError):
@@ -63,7 +63,7 @@ class FlightReader:
 
     def _read_messages(self):
         wanted = set(self.config.get("messages"))
-        wanted.add("PARM")
+        wanted.update(("MISE", "PARM"))
         rows = {name: [] for name in wanted}
 
         log = mavutil.mavlink_connection(str(self.filename))
