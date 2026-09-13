@@ -444,3 +444,291 @@ Retaining `TECS` and `RCOU` is optional and should wait for the deferred climb
 and hardware-output metrics. Keep metric calculation in a takeoff-specific
 processor/model layered over the generic reader; do not add takeoff-specific
 DataFlash parsing or traverse raw PARM rows inside the metric code.
+
+## 16. Event-time parameter interpretation audit
+
+This section records the bounded Plane-4.7.0 source and `log_0.bin` parameter
+audit performed after the first performance-evidence slice was implemented.
+It interprets existing evidence; it does not add metrics or change the
+execution contract.
+
+### 16.1 Method and event-time values
+
+Every value below was obtained with
+`flight_log.parameter_history.value_at(name, trigger_time_us)`. Times are
+absolute DataFlash `TimeUS` microseconds. All listed values are startup
+baseline values and none has an effective `ParameterChange` between the three
+triggers.
+
+| Execution | Trigger `TimeUS` | `PTCH_TRIM_DEG` | `KFF_THR2PTCH` | `PTCH_LIM_MAX_DEG` / `MIN` | `TECS_PITCH_MAX` / `MIN` |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 736323444 | 0 deg | 0 deg | 45 / -40 deg | 20 / -12 deg |
+| 2 | 1557443368 | 0 deg | 0 deg | 45 / -40 deg | 20 / -12 deg |
+| 3 | 2356143377 | 0 deg | 0 deg | 45 / -40 deg | 20 / -12 deg |
+
+| Execution | `TKOFF_ROTATE_SPD` | `TKOFF_GND_PITCH` | `TKOFF_LVL_PITCH` | `TKOFF_ALT` | `TKOFF_DIST` | `TKOFF_LVL_ALT` | `TKOFF_PLIM_SEC` |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 0 m/s | 5 deg | 18 deg | 30 m | 75 m | 10 m | 2 s |
+| 2 | 0 m/s | 5 deg | 18 deg | 30 m | 75 m | 10 m | 2 s |
+| 3 | 0 m/s | 5 deg | 18 deg | 30 m | 75 m | 10 m | 2 s |
+
+The tail-dragger override parameters are also zero at every trigger:
+`TKOFF_TDRAG_ELEV=0` and `TKOFF_TDRAG_SPD1=0`. Launch-check context is
+`TKOFF_THR_MINACC=6 m/s/s`, `TKOFF_THR_MINSPD=0 m/s`,
+`TKOFF_THR_DELAY=0 ds`, and `TKOFF_ACCEL_CNT=1` at all three triggers.
+
+| Execution | `LEVEL_ROLL_LIMIT` | `ROLL_LIMIT_DEG` | `STALL_PREVENTION` |
+|---:|---:|---:|---:|
+| 1 | 5 deg | 60 deg | 1 |
+| 2 | 5 deg | 60 deg | 1 |
+| 3 | 5 deg | 60 deg | 1 |
+
+| Execution | `TKOFF_THR_MIN` / `IDLE` / `MAX` | `TKOFF_THR_MAX_T` | `TKOFF_THR_SLEW` | `TKOFF_OPTIONS` | `THR_MIN` / `MAX` | `TRIM_THROTTLE` | `THR_SLEWRATE` |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 0 / 0 / 100% | 0.5 s | 110 %/s | 0 | 0 / 100% | 45% | 100 %/s |
+| 2 | 0 / 0 / 100% | 0.5 s | 110 %/s | 0 | 0 / 100% | 45% | 100 %/s |
+| 3 | 0 / 0 / 100% | 0.5 s | 110 %/s | 0 | 0 / 100% | 45% | 100 %/s |
+
+Forward-throttle battery compensation and cutoff are disabled at every
+trigger: `FWD_BAT_VOLT_MIN=0`, `FWD_BAT_VOLT_MAX=0`, and
+`FWD_BAT_THR_CUT=0`. No `BATT_WATT_MAX` parameter exists in this log's PARM
+history, so this audit does not infer a watt-limiter state from a missing
+value.
+
+| Execution | `AIRSPEED_MIN` | `AIRSPEED_CRUISE` | `ARSPD_USE` | `ARSPD_PRIMARY` | `ARSPD_TYPE` | `ARSPD2_TYPE` |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 11 m/s | 13 m/s | 1 | 0 | 9 | 0 |
+| 2 | 11 m/s | 13 m/s | 1 | 0 | 9 | 0 |
+| 3 | 11 m/s | 13 m/s | 1 | 0 | 9 | 0 |
+
+The numeric airspeed type is retained as evidence rather than being inferred
+from a companion parameter file. More importantly for these observations,
+all three trigger CTUN rows report `AsT=1`, so the controller estimate is
+sensor-derived at those sample times. Parameters express configuration and
+selection policy; they do not by themselves prove sensor health or acceptance
+at a particular event.
+
+### 16.2 Pitch demand and the two 45-degree observations
+
+The relevant Plane source path is:
+
+1. `ModeTakeoff::update()` calls `takeoff_calc_pitch()` while the inner flight
+   stage is TAKEOFF.
+2. With `TKOFF_ROTATE_SPD > 0`, `takeoff_calc_pitch()` uses
+   `TKOFF_GND_PITCH` below rotate speed, then ramps toward the takeoff pitch
+   using groundspeed until cruise speed. With `TKOFF_ROTATE_SPD == 0`, both
+   pre-rotation branches are skipped and rotation is marked complete
+   immediately.
+3. Because these launches have a usable airspeed sensor, the post-rotation
+   path calls `calc_nav_pitch()`, takes the current TECS pitch demand, applies
+   the global `PTCH_LIM_MIN_DEG` / `PTCH_LIM_MAX_DEG` clamp, and then enforces
+   the takeoff minimum pitch. `TKOFF_LVL_PITCH` is a minimum, not the sole
+   demanded pitch. `TECS_PITCH_MAX` / `MIN` apply when TECS updates its demand;
+   `TKOFF_PLIM_SEC` can reduce the takeoff minimum near level-off.
+4. With `STALL_PREVENTION=1`, large roll tracking error can subsequently
+   reduce takeoff pitch demand by the source-defined cosine-squared factor.
+
+The trigger-context lookup is causal, not interpolated. Executions 2 and 3
+therefore report the latest CTUN rows 18,810 us and 39,426 us before their
+firmware trigger messages. Both rows contain `NavPitch=45 deg`; they are not
+measurements taken exactly at the message timestamp.
+
+Before launch acceptance, throttle remains suppressed. Plane continues the
+50 Hz TECS state update needed for launch detection, but
+`update_pitch_throttle()` is gated off while suppression is active.
+`takeoff_calc_pitch()` consequently reads the retained TECS pitch demand, and
+`calc_nav_pitch()` clamps it to `PTCH_LIM_MAX_DEG=45`. This explains the exact
+45-degree value. It is the navigation demand actually presented to the normal
+fixed-wing pitch controller during that pre-trigger loop, but it is not a
+fresh post-trigger TECS solution, not `TKOFF_GND_PITCH`, and not evidence of a
+physical rotation. Once suppression clears, TECS updates again and its demand
+transitions under the TAKEOFF constraints and its pitch-rate limiting.
+Execution 1's retained state instead yields the observed 17.77-degree
+pre-trigger navigation demand.
+
+The source basis is Plane-4.7.0
+[`ModeTakeoff::update()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/mode_takeoff.cpp),
+[`takeoff_calc_pitch()` and `get_takeoff_pitch_min_cd()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/takeoff.cpp),
+[`calc_nav_pitch()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/Attitude.cpp),
+and
+[`update_speed_height()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/Plane.cpp).
+
+### 16.3 Exact pitch-tracking qualification
+
+For the conventional fixed-wing pitch-controller path, define:
+
+- `N = CTUN.NavPitch`, degrees;
+- `P = CTUN.Pitch`, degrees, equal to actual pitch minus
+  `PTCH_TRIM_DEG`;
+- `K = KFF_THR2PTCH`, degrees added at 100% throttle;
+- `u =` scaled throttle output, percent, at the instant
+  `stabilize_pitch_get_pitch_out()` reads it.
+
+The final controller demand and angular error are:
+
+```text
+final demand deg = N + PTCH_TRIM_DEG + u * K / 100
+controller error deg = N - P + u * K / 100
+```
+
+Thus `CTUN.NavPitch - CTUN.Pitch` is a defensible co-sampled tracking residual
+when event-time `KFF_THR2PTCH == 0` and the normal fixed-wing pitch controller
+is actually active. A tail-hold elevator override would bypass that controller;
+the stable log excludes it with `TKOFF_TDRAG_ELEV=0`. VTOL and system-ID paths
+remain outside this contract.
+
+When `KFF_THR2PTCH != 0`, the correction requires the throttle-function value
+read by `stabilize_pitch_get_pitch_out()` in that control iteration. Although
+`CTUN.ThO` has the required percent scale, it is logged later from the current
+scaled output after the servo path can apply battery compensation, throttle
+limits, suppression, and slew limiting. It is therefore not guaranteed to be
+the exact earlier value used by the pitch controller. Normal DataFlash does
+not log the final pitch-demand expression or that controller-input throttle
+atomically. Exact reconstruction is unavailable in the general nonzero-KFF
+case; nearest-sample substitution must not be presented as exact.
+
+This follows Plane-4.7.0
+[`stabilize_pitch_get_pitch_out()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/Attitude.cpp),
+the `KFF_THR2PTCH` parameter definition in
+[`Parameters.cpp`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/Parameters.cpp),
+and CTUN construction in
+[`Log_Write_Control_Tuning()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/Log.cpp).
+
+### 16.4 TAKEOFF roll-limit interpretation
+
+`takeoff_calc_roll()` first obtains the normal navigation roll demand. Before
+a nonzero rotate speed is reached, it clamps that demand to
+`LEVEL_ROLL_LIMIT`. Thereafter it applies a height-dependent limit:
+
+- through `TKOFF_LVL_ALT` above the captured barometric takeoff altitude:
+  `LEVEL_ROLL_LIMIT`;
+- from that height to the lower of `3 * TKOFF_LVL_ALT` and `TKOFF_ALT`:
+  linear expansion toward `ROLL_LIMIT_DEG`;
+- above the upper bound: `ROLL_LIMIT_DEG`.
+
+For this configuration, the demand limit is therefore 5 degrees initially,
+expands between 10 m and 30 m, and reaches 60 degrees at the upper bound.
+`TKOFF_ROTATE_SPD=0` removes the pre-rotate condition but does not remove this
+altitude-dependent limit. The already implemented maximum achieved-roll is
+aircraft response, not commanded roll, so achieved roll can exceed the demand
+cap. A later configured-margin result would need to reconstruct the dynamic
+cap and its captured barometric takeoff reference; subtracting achieved roll
+from the static 5-degree parameter would not be a controller-limit margin.
+
+### 16.5 Throttle path and the observed early commands
+
+The Plane-4.7.0 path is:
+
+1. launch acceptance emits `Triggered AUTO`, starts the max-throttle timer,
+   and permits suppression to clear;
+2. `takeoff_calc_throttle()` selects the takeoff maximum as
+   `TKOFF_THR_MAX` when nonzero, otherwise `THR_MAX`;
+3. it initially selects the takeoff minimum as `TKOFF_THR_MIN` when nonzero,
+   otherwise `TRIM_THROTTLE`;
+4. an active `TKOFF_THR_MAX_T` timer raises the minimum to the maximum;
+5. unset `TKOFF_OPTIONS` bit 0, absence of an airspeed sensor, or remaining
+   below `TKOFF_LVL_ALT` also raises the minimum to the maximum;
+6. TECS supplies the controller demand, and
+   `apply_throttle_limits()` applies the takeoff min/max plus enabled battery
+   compensation and power limiting;
+7. suppression substitutes `TKOFF_THR_IDLE` when positive, otherwise zero;
+8. `throttle_slew_limit()` uses nonzero `TKOFF_THR_SLEW` during TAKEOFF,
+   otherwise `THR_SLEWRATE`; the servo-function layer rate-limits the scaled
+   command before CTUN logs `ThO`.
+
+Here, `TKOFF_THR_MAX=100` is the configured takeoff maximum. Although the
+zero takeoff minimum initially falls back to `TRIM_THROTTLE=45`,
+`TKOFF_OPTIONS=0` forces the takeoff minimum equal to the maximum throughout
+the TAKEOFF stage; the 0.5-second max timer independently does the same while
+active. The target/course-finalization path restarts that timer. Forward
+battery compensation and cutoff are disabled. `TKOFF_THR_SLEW=110 %/s`
+overrides `THR_SLEWRATE=100 %/s`.
+
+The existing observations are consistent with that path:
+
+| Execution | Trigger `ThO` | Suppression-release `ThO` | Target-finalization `ThO` |
+|---:|---:|---:|---:|
+| 1 | 0.0% | 8.8% | 13.2% |
+| 2 | 0.0% | 17.6% | 26.4% |
+| 3 | 0.0% | 6.6% | 37.4% |
+
+The trigger contexts use CTUN samples 19.393 ms, 18.810 ms, and 39.426 ms
+before the corresponding messages, while suppression is still effective.
+The suppression-release lookups use samples only 243 us, 152 us, and 157 us
+before their STAT observations. The different values therefore principally
+reflect how many control-loop slew increments have occurred by each logger
+sample. At the observed roughly 40 ms CTUN cadence, 110 %/s permits about 4.4
+percentage points per full sample interval; the rows surrounding the events
+show that progression. TECS demand changes from its pre-trigger state toward
+99--100%, but `ThO` remains the slew-limited, post-suppression command. The
+three values are not three different configured throttle targets.
+
+The source basis is Plane-4.7.0
+[`auto_takeoff_check()` and `takeoff_calc_throttle()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/takeoff.cpp),
+[`ModeTakeoff::update()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/mode_takeoff.cpp),
+and
+[`suppress_throttle()`, `apply_throttle_limits()`, `set_throttle()`, and
+`throttle_slew_limit()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/servos.cpp).
+
+### 16.6 Firmware-defined throttle target
+
+A precise scalar is possible only for a qualified configuration. First derive
+the configured takeoff maximum:
+
+```text
+configured max = TKOFF_THR_MAX if nonzero, else THR_MAX
+```
+
+When firmware forces the takeoff minimum to that maximum (active
+`TKOFF_THR_MAX_T`, `TKOFF_OPTIONS` bit 0 unset, no accepted airspeed sensor,
+or below `TKOFF_LVL_ALT`), and no runtime compensation or power limiter changes
+the bound, a future metric may be named **time from observed suppression
+release to first observed `CTUN.ThO` reaching the effective forced takeoff
+maximum**. It must retain the CTUN sample timestamp and sampling latency. For
+the stable configuration, that nominal parameter-derived maximum is 100%.
+
+When throttle-range operation is enabled, an airspeed sensor is accepted, the
+aircraft is above the level altitude, and the max timer has expired, TECS may
+command anywhere within the takeoff bounds. There is then no single static
+parameter target. Battery compensation and the runtime watt limiter can also
+make the effective bound dynamic. In those cases, retain the existing
+threshold-free `ThD`/`ThO` command context or expose their co-sampled trajectory
+rather than inventing a 50%, 90%, or static-parameter target.
+
+### 16.7 Airspeed context and next-metric disposition
+
+`AIRSPEED_MIN=11 m/s` is the controller's configured minimum airspeed context,
+not a measured stall speed and not proof of margin to stall.
+`AIRSPEED_CRUISE=13 m/s` is the normal demand/reference and, when
+`TKOFF_ROTATE_SPD > 0`, is also used by the post-rotate groundspeed ramp toward
+the takeoff pitch. `ARSPD_USE=1`, `ARSPD_PRIMARY=0`, and `ARSPD_TYPE=9`
+identify configured use and the selected sensor instance/type; event-time
+`CTUN.AsT` and ARSP health remain necessary to establish actual usable
+evidence.
+
+**Recommended next, with explicit qualification:**
+
+- maximum absolute co-sampled `CTUN.NavPitch - CTUN.Pitch` over a declared
+  automatic-control interval only when event-time `KFF_THR2PTCH == 0`, the
+  normal fixed-wing pitch controller is active, and no tail-hold override is
+  active;
+- controller-airspeed delta from event-time `AIRSPEED_MIN`, explicitly named
+  configured-minimum airspeed delta and never stall margin;
+- time to the effective forced takeoff maximum only when the source conditions
+  in section 16.6 prove a fixed target and dynamic modifiers are excluded or
+  represented.
+
+**Defer:**
+
+- mean pitch tracking error until time-weighted versus sample-weighted
+  aggregation is chosen;
+- pitch tracking reconstruction when `KFF_THR2PTCH != 0`;
+- an observed throttle slew/ramp-rate scalar, because sample-rate effects and
+  aggregation choices are not yet specified (the configured slew rate may be
+  reported as context);
+- roll margin until the time-varying limit and captured barometric takeoff
+  reference are reconstructable;
+- any airspeed result labelled stall margin;
+- rotation-specific response metrics until a `TKOFF_ROTATE_SPD > 0` corpus is
+  available to validate evidence and sampling, without inferring physical
+  wheel rotation or liftoff.
