@@ -295,7 +295,7 @@ class TakeoffPerformanceProcessor:
     )
     _CONFIGURATION_GROUPS = (
         (
-            "Launch detection",
+            "Takeoff trigger conditions",
             (
                 _ConfigurationParameterSpec(
                     "TKOFF_THR_MINACC", "Minimum acceleration", "m/s²"
@@ -310,7 +310,7 @@ class TakeoffPerformanceProcessor:
             ),
         ),
         (
-            "Takeoff",
+            "Takeoff control",
             (
                 _ConfigurationParameterSpec("TKOFF_ROTATE_SPD", "Rotate speed", "m/s"),
                 _ConfigurationParameterSpec("TKOFF_GND_PITCH", "Ground pitch", "°"),
@@ -1205,21 +1205,18 @@ class TakeoffPerformanceProcessor:
 def format_takeoff_performance_report(
     analysis: TakeoffPerformanceAnalysis,
     takeoff_number: int,
+    *,
+    include_configuration: bool = True,
 ) -> str:
     """Render concise human output using trigger-relative event times."""
-    lines = [f"TAKEOFF {takeoff_number}", "=" * 70, "", "Configuration at launch"]
-    airspeed_source = _airspeed_source_label(analysis.airspeed_estimate_types)
-    for group in analysis.configuration.groups:
-        lines.extend(("", group.name))
-        if group.name == "Airspeed":
-            lines.append(f"  {'Source':<24} {airspeed_source}")
-        lines.extend(
-            f"  {value.name:<24} {_format_configuration_value(value)}"
-            for value in group.values
-        )
+    lines = [f"TAKEOFF {takeoff_number}", "-" * 70]
+    if include_configuration:
+        lines.extend(("", "Takeoff configuration"))
+        lines.extend(_format_configuration(analysis.configuration))
 
+    lines.extend(("", f"{'Status':<36} {_execution_status(analysis)}"))
+    lines.extend(("", "Timing", f"  {'Firmware trigger':<34} 0.000 s"))
     timings = analysis.phase_timings
-    lines.extend(("", "Performance", "", f"{'Firmware trigger':<36} 0.000 s"))
     for label, elapsed_s in (
         ("Throttle unsuppressed", timings.trigger_to_throttle_unsuppressed_s),
         ("Target/course finalized", timings.trigger_to_target_finalized_s),
@@ -1227,28 +1224,45 @@ def format_takeoff_performance_report(
         ("Mode exit", timings.trigger_to_mode_exit_s),
     ):
         if elapsed_s is not None:
-            lines.append(f"{label:<36} {_format_relative_seconds(elapsed_s)}")
+            lines.append(f"  {label:<34} {_format_relative_seconds(elapsed_s)}")
+
+    airspeed_source = _airspeed_source_label(analysis.airspeed_estimate_types)
+    lines.extend(("", "At trigger", f"  {'Airspeed source':<34} {airspeed_source}"))
+    context = analysis.trigger_context
+    if context.airspeed is not None and airspeed_source != "Unavailable":
+        lines.append(f"  {'Airspeed':<34} {context.airspeed.value_m_s:.2f} m/s")
+    if context.gps_groundspeed_m_s is not None:
+        lines.append(
+            f"  {'Groundspeed':<34} {context.gps_groundspeed_m_s.value:.2f} m/s"
+        )
+    trigger_delta = analysis.trigger_configured_minimum_airspeed_delta
+    if trigger_delta is not None and airspeed_source != "Unavailable":
+        lines.append(
+            f"  {'Delta to AIRSPEED_MIN':<34} {trigger_delta.delta_m_s:+.2f} m/s"
+        )
+    if context.nav_pitch_deg is not None and context.pitch_deg is not None:
+        lines.append(
+            f"  {'Pitch demand / achieved':<34} "
+            f"{context.nav_pitch_deg.value:.2f}° / {context.pitch_deg.value:.2f}°"
+        )
+    if context.nav_roll_deg is not None and context.roll_deg is not None:
+        lines.append(
+            f"  {'Roll demand / achieved':<34} "
+            f"{context.nav_roll_deg.value:.2f}° / {context.roll_deg.value:.2f}°"
+        )
+    if context.throttle_output_pct is not None:
+        lines.append(
+            f"  {'Throttle command':<34} {context.throttle_output_pct.value:.2f}%"
+        )
 
     if airspeed_source != "Unavailable":
-        lines.extend(("", "Airspeed performance"))
-        trigger_delta = analysis.trigger_configured_minimum_airspeed_delta
-        if trigger_delta is not None:
-            lines.extend(
-                (
-                    f"  {'Trigger airspeed':<34} {trigger_delta.airspeed_m_s:.2f} m/s",
-                    (
-                        f"  {'Delta to configured minimum':<34} "
-                        f"{trigger_delta.delta_m_s:+.2f} m/s"
-                    ),
-                )
-            )
-
+        lines.extend(("", "Airspeed build"))
         first_minimum = analysis.first_observed_configured_minimum_airspeed
         if first_minimum.status is ConfiguredMinimumAirspeedStatus.OBSERVED:
             lines.extend(
                 (
                     (
-                        f"  {'First observed ≥ minimum':<34} "
+                        f"  {'First observed ≥ AIRSPEED_MIN':<34} "
                         f"{_format_relative_seconds(first_minimum.elapsed_s)}"
                     ),
                     (
@@ -1261,21 +1275,215 @@ def format_takeoff_performance_report(
             ConfiguredMinimumAirspeedStatus.UNAVAILABLE_EVIDENCE
         ):
             lines.append(
-                f"  {'First observed ≥ minimum':<34} {first_minimum.status.value}"
+                f"  {'First observed ≥ AIRSPEED_MIN':<34} "
+                f"{_minimum_airspeed_status(first_minimum.status)}"
+            )
+        envelope = analysis.airspeed_envelope
+        if envelope is not None:
+            lines.append(
+                f"  {'Automatic-control envelope':<34} "
+                f"{envelope.minimum.value_m_s:.2f}–{envelope.maximum.value_m_s:.2f} m/s"
             )
 
+    lines.extend(("", "Takeoff control"))
     residual = analysis.pitch_tracking_residual
     if residual is not None:
+        lines.append(
+            f"  {'Largest |pitch residual|':<34} {residual.magnitude_deg:.2f}° "
+            f"(signed {residual.signed_residual_deg:+.2f}°)"
+        )
+    roll = analysis.launch_response_roll
+    if roll is not None:
+        lines.append(f"  {'Maximum absolute roll':<34} {roll.magnitude_deg:.2f}°")
+    altitude = analysis.relative_altitude
+    if altitude is not None:
+        if altitude.minimum_delta_m is not None:
+            lines.append(
+                f"  {'Minimum altitude delta':<34} {altitude.minimum_delta_m:+.2f} m"
+            )
+        if altitude.endpoint_delta_m is not None:
+            endpoint_label = (
+                "Altitude gain at completion"
+                if analysis.control_interval is not None
+                and analysis.control_interval.status
+                is TakeoffControlIntervalStatus.COMPLETED
+                else "Altitude delta at mode exit"
+            )
+            lines.append(f"  {endpoint_label:<34} {altitude.endpoint_delta_m:+.2f} m")
+
+    lines.extend(_format_throttle_context(analysis))
+    return "\n".join(lines)
+
+
+def format_takeoff_performance_reports(
+    analyses: tuple[TakeoffPerformanceAnalysis, ...],
+) -> str:
+    """Render a comparative report, consolidating identical configuration."""
+    lines = ["TAKEOFF ANALYSIS", "=" * 70]
+    if not analyses:
+        return "\n".join(lines)
+
+    shared_configuration = all(
+        analysis.configuration.groups == analyses[0].configuration.groups
+        for analysis in analyses[1:]
+    )
+    if shared_configuration:
+        applies_to = "TAKEOFF 1" if len(analyses) == 1 else f"TAKEOFF 1–{len(analyses)}"
+        lines.extend(("", "Takeoff configuration", f"Applies to {applies_to}"))
+        lines.extend(_format_configuration(analyses[0].configuration))
+
+    for number, analysis in enumerate(analyses, 1):
         lines.extend(
             (
                 "",
-                "Takeoff control",
-                (
-                    f"  {'Maximum pitch residual':<34} "
-                    f"{residual.signed_residual_deg:+.2f}°"
+                "",
+                format_takeoff_performance_report(
+                    analysis,
+                    number,
+                    include_configuration=not shared_configuration,
                 ),
             )
         )
+
+    lines.extend(("", "", _format_comparison_table(analyses)))
+    return "\n".join(lines)
+
+
+def _format_configuration(
+    configuration: TakeoffConfigurationContext,
+) -> list[str]:
+    """Render trigger-time configuration without observational evidence."""
+    lines: list[str] = []
+    for group in configuration.groups:
+        lines.extend(("", group.name))
+        for value in group.values:
+            lines.append(f"  {value.name:<28} {_format_configuration_value(value)}")
+            if value.name == "TKOFF_ROTATE_SPD":
+                lines.append(f"  {'Rotation control':<28} {_rotation_control(value)}")
+    return lines
+
+
+def _rotation_control(value: TakeoffConfigurationValue) -> str:
+    """Describe speed gating without inferring a physical takeoff method."""
+    if value.value is None:
+        return "Unavailable"
+    if value.value == 0:
+        return "No speed-gated rotation"
+    return "Speed-gated rotation"
+
+
+def _execution_status(analysis: TakeoffPerformanceAnalysis) -> str:
+    """Return the plain automatic-control interval status."""
+    if analysis.control_interval is None:
+        return "Unavailable"
+    if analysis.control_interval.status is TakeoffControlIntervalStatus.COMPLETED:
+        return "Completed"
+    return "Censored — mode exit"
+
+
+def _minimum_airspeed_status(status: ConfiguredMinimumAirspeedStatus) -> str:
+    """Return a concise observation status without exposing enum names."""
+    if status is ConfiguredMinimumAirspeedStatus.NOT_OBSERVED_COMPLETED:
+        return "Not observed before completion"
+    if status is ConfiguredMinimumAirspeedStatus.NOT_OBSERVED_CENSORED_MODE_EXIT:
+        return "Not observed before mode exit"
+    return "Unavailable"
+
+
+def _format_throttle_context(analysis: TakeoffPerformanceAnalysis) -> list[str]:
+    """Render existing threshold-free throttle evidence when available."""
+    throttle = analysis.throttle_command
+    lines = []
+    if throttle.at_unsuppressed is not None:
+        lines.append(
+            f"  {'Throttle at unsuppression':<34} {throttle.at_unsuppressed.value:.2f}%"
+        )
+    if throttle.at_target_finalized is not None:
+        lines.append(
+            f"  {'Throttle at target finalization':<34} "
+            f"{throttle.at_target_finalized.value:.2f}%"
+        )
+    if throttle.launch_response_max_pct is not None:
+        lines.append(
+            f"  {'Maximum trigger-response throttle':<34} "
+            f"{throttle.launch_response_max_pct:.2f}%"
+        )
+
+    fixed = analysis.fixed_throttle_target_rise
+    if fixed.status is FixedThrottleTargetStatus.OBSERVED:
+        lines.append(
+            f"  {'Fixed throttle target':<34} Observed at "
+            f"{fixed.observed_throttle_output_pct:.2f}%"
+        )
+    elif fixed.status is FixedThrottleTargetStatus.NOT_OBSERVED_COMPLETED:
+        lines.append(f"  {'Fixed throttle target':<34} Not observed before completion")
+    elif fixed.status is FixedThrottleTargetStatus.NOT_OBSERVED_CENSORED_MODE_EXIT:
+        lines.append(f"  {'Fixed throttle target':<34} Not observed before mode exit")
+    else:
+        lines.append(f"  {'Fixed throttle target':<34} Unavailable")
+    return lines
+
+
+def _format_comparison_table(
+    analyses: tuple[TakeoffPerformanceAnalysis, ...],
+) -> str:
+    """Render a compact comparison using only existing result quantities."""
+    headers = (
+        "TAKEOFF",
+        "Status",
+        "First ≥ AIRSPEED_MIN",
+        "Largest |pitch residual|",
+        "Max |roll|",
+        "Min altitude delta",
+        "Endpoint delta/gain",
+    )
+    rows = []
+    for number, analysis in enumerate(analyses, 1):
+        first = analysis.first_observed_configured_minimum_airspeed
+        residual = analysis.pitch_tracking_residual
+        roll = analysis.launch_response_roll
+        altitude = analysis.relative_altitude
+        endpoint_suffix = (
+            "completion"
+            if analysis.control_interval is not None
+            and analysis.control_interval.status
+            is TakeoffControlIntervalStatus.COMPLETED
+            else "mode exit"
+        )
+        rows.append(
+            (
+                str(number),
+                _execution_status(analysis),
+                _format_relative_seconds(first.elapsed_s),
+                f"{residual.magnitude_deg:.2f}°"
+                if residual is not None
+                else "Unavailable",
+                f"{roll.magnitude_deg:.2f}°" if roll is not None else "Unavailable",
+                (
+                    f"{altitude.minimum_delta_m:+.2f} m"
+                    if altitude is not None and altitude.minimum_delta_m is not None
+                    else "Unavailable"
+                ),
+                (
+                    f"{altitude.endpoint_delta_m:+.2f} m ({endpoint_suffix})"
+                    if altitude is not None and altitude.endpoint_delta_m is not None
+                    else "Unavailable"
+                ),
+            )
+        )
+    widths = [
+        max(len(header), *(len(row[index]) for row in rows))
+        for index, header in enumerate(headers)
+    ]
+    lines = ["Cross-takeoff comparison"]
+    lines.append(
+        "  ".join(header.ljust(widths[index]) for index, header in enumerate(headers))
+    )
+    lines.append("  ".join("-" * width for width in widths))
+    lines.extend(
+        "  ".join(value.ljust(widths[index]) for index, value in enumerate(row))
+        for row in rows
+    )
     return "\n".join(lines)
 
 

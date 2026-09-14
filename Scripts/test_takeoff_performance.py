@@ -18,6 +18,7 @@ from core.takeoff_performance import (
     TakeoffControlIntervalStatus,
     TakeoffPerformanceProcessor,
     format_takeoff_performance_report,
+    format_takeoff_performance_reports,
 )
 
 START_US = 1_000_000
@@ -938,8 +939,8 @@ def test_configuration_context_uses_trigger_time_and_expected_groups():
     context = analysis.configuration
     assert context.trigger_time_us == TRIGGER_US
     assert tuple(group.name for group in context.groups) == (
-        "Launch detection",
-        "Takeoff",
+        "Takeoff trigger conditions",
+        "Takeoff control",
         "Throttle",
         "Pitch / roll",
         "Airspeed",
@@ -979,10 +980,13 @@ def test_report_uses_relative_timing_and_preserves_internal_timeus():
 
     assert analysis is not None
     report = format_takeoff_performance_report(analysis, 2)
-    assert "Firmware trigger                     0.000 s" in report
-    assert "Throttle unsuppressed                +1.000 s" in report
-    assert "Source                   Sensor" in report
-    assert "First observed ≥ minimum           +0.500 s" in report
+    assert "Firmware trigger" in report
+    assert "0.000 s" in report
+    assert "Throttle unsuppressed" in report
+    assert "+1.000 s" in report
+    assert "Airspeed source                    Sensor" in report
+    assert "First observed ≥ AIRSPEED_MIN" in report
+    assert "+0.500 s" in report
     assert str(TRIGGER_US) not in report
     assert str(UNSUPPRESSED_US) not in report
     assert analysis.phase_timings.trigger_time_us == TRIGGER_US
@@ -1006,8 +1010,8 @@ def test_report_labels_synthetic_airspeed_without_calling_it_measured():
     assert analysis is not None
     report = format_takeoff_performance_report(analysis, 1)
     assert analysis.airspeed_estimate_types == (2, 3)
-    assert "Source                   Synthetic estimate" in report
-    assert "Trigger airspeed" in report
+    assert "Airspeed source                    Synthetic estimate" in report
+    assert "Airspeed" in report
     assert "Airspeed at observation" in report
     assert "measured airspeed" not in report.lower()
 
@@ -1025,7 +1029,7 @@ def test_report_labels_mixed_interval_sources_conservatively():
 
     assert analysis is not None
     assert analysis.airspeed_estimate_types == (1, 2)
-    assert "Source                   Mixed sensor / synthetic estimate" in (
+    assert "Airspeed source                    Mixed sensor / synthetic estimate" in (
         format_takeoff_performance_report(analysis, 1)
     )
 
@@ -1052,13 +1056,138 @@ def test_unavailable_airspeed_omits_performance_but_keeps_configuration():
     assert analysis is not None
     report = format_takeoff_performance_report(analysis, 1)
     assert analysis.airspeed_estimate_types == ()
-    assert "Source                   Unavailable" in report
-    assert "AIRSPEED_MIN             11.0 m/s" in report
-    assert "AIRSPEED_CRUISE          13.0 m/s" in report
-    assert "Airspeed performance" not in report
-    assert "Trigger airspeed" not in report
-    assert "Delta to configured minimum" not in report
-    assert "First observed ≥ minimum" not in report
+    assert "Airspeed source                    Unavailable" in report
+    assert "AIRSPEED_MIN" in report
+    assert "11.0 m/s" in report
+    assert "AIRSPEED_CRUISE" in report
+    assert "13.0 m/s" in report
+    assert "Airspeed build" not in report
+    assert "Delta to AIRSPEED_MIN" not in report
+    assert "First observed ≥ AIRSPEED_MIN" not in report
     assert "Airspeed at observation" not in report
     assert "0.00 m/s" not in report
     assert str(TRIGGER_US) not in report
+
+
+def test_comparative_report_consolidates_identical_configuration_once():
+    """Equal trigger-time values produce one clearly scoped configuration."""
+    first = _analyse(_flight_log(parameter_history=_configuration_history()))
+    second = _analyse(_flight_log(parameter_history=_configuration_history()))
+
+    assert first is not None
+    assert second is not None
+    report = format_takeoff_performance_reports((first, second))
+    assert report.count("Takeoff configuration") == 1
+    assert "Applies to TAKEOFF 1–2" in report
+    assert report.count("TKOFF_THR_MINACC") == 1
+
+
+def test_comparative_report_does_not_collapse_differing_configuration():
+    """Distinct trigger-time parameter values remain execution-scoped."""
+    first = _analyse(_flight_log(parameter_history=_history({"TKOFF_ROTATE_SPD": 0.0})))
+    second = _analyse(
+        _flight_log(parameter_history=_history({"TKOFF_ROTATE_SPD": 12.0}))
+    )
+
+    assert first is not None
+    assert second is not None
+    report = format_takeoff_performance_reports((first, second))
+    assert "Applies to TAKEOFF" not in report
+    assert report.count("Takeoff configuration") == 2
+    assert "TKOFF_ROTATE_SPD             0.0 m/s" in report
+    assert "TKOFF_ROTATE_SPD             12.0 m/s" in report
+
+
+def test_rotation_control_wording_is_neutral_and_parameter_based():
+    """Rotation gating is described without inferring a takeoff method."""
+    ungated = _analyse(
+        _flight_log(parameter_history=_history({"TKOFF_ROTATE_SPD": 0.0}))
+    )
+    gated = _analyse(_flight_log(parameter_history=_history({"TKOFF_ROTATE_SPD": 8.0})))
+
+    assert ungated is not None
+    assert gated is not None
+    ungated_report = format_takeoff_performance_report(ungated, 1)
+    gated_report = format_takeoff_performance_report(gated, 2)
+    assert "Rotation control             No speed-gated rotation" in ungated_report
+    assert "Rotation control             Speed-gated rotation" in gated_report
+    assert "hand launch" not in ungated_report.lower()
+    assert "launch method" not in ungated_report.lower()
+
+
+def test_report_exposes_existing_status_trigger_and_control_evidence():
+    """Operational layout exposes existing evidence without new calculations."""
+    flight_log = _flight_log(
+        ctun=(
+            (1_900_000, 6.0, 4.0, 2.0, 1.0, 8.0, 1, 10.0),
+            (2_500_000, 20.0, 5.0, 0.0, -7.0, 9.0, 1, 30.0),
+            (3_000_000, 15.0, 6.0, 0.0, 5.0, 11.0, 1, 40.0),
+            (3_500_000, 12.0, 7.0, 0.0, 3.0, 13.0, 1, 50.0),
+            (5_500_000, 10.0, 8.0, 0.0, 2.0, 15.0, 1, 60.0),
+        ),
+        gps=((1_900_000, 0, 3, 2.5, 1),),
+        pos=(
+            (1_900_000, 10.0),
+            (2_500_000, 9.5),
+            (COMPLETION_US, 20.0),
+        ),
+        tecs=((2_200_000, 0.1),),
+        parameter_history=_history(
+            {
+                "AIRSPEED_MIN": 11.0,
+                "KFF_THR2PTCH": 0.0,
+                "TKOFF_TDRAG_ELEV": 0.0,
+                "TKOFF_TDRAG_SPD1": 0.0,
+            }
+        ),
+    )
+    completed = _analyse(flight_log)
+    censored = _analyse(flight_log, _execution(completion=False))
+
+    assert completed is not None
+    assert censored is not None
+    completed_report = format_takeoff_performance_report(completed, 1)
+    censored_report = format_takeoff_performance_report(censored, 2)
+    assert "Status                               Completed" in completed_report
+    assert (
+        "Status                               Censored — mode exit" in censored_report
+    )
+    assert "Groundspeed                        2.50 m/s" in completed_report
+    assert "Pitch demand / achieved            6.00° / 4.00°" in completed_report
+    assert "Roll demand / achieved             2.00° / 1.00°" in completed_report
+    assert "Throttle command                   10.00%" in completed_report
+    assert "Automatic-control envelope         9.00–15.00 m/s" in completed_report
+    assert (
+        "Largest |pitch residual|           9.00° (signed +9.00°)" in completed_report
+    )
+    assert "Maximum absolute roll              7.00°" in completed_report
+    assert "Minimum altitude delta             -0.50 m" in completed_report
+    assert "Altitude gain at completion        +10.00 m" in completed_report
+    assert "Altitude delta at mode exit" in censored_report
+    assert str(TRIGGER_US) not in completed_report
+    assert str(COMPLETION_US) not in completed_report
+
+
+def test_airspeed_source_is_execution_evidence_not_shared_configuration():
+    """Shared configuration does not claim a common observational source."""
+    history = _history({"AIRSPEED_MIN": 11.0})
+    sensor = _analyse(
+        _flight_log(
+            ctun=((1_900_000, 0.0, 0.0, 0.0, 0.0, 8.0, 1, 0.0),),
+            parameter_history=history,
+        )
+    )
+    synthetic = _analyse(
+        _flight_log(
+            ctun=((1_900_000, 0.0, 0.0, 0.0, 0.0, 8.0, 2, 0.0),),
+            parameter_history=history,
+        )
+    )
+
+    assert sensor is not None
+    assert synthetic is not None
+    report = format_takeoff_performance_reports((sensor, synthetic))
+    configuration, executions = report.split("\n\nTAKEOFF 1", maxsplit=1)
+    assert "Airspeed source" not in configuration
+    assert "Airspeed source                    Sensor" in executions
+    assert "Airspeed source                    Synthetic estimate" in executions
