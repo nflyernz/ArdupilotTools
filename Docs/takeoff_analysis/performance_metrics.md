@@ -96,7 +96,8 @@ pair because the fields share a timestamp and reference convention.
 
 Do not label `CTUN.NavPitch` as the final attitude-controller demand. A pitch
 tracking-error metric is valid without reconstruction only when event-time
-`KFF_THR2PTCH == 0`. Reconstruction for nonzero feed-forward is deferred
+`KFF_THR2PTCH == 0` and post-launch TECS-demand freshness is established as
+specified in section 17. Reconstruction for nonzero feed-forward is deferred
 because the exact controller-cycle throttle value is not logged as part of the
 same CTUN pitch observation.
 
@@ -709,9 +710,9 @@ evidence.
 **Recommended next, with explicit qualification:**
 
 - maximum absolute co-sampled `CTUN.NavPitch - CTUN.Pitch` over a declared
-  automatic-control interval only when event-time `KFF_THR2PTCH == 0`, the
-  normal fixed-wing pitch controller is active, and no tail-hold override is
-  active;
+  automatic-control interval only after the section 17 TECS-freshness boundary,
+  when event-time `KFF_THR2PTCH == 0`, the normal fixed-wing pitch controller
+  is active, and no tail-hold override is active;
 - controller-airspeed delta from event-time `AIRSPEED_MIN`, explicitly named
   configured-minimum airspeed delta and never stall margin;
 - time to the effective forced takeoff maximum only when the source conditions
@@ -732,3 +733,152 @@ evidence.
 - rotation-specific response metrics until a `TKOFF_ROTATE_SPD > 0` corpus is
   available to validate evidence and sampling, without inferring physical
   wheel rotation or liftoff.
+
+## 17. Post-launch pitch-demand freshness and report presentation
+
+This section closes the remaining freshness question for the proposed maximum
+pitch-tracking residual and defines presentation contracts for a later human
+report. It does not change execution ownership or metric calculations.
+
+### 17.1 TECS scheduling and refresh semantics
+
+Plane-4.7.0 has two materially different TECS calls:
+
+1. `update_speed_height()` runs at 50 Hz and calls `AP_TECS::update_50hz()`
+   even while throttle is suppressed. This updates TECS state needed for
+   launch detection; it does not calculate a new pitch/throttle solution.
+2. `update_alt()` runs at 10 Hz. Only when automatic throttle is active and
+   `throttle_suppressed` is false does it call
+   `AP_TECS::update_pitch_throttle()`. That call updates limits, speed and
+   height demands, energies, `_pitch_dem`, and `_throttle_dem`.
+
+`AP_TECS::update_pitch_throttle()` writes the `TECS` record from inside the
+same call, after `_update_pitch()` and the throttle calculation. A valid TECS
+row with a finite `TimeUS` and `ph` therefore directly proves that a TECS pitch
+solution was recalculated in that invocation. `ph` is the resulting TECS
+pitch output in radians. A change in `CTUN.NavPitch` is not equivalent proof:
+TAKEOFF minimum-pitch and stall-prevention logic can change `nav_pitch_cd`
+while the underlying TECS demand remains retained, and a refreshed solution
+can produce the same final navigation demand after clamping.
+
+The scheduler order creates one additional propagation boundary. Every main
+loop runs `update_control_mode()` before scheduled `update_alt()` and
+`update_logging25()`. `ModeTakeoff::update()` therefore copies the current
+TECS demand through `takeoff_calc_pitch()` and `calc_nav_pitch()` before a TECS
+refresh that occurs later in the same loop. If CTUN logging is also due in that
+loop, the TECS row is written first and the later CTUN row can still contain
+the navigation demand calculated before that refresh.
+
+Consequently:
+
+- the first valid post-trigger TECS row proves **TECS solution refresh**;
+- the first CTUN row after that TECS row is ambiguous because it may be from
+  the same scheduler loop;
+- the second CTUN row strictly after that TECS row is the earliest
+  source-provable CTUN observation that has passed through a subsequent
+  `update_control_mode()` invocation and can contain the refreshed solution.
+
+This rule uses scheduler call order and occurrence order, not a timing
+threshold. If TECS logging is disabled, no valid post-trigger TECS row exists,
+or fewer than two later owned CTUN rows exist, demand freshness is unavailable
+and the pitch-residual metric must be unavailable. A missing TECS row does not
+prove that firmware failed to update; it means the log cannot prove that it
+did. Equal cross-message timestamps remain ambiguous and must not be ordered
+by message type.
+
+The source basis is Plane-4.7.0
+[`scheduler_tasks`, `update_speed_height()`, and `update_alt()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/Plane.cpp),
+[`ModeTakeoff::update()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/mode_takeoff.cpp),
+[`takeoff_calc_pitch()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/takeoff.cpp),
+[`calc_nav_pitch()` and `stabilize_pitch_get_pitch_out()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/Attitude.cpp),
+[`Log_Write_Control_Tuning()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/Log.cpp),
+and
+[`AP_TECS::update_pitch_throttle()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/libraries/AP_TECS/AP_TECS.cpp).
+The one-run-per-tick basis for the second-CTUN propagation rule comes from
+[`AP_Scheduler::run()` and `loop()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/libraries/AP_Scheduler/AP_Scheduler.cpp).
+
+### 17.2 Stable-log freshness evidence
+
+The first `STAT.Sup=0` row is an observed state report, not the exact internal
+microsecond at which suppression changed. In all three launches, the first
+post-trigger TECS record precedes that STAT observation. `Takeoff to ...`
+finalizes the target/course and restarts the maximum-throttle timer; it does
+not cause or prove a TECS pitch refresh.
+
+| Execution | Trigger | First TECS refresh | First later CTUN (ambiguous) | Earliest provably propagated CTUN | `STAT.Sup=0` | `Takeoff to ...` |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 736323444 | 736384242 | 736385759 | 736424689 | 736386002 | 736443331 |
+| 2 | 1557443368 | 1557484228 | 1557503896 | 1557544402 | 1557585341 | 1557703252 |
+| 3 | 2356143377 | 2356184172 | 2356185378 | 2356224438 | 2356185535 | 2356483405 |
+
+The currently implemented maximum-residual samples are:
+
+| Execution | Current residual | Source `TimeUS` | Freshness finding |
+|---:|---:|---:|---|
+| 1 | +19.63 deg | 736343978 | Before the first TECS refresh; retained demand |
+| 2 | +55.30 deg | 1557503896 | First CTUN after refresh; same-loop ambiguity remains |
+| 3 | +42.42 deg | 2356144970 | Before the first TECS refresh; retained demand |
+
+None of those three maxima satisfies the conservative freshness rule. For
+audit context only, restricting the same residual calculation to the first
+provably propagated CTUN row and later owned rows produces maxima of
+12.54 degrees at 736424689, 54.41 degrees at 1557544402, and 41.92 degrees at
+2356224438. These observations do not establish tuning thresholds or expected
+performance values.
+
+The current production implementation starts residual evaluation immediately
+after `Triggered AUTO` and normal `FlightReader` does not retain `TECS`.
+Therefore its pitch-residual result is not yet defensible and must not be
+accepted as takeoff tracking performance. The smallest production correction
+is to retain normal TECS rows, require the freshness sequence above, and start
+eligible CTUN residual samples at the second CTUN row strictly after the first
+valid post-trigger TECS row. Until that evidence is exposed, the metric should
+return unavailable. No change to execution/state detection is required.
+
+### 17.3 Configuration-header contract
+
+A normal takeoff report should present one compact context header for each
+triggered execution. The snapshot time is the exact `Triggered AUTO` `TimeUS`,
+and every entry comes from `ParameterHistory.value_at(name, trigger_time_us)`.
+Missing or non-finite parameters display as **unavailable**, never zero and
+never a companion-file fallback. The snapshot explains the launch; an
+interval metric must still query parameter history at each relevant sample or
+parameter-change boundary.
+
+Use these groups and units:
+
+| Group | Event-time values |
+|---|---|
+| Launch detection | `TKOFF_THR_MINACC` m/s/s; `TKOFF_ACCEL_CNT` count; `TKOFF_THR_DELAY` converted from deciseconds to seconds for display; `TKOFF_THR_MINSPD` m/s |
+| Takeoff geometry/control | `TKOFF_ROTATE_SPD` m/s; `TKOFF_GND_PITCH` and `TKOFF_LVL_PITCH` degrees; `TKOFF_ALT` and `TKOFF_LVL_ALT` metres; `TKOFF_DIST` metres |
+| Throttle | `TKOFF_THR_MAX` percent; `TKOFF_THR_MAX_T` seconds; `TKOFF_THR_SLEW` percent/second; numeric and decoded `TKOFF_OPTIONS`; `THR_MAX` when `TKOFF_THR_MAX=0` or useful for explaining the fallback |
+| Pitch/roll | `PTCH_TRIM_DEG`, `KFF_THR2PTCH`, `PTCH_LIM_MAX_DEG`, `LEVEL_ROLL_LIMIT`, and `ROLL_LIMIT_DEG`, all in degrees |
+| Airspeed | `AIRSPEED_MIN` and `AIRSPEED_CRUISE` m/s; numeric/decoded `ARSPD_USE`; zero-based `ARSPD_PRIMARY` instance |
+
+Preserve the underlying raw values in evidence/debug models. Human labels may
+explain source-backed branches, for example `TKOFF_THR_MAX=0 (uses THR_MAX)`
+or `TKOFF_OPTIONS bit 0 unset (fixed-maximum path)`, but must not infer a
+physical launch method or imply that trigger-time parameters remained
+unchanged throughout the interval.
+
+### 17.4 Relative-time presentation contract
+
+All analysis and evidence models retain exact absolute integer `TimeUS`.
+Normal human-readable output uses the trigger as its local origin:
+
+```text
+Triggered AUTO                 0.000 s
+Throttle unsuppressed         +0.142 s
+Target/course finalized       +0.260 s
+TAKEOFF control complete      +7.280 s
+Mode exit                     +8.100 s
+```
+
+Calculate each displayed offset as
+`(event_time_us - trigger_time_us) / 1_000_000` without changing stored
+timestamps or analytical precision. Display milliseconds by default. If the
+source evidence is inherently coarser, the report may reduce displayed
+precision rather than imply resolution the evidence lacks. Missing events are
+shown as unavailable. Absolute `TimeUS`, source-row time, and sample age remain
+available in debug/evidence-detail output but do not appear in the normal
+human report.
