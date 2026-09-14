@@ -4,6 +4,7 @@ import math
 
 import pandas as pd
 from core.flight_data import FlightLog
+from core.params import ParameterChange, ParameterHistory
 from core.takeoff_execution import (
     TakeoffEntryContext,
     TakeoffExecution,
@@ -12,8 +13,11 @@ from core.takeoff_execution import (
     TakeoffTerminationReason,
 )
 from core.takeoff_performance import (
+    ConfiguredMinimumAirspeedStatus,
+    FixedThrottleTargetStatus,
     TakeoffControlIntervalStatus,
     TakeoffPerformanceProcessor,
+    format_takeoff_performance_report,
 )
 
 START_US = 1_000_000
@@ -76,7 +80,20 @@ def _execution(
     )
 
 
-def _flight_log(*, ctun=(), gps=(), pos=(), baro=()):
+def _history(initial_values=None, changes=None):
+    """Build timestamped parameter state without synthetic PARM startup noise."""
+    return ParameterHistory(initial_values or {}, changes or {})
+
+
+def _flight_log(
+    *,
+    ctun=(),
+    gps=(),
+    pos=(),
+    baro=(),
+    tecs=(),
+    parameter_history=None,
+):
     """Build only telemetry consumed by performance analysis."""
     return FlightLog(
         messages={
@@ -96,7 +113,9 @@ def _flight_log(*, ctun=(), gps=(), pos=(), baro=()):
             "GPS": _table(gps, ("TimeUS", "I", "Status", "Spd", "U")),
             "POS": _table(pos, ("TimeUS", "RelHomeAlt")),
             "BARO": _table(baro, ("TimeUS", "Alt")),
-        }
+            "TECS": _table(tecs, ("TimeUS", "ph")),
+        },
+        parameter_history=parameter_history or ParameterHistory(),
     )
 
 
@@ -382,4 +401,591 @@ def test_no_trigger_and_auto_mission_receive_no_mode13_performance_metrics():
             _execution(entry_context=TakeoffEntryContext.AUTO_MISSION),
         )
         is None
+    )
+
+
+def test_pitch_tracking_residual_uses_each_samples_parameter_state():
+    """Later KFF changes exclude later rows without rewriting earlier evidence."""
+    history = _history(
+        {
+            "KFF_THR2PTCH": 0.0,
+            "TKOFF_TDRAG_ELEV": 0.0,
+            "TKOFF_TDRAG_SPD1": 0.0,
+        },
+        {
+            "KFF_THR2PTCH": (ParameterChange(4_000_000, 1.0),),
+        },
+    )
+    flight_log = _flight_log(
+        ctun=(
+            (TRIGGER_US, 100.0, 0.0, 0.0, 0.0, 8.0, 1, 0.0),
+            (2_500_000, 10.0, 5.0, 0.0, 0.0, 8.0, 1, 20.0),
+            (3_500_000, 2.0, 10.0, 0.0, 0.0, 9.0, 1, 40.0),
+            (4_500_000, 100.0, 0.0, 0.0, 0.0, 10.0, 1, 60.0),
+            (COMPLETION_US, 200.0, 0.0, 0.0, 0.0, 11.0, 1, 80.0),
+        ),
+        tecs=((2_200_000, 0.1),),
+        parameter_history=history,
+    )
+
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    residual = analysis.pitch_tracking_residual
+    assert residual is not None
+    assert residual.magnitude_deg == 8.0
+    assert residual.signed_residual_deg == -8.0
+    assert residual.nav_pitch_deg == 2.0
+    assert residual.pitch_deg == 10.0
+    assert residual.source_time_us == 3_500_000
+    assert residual.interval_status is TakeoffControlIntervalStatus.COMPLETED
+
+
+def test_pitch_tracking_residual_requires_zero_kff_and_tail_hold_parameters():
+    """Unproven controller ownership or feed-forward makes rows ineligible."""
+    ctun = (
+        (3_000_000, 1.0, 1.0, 0.0, 0.0, 8.0, 1, 20.0),
+        (3_500_000, 10.0, 1.0, 0.0, 0.0, 9.0, 1, 40.0),
+    )
+    nonzero_kff = _history(
+        {
+            "KFF_THR2PTCH": 1.0,
+            "TKOFF_TDRAG_ELEV": 0.0,
+            "TKOFF_TDRAG_SPD1": 0.0,
+        }
+    )
+    active_tail_hold = _history(
+        {
+            "KFF_THR2PTCH": 0.0,
+            "TKOFF_TDRAG_ELEV": 100.0,
+            "TKOFF_TDRAG_SPD1": 8.0,
+        }
+    )
+
+    kff_analysis = _analyse(
+        _flight_log(
+            ctun=ctun,
+            tecs=((2_500_000, 0.1),),
+            parameter_history=nonzero_kff,
+        )
+    )
+    tail_hold_analysis = _analyse(
+        _flight_log(
+            ctun=ctun,
+            tecs=((2_500_000, 0.1),),
+            parameter_history=active_tail_hold,
+        )
+    )
+
+    assert kff_analysis is not None
+    assert kff_analysis.pitch_tracking_residual is None
+    assert tail_hold_analysis is not None
+    assert tail_hold_analysis.pitch_tracking_residual is None
+
+
+def test_trigger_airspeed_delta_uses_parameter_at_ctun_sample_time():
+    """A later AIRSPEED_MIN value cannot rewrite the causal trigger sample."""
+    history = _history(
+        {"AIRSPEED_MIN": 7.0},
+        {"AIRSPEED_MIN": (ParameterChange(2_000_000, 20.0),)},
+    )
+    flight_log = _flight_log(
+        ctun=((1_900_000, 0.0, 0.0, 0.0, 0.0, 8.0, 1, 0.0),),
+        parameter_history=history,
+    )
+
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    delta = analysis.trigger_configured_minimum_airspeed_delta
+    assert delta is not None
+    assert delta.airspeed_m_s == 8.0
+    assert delta.configured_minimum_m_s == 7.0
+    assert delta.delta_m_s == 1.0
+    assert delta.estimate_type == 1
+    assert delta.source_time_us == 1_900_000
+    assert delta.age_us == 100_000
+
+
+def test_interval_airspeed_delta_respects_changes_and_excludes_boundaries():
+    """Each valid interior CTUN row uses its own configured minimum."""
+    history = _history(
+        {"AIRSPEED_MIN": 7.0},
+        {"AIRSPEED_MIN": (ParameterChange(3_000_000, 10.0),)},
+    )
+    flight_log = _flight_log(
+        ctun=(
+            (2_500_000, 0.0, 0.0, 0.0, 0.0, 9.0, 1, 0.0),
+            (3_000_000, 0.0, 0.0, 0.0, 0.0, 11.0, 1, 0.0),
+            (4_000_000, 0.0, 0.0, 0.0, 0.0, -100.0, 0, 0.0),
+            (5_500_000, 0.0, 0.0, 0.0, 0.0, 12.0, 1, 0.0),
+            (COMPLETION_US, 0.0, 0.0, 0.0, 0.0, 0.0, 1, 0.0),
+        ),
+        parameter_history=history,
+    )
+
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    delta = analysis.interval_configured_minimum_airspeed_delta
+    assert delta is not None
+    assert delta.delta_m_s == 1.0
+    assert delta.airspeed_m_s == 11.0
+    assert delta.configured_minimum_m_s == 10.0
+    assert delta.estimate_type == 1
+    assert delta.source_time_us == 3_000_000
+    assert delta.interval_status is TakeoffControlIntervalStatus.COMPLETED
+
+
+def test_airspeed_delta_requires_valid_airspeed_and_parameter_evidence():
+    """AsT zero and missing AIRSPEED_MIN never become fabricated deltas."""
+    flight_log = _flight_log(
+        ctun=(
+            (1_900_000, 0.0, 0.0, 0.0, 0.0, 8.0, 0, 0.0),
+            (3_000_000, 0.0, 0.0, 0.0, 0.0, 9.0, 1, 0.0),
+        )
+    )
+
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    assert analysis.trigger_configured_minimum_airspeed_delta is None
+    assert analysis.interval_configured_minimum_airspeed_delta is None
+
+
+def _fixed_throttle_history(
+    *,
+    options=0.0,
+    takeoff_maximum=100.0,
+    normal_maximum=90.0,
+    changes=None,
+):
+    """Build the conservative source-proven fixed-target configuration."""
+    return _history(
+        {
+            "TKOFF_OPTIONS": options,
+            "TKOFF_THR_MAX": takeoff_maximum,
+            "THR_MAX": normal_maximum,
+            "FWD_BAT_VOLT_MIN": 0.0,
+            "FWD_BAT_VOLT_MAX": 0.0,
+            "FWD_BAT_THR_CUT": 0.0,
+            "BATT_WATT_MAX": 0.0,
+        },
+        changes,
+    )
+
+
+def test_fixed_throttle_target_selects_first_sample_reaching_maximum():
+    """Rise starts at suppression release and ignores arbitrary percentages."""
+    flight_log = _flight_log(
+        ctun=(
+            (UNSUPPRESSED_US, 0.0, 0.0, 0.0, 0.0, 8.0, 1, 40.0),
+            (3_500_000, 0.0, 0.0, 0.0, 0.0, 8.0, 1, 90.0),
+            (4_000_000, 0.0, 0.0, 0.0, 0.0, 8.0, 1, 100.0),
+            (4_500_000, 0.0, 0.0, 0.0, 0.0, 8.0, 1, 110.0),
+        ),
+        parameter_history=_fixed_throttle_history(),
+    )
+
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    rise = analysis.fixed_throttle_target_rise
+    assert rise.status is FixedThrottleTargetStatus.OBSERVED
+    assert rise.suppression_release_time_us == UNSUPPRESSED_US
+    assert rise.effective_target_pct == 100.0
+    assert rise.target_time_us == 4_000_000
+    assert rise.elapsed_s == 1.0
+    assert rise.observed_throttle_output_pct == 100.0
+    assert rise.interval_status is TakeoffControlIntervalStatus.COMPLETED
+
+
+def test_zero_takeoff_maximum_uses_normal_throttle_maximum():
+    """TKOFF_THR_MAX zero selects THR_MAX through the firmware fallback."""
+    flight_log = _flight_log(
+        ctun=((4_000_000, 0.0, 0.0, 0.0, 0.0, 8.0, 1, 90.0),),
+        parameter_history=_fixed_throttle_history(takeoff_maximum=0.0),
+    )
+
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    rise = analysis.fixed_throttle_target_rise
+    assert rise.status is FixedThrottleTargetStatus.OBSERVED
+    assert rise.effective_target_pct == 90.0
+    assert rise.target_time_us == 4_000_000
+
+
+def test_fixed_throttle_target_not_observed_has_explicit_endpoint_status():
+    """Completed and mode-exit endpoints remain distinguishable censoring."""
+    flight_log = _flight_log(
+        ctun=((4_000_000, 0.0, 0.0, 0.0, 0.0, 8.0, 1, 99.0),),
+        parameter_history=_fixed_throttle_history(),
+    )
+
+    completed = _analyse(flight_log)
+    censored = _analyse(flight_log, _execution(completion=False))
+
+    assert completed is not None
+    completed_rise = completed.fixed_throttle_target_rise
+    assert completed_rise.status is (FixedThrottleTargetStatus.NOT_OBSERVED_COMPLETED)
+    assert completed_rise.effective_target_pct == 100.0
+    assert completed_rise.target_time_us is None
+    assert completed_rise.elapsed_s is None
+    assert censored is not None
+    censored_rise = censored.fixed_throttle_target_rise
+    assert censored_rise.status is (
+        FixedThrottleTargetStatus.NOT_OBSERVED_CENSORED_MODE_EXIT
+    )
+    assert censored_rise.interval_status is (
+        TakeoffControlIntervalStatus.CENSORED_MODE_EXIT
+    )
+
+
+def test_dynamic_throttle_range_configuration_has_no_fixed_target():
+    """Enabling TECS throttle range makes the static target unavailable."""
+    analysis = _analyse(
+        _flight_log(parameter_history=_fixed_throttle_history(options=1.0))
+    )
+
+    assert analysis is not None
+    rise = analysis.fixed_throttle_target_rise
+    assert rise.status is (FixedThrottleTargetStatus.UNAVAILABLE_CONFIGURATION)
+    assert rise.effective_target_pct is None
+
+
+def test_throttle_parameter_change_before_acquisition_invalidates_target():
+    """A changed maximum cannot be silently carried through the rise interval."""
+    history = _fixed_throttle_history(
+        changes={
+            "TKOFF_THR_MAX": (ParameterChange(3_500_000, 80.0),),
+        }
+    )
+    flight_log = _flight_log(
+        ctun=(
+            (3_250_000, 0.0, 0.0, 0.0, 0.0, 8.0, 1, 70.0),
+            (4_000_000, 0.0, 0.0, 0.0, 0.0, 8.0, 1, 100.0),
+        ),
+        parameter_history=history,
+    )
+
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    assert analysis.fixed_throttle_target_rise.status is (
+        FixedThrottleTargetStatus.UNAVAILABLE_CONFIGURATION
+    )
+
+
+def test_throttle_change_at_unowned_endpoint_does_not_rewrite_interval():
+    """A cross-stream endpoint remains exclusive for parameter ownership."""
+    history = _fixed_throttle_history(
+        changes={
+            "TKOFF_OPTIONS": (ParameterChange(COMPLETION_US, 1.0),),
+        }
+    )
+    analysis = _analyse(_flight_log(parameter_history=history))
+
+    assert analysis is not None
+    assert analysis.fixed_throttle_target_rise.status is (
+        FixedThrottleTargetStatus.NOT_OBSERVED_COMPLETED
+    )
+
+
+def _pitch_history():
+    """Return configuration that permits direct pitch residual evidence."""
+    return _history(
+        {
+            "KFF_THR2PTCH": 0.0,
+            "TKOFF_TDRAG_ELEV": 0.0,
+            "TKOFF_TDRAG_SPD1": 0.0,
+        }
+    )
+
+
+def test_pitch_residual_requires_post_trigger_tecs_evidence():
+    """Triggered CTUN evidence alone cannot establish a fresh TECS solution."""
+    flight_log = _flight_log(
+        ctun=(
+            (2_500_000, 50.0, 0.0, 0.0, 0.0, 8.0, 1, 0.0),
+            (3_000_000, 10.0, 0.0, 0.0, 0.0, 8.0, 1, 0.0),
+        ),
+        parameter_history=_pitch_history(),
+    )
+
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    assert analysis.pitch_tracking_residual is None
+
+
+def test_pitch_residual_requires_two_ctun_rows_strictly_after_tecs():
+    """One post-refresh CTUN row remains same-loop ambiguous."""
+    flight_log = _flight_log(
+        ctun=((3_000_000, 50.0, 0.0, 0.0, 0.0, 8.0, 1, 0.0),),
+        tecs=((2_500_000, 0.1),),
+        parameter_history=_pitch_history(),
+    )
+
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    assert analysis.pitch_tracking_residual is None
+
+
+def test_pitch_residual_excludes_first_post_tecs_and_stale_large_values():
+    """Only the second strictly later CTUN row begins residual evaluation."""
+    flight_log = _flight_log(
+        ctun=(
+            (2_100_000, 100.0, 0.0, 0.0, 0.0, 8.0, 1, 0.0),
+            (2_500_000, 90.0, 0.0, 0.0, 0.0, 8.0, 1, 0.0),
+            (3_000_000, 12.0, 5.0, 0.0, 0.0, 8.0, 1, 0.0),
+        ),
+        tecs=((2_200_000, 0.1),),
+        parameter_history=_pitch_history(),
+    )
+
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    residual = analysis.pitch_tracking_residual
+    assert residual is not None
+    assert residual.signed_residual_deg == 7.0
+    assert residual.source_time_us == 3_000_000
+
+
+def test_pitch_residual_equal_tecs_ctun_timestamp_is_not_later():
+    """Equal cross-stream timestamps do not establish CTUN propagation order."""
+    flight_log = _flight_log(
+        ctun=(
+            (2_500_000, 100.0, 0.0, 0.0, 0.0, 8.0, 1, 0.0),
+            (3_000_000, 50.0, 0.0, 0.0, 0.0, 8.0, 1, 0.0),
+            (3_500_000, 9.0, 5.0, 0.0, 0.0, 8.0, 1, 0.0),
+        ),
+        tecs=((2_500_000, 0.1),),
+        parameter_history=_pitch_history(),
+    )
+
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    residual = analysis.pitch_tracking_residual
+    assert residual is not None
+    assert residual.source_time_us == 3_500_000
+    assert residual.signed_residual_deg == 4.0
+
+
+def test_nonfinite_tecs_pitch_demand_does_not_establish_freshness():
+    """A TECS row must carry a finite logged pitch solution."""
+    flight_log = _flight_log(
+        ctun=(
+            (3_000_000, 10.0, 0.0, 0.0, 0.0, 8.0, 1, 0.0),
+            (3_500_000, 9.0, 5.0, 0.0, 0.0, 8.0, 1, 0.0),
+        ),
+        tecs=((2_500_000, math.nan),),
+        parameter_history=_pitch_history(),
+    )
+
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    assert analysis.pitch_tracking_residual is None
+
+
+def test_first_observed_minimum_airspeed_selects_sample_without_interpolation():
+    """The first qualifying logged sample supplies exact observed evidence."""
+    flight_log = _flight_log(
+        ctun=(
+            (2_100_000, 0.0, 0.0, 0.0, 0.0, 9.0, 1, 0.0),
+            (2_900_000, 0.0, 0.0, 0.0, 0.0, 11.2, 2, 0.0),
+            (3_500_000, 0.0, 0.0, 0.0, 0.0, 12.0, 2, 0.0),
+        ),
+        parameter_history=_history({"AIRSPEED_MIN": 11.0}),
+    )
+
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    observed = analysis.first_observed_configured_minimum_airspeed
+    assert observed.status is ConfiguredMinimumAirspeedStatus.OBSERVED
+    assert observed.trigger_time_us == TRIGGER_US
+    assert observed.observation_time_us == 2_900_000
+    assert observed.elapsed_s == 0.9
+    assert observed.observed_airspeed_m_s == 11.2
+    assert observed.configured_minimum_m_s == 11.0
+    assert observed.estimate_type == 2
+
+
+def test_first_observed_minimum_airspeed_respects_event_time_parameter_change():
+    """Each CTUN sample uses the AIRSPEED_MIN effective at its own TimeUS."""
+    history = _history(
+        {"AIRSPEED_MIN": 12.0},
+        {"AIRSPEED_MIN": (ParameterChange(3_000_000, 10.0),)},
+    )
+    flight_log = _flight_log(
+        ctun=(
+            (2_500_000, 0.0, 0.0, 0.0, 0.0, 11.0, 1, 0.0),
+            (3_000_000, 0.0, 0.0, 0.0, 0.0, 10.5, 1, 0.0),
+        ),
+        parameter_history=history,
+    )
+
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    observed = analysis.first_observed_configured_minimum_airspeed
+    assert observed.status is ConfiguredMinimumAirspeedStatus.OBSERVED
+    assert observed.observation_time_us == 3_000_000
+    assert observed.configured_minimum_m_s == 10.0
+
+
+def test_first_observed_minimum_airspeed_rejects_unusable_evidence():
+    """AsT zero is skipped and missing AIRSPEED_MIN remains unavailable."""
+    invalid_type = _analyse(
+        _flight_log(
+            ctun=((2_500_000, 0.0, 0.0, 0.0, 0.0, 20.0, 0, 0.0),),
+            parameter_history=_history({"AIRSPEED_MIN": 10.0}),
+        )
+    )
+    missing_parameter = _analyse(
+        _flight_log(ctun=((2_500_000, 0.0, 0.0, 0.0, 0.0, 20.0, 1, 0.0),))
+    )
+
+    assert invalid_type is not None
+    assert invalid_type.first_observed_configured_minimum_airspeed.status is (
+        ConfiguredMinimumAirspeedStatus.UNAVAILABLE_EVIDENCE
+    )
+    assert missing_parameter is not None
+    assert missing_parameter.first_observed_configured_minimum_airspeed.status is (
+        ConfiguredMinimumAirspeedStatus.UNAVAILABLE_EVIDENCE
+    )
+
+
+def test_minimum_airspeed_observation_excludes_endpoint_and_labels_not_observed():
+    """A qualifying endpoint row is unowned and statuses retain censoring."""
+    history = _history({"AIRSPEED_MIN": 10.0})
+    rows = (
+        (2_500_000, 0.0, 0.0, 0.0, 0.0, 9.0, 1, 0.0),
+        (COMPLETION_US, 0.0, 0.0, 0.0, 0.0, 11.0, 1, 0.0),
+    )
+    completed = _analyse(_flight_log(ctun=rows, parameter_history=history))
+    censored = _analyse(
+        _flight_log(
+            ctun=(
+                rows[0],
+                (MODE_EXIT_US, 0.0, 0.0, 0.0, 0.0, 11.0, 1, 0.0),
+            ),
+            parameter_history=history,
+        ),
+        _execution(completion=False),
+    )
+
+    assert completed is not None
+    assert completed.first_observed_configured_minimum_airspeed.status is (
+        ConfiguredMinimumAirspeedStatus.NOT_OBSERVED_COMPLETED
+    )
+    assert censored is not None
+    assert censored.first_observed_configured_minimum_airspeed.status is (
+        ConfiguredMinimumAirspeedStatus.NOT_OBSERVED_CENSORED_MODE_EXIT
+    )
+
+
+def _configuration_history():
+    """Return all report-context parameters with one later change."""
+    values = {
+        spec: float(index)
+        for index, spec in enumerate(
+            (
+                "TKOFF_THR_MINACC",
+                "TKOFF_ACCEL_CNT",
+                "TKOFF_THR_DELAY",
+                "TKOFF_THR_MINSPD",
+                "TKOFF_ROTATE_SPD",
+                "TKOFF_GND_PITCH",
+                "TKOFF_LVL_PITCH",
+                "TKOFF_ALT",
+                "TKOFF_DIST",
+                "TKOFF_LVL_ALT",
+                "TKOFF_THR_MAX",
+                "TKOFF_THR_MAX_T",
+                "TKOFF_THR_SLEW",
+                "TKOFF_OPTIONS",
+                "THR_MAX",
+                "PTCH_TRIM_DEG",
+                "KFF_THR2PTCH",
+                "PTCH_LIM_MAX_DEG",
+                "LEVEL_ROLL_LIMIT",
+                "ROLL_LIMIT_DEG",
+                "AIRSPEED_MIN",
+                "AIRSPEED_CRUISE",
+                "ARSPD_USE",
+                "ARSPD_PRIMARY",
+            ),
+            start=1,
+        )
+    }
+    return _history(
+        values,
+        {"TKOFF_ALT": (ParameterChange(TRIGGER_US + 1, 999.0),)},
+    )
+
+
+def test_configuration_context_uses_trigger_time_and_expected_groups():
+    """Later changes do not rewrite the selected launch configuration."""
+    analysis = _analyse(_flight_log(parameter_history=_configuration_history()))
+
+    assert analysis is not None
+    context = analysis.configuration
+    assert context.trigger_time_us == TRIGGER_US
+    assert tuple(group.name for group in context.groups) == (
+        "Launch detection",
+        "Takeoff",
+        "Throttle",
+        "Pitch / roll",
+        "Airspeed",
+    )
+    values = {value.name: value for group in context.groups for value in group.values}
+    assert len(values) == 24
+    assert values["TKOFF_ALT"].value == 8.0
+    assert values["TKOFF_ALT"].display_value == 8.0
+    assert values["TKOFF_THR_DELAY"].value == 3.0
+    throttle_delay = values["TKOFF_THR_DELAY"].display_value
+    assert throttle_delay is not None
+    assert math.isclose(throttle_delay, 0.3)
+
+
+def test_configuration_context_keeps_missing_value_unavailable():
+    """Missing configuration is explicit and has no snapshot fallback."""
+    analysis = _analyse(_flight_log())
+
+    assert analysis is not None
+    values = [
+        value for group in analysis.configuration.groups for value in group.values
+    ]
+    assert all(value.value is None for value in values)
+    assert "unavailable" in format_takeoff_performance_report(analysis, 1)
+
+
+def test_report_uses_relative_timing_and_preserves_internal_timeus():
+    """Normal output is relative while evidence retains exact microseconds."""
+    flight_log = _flight_log(
+        ctun=(
+            (1_900_000, 0.0, 0.0, 0.0, 0.0, 8.0, 1, 0.0),
+            (2_500_000, 0.0, 0.0, 0.0, 0.0, 12.0, 1, 0.0),
+        ),
+        parameter_history=_history({"AIRSPEED_MIN": 11.0}),
+    )
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    report = format_takeoff_performance_report(analysis, 2)
+    assert "Firmware trigger                     0.000 s" in report
+    assert "Throttle unsuppressed                +1.000 s" in report
+    assert "First observed ≥ configured minimum +0.500 s" in report
+    assert str(TRIGGER_US) not in report
+    assert str(UNSUPPRESSED_US) not in report
+    assert analysis.phase_timings.trigger_time_us == TRIGGER_US
+    assert (
+        analysis.first_observed_configured_minimum_airspeed.observation_time_us
+        == 2_500_000
     )

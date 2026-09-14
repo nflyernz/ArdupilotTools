@@ -63,7 +63,7 @@ class FlightReader:
 
     def _read_messages(self):
         wanted = set(self.config.get("messages"))
-        wanted.update(("MISE", "PARM", "POS", "STAT"))
+        wanted.update(("MISE", "PARM", "POS", "STAT", "TECS"))
         rows = {name: [] for name in wanted}
 
         log = mavutil.mavlink_connection(str(self.filename))

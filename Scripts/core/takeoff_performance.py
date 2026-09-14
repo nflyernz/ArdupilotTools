@@ -23,6 +23,25 @@ class TakeoffControlIntervalStatus(Enum):
     CENSORED_MODE_EXIT = "censored_mode_exit"
 
 
+class FixedThrottleTargetStatus(Enum):
+    """Availability and observation state of a fixed throttle target."""
+
+    UNAVAILABLE_CONFIGURATION = "unavailable_configuration"
+    UNAVAILABLE_EVIDENCE = "unavailable_evidence"
+    OBSERVED = "observed"
+    NOT_OBSERVED_COMPLETED = "not_observed_completed"
+    NOT_OBSERVED_CENSORED_MODE_EXIT = "not_observed_censored_mode_exit"
+
+
+class ConfiguredMinimumAirspeedStatus(Enum):
+    """Availability and observation state of configured minimum airspeed."""
+
+    UNAVAILABLE_EVIDENCE = "unavailable_evidence"
+    OBSERVED = "observed"
+    NOT_OBSERVED_COMPLETED = "not_observed_completed"
+    NOT_OBSERVED_CENSORED_MODE_EXIT = "not_observed_censored_mode_exit"
+
+
 @dataclass(frozen=True, slots=True)
 class TakeoffControlInterval:
     """Owned interval used for automatic-control aggregate evidence."""
@@ -117,6 +136,96 @@ class AirspeedEnvelope:
 
 
 @dataclass(frozen=True, slots=True)
+class PitchTrackingResidual:
+    """Maximum eligible co-sampled pitch-demand tracking residual."""
+
+    magnitude_deg: float
+    signed_residual_deg: float
+    nav_pitch_deg: float
+    pitch_deg: float
+    source_time_us: int
+    interval_status: TakeoffControlIntervalStatus
+
+
+@dataclass(frozen=True, slots=True)
+class EventConfiguredMinimumAirspeedDelta:
+    """Controller airspeed relative to configured minimum at an event sample."""
+
+    delta_m_s: float
+    airspeed_m_s: float
+    configured_minimum_m_s: float
+    estimate_type: int
+    source_time_us: int
+    age_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class IntervalConfiguredMinimumAirspeedDelta:
+    """Minimum signed configured-minimum airspeed delta in one interval."""
+
+    delta_m_s: float
+    airspeed_m_s: float
+    configured_minimum_m_s: float
+    estimate_type: int
+    source_time_us: int
+    interval_status: TakeoffControlIntervalStatus
+
+
+@dataclass(frozen=True, slots=True)
+class FixedThrottleTargetRise:
+    """Conditional observation of a source-proven fixed takeoff maximum."""
+
+    status: FixedThrottleTargetStatus
+    suppression_release_time_us: int | None
+    effective_target_pct: float | None
+    target_time_us: int | None
+    elapsed_s: float | None
+    observed_throttle_output_pct: float | None
+    interval_status: TakeoffControlIntervalStatus | None
+
+
+@dataclass(frozen=True, slots=True)
+class FirstObservedConfiguredMinimumAirspeed:
+    """First owned CTUN observation at or above event-time AIRSPEED_MIN."""
+
+    status: ConfiguredMinimumAirspeedStatus
+    trigger_time_us: int
+    observation_time_us: int | None
+    elapsed_s: float | None
+    observed_airspeed_m_s: float | None
+    configured_minimum_m_s: float | None
+    estimate_type: int | None
+    interval_status: TakeoffControlIntervalStatus | None
+
+
+@dataclass(frozen=True, slots=True)
+class TakeoffConfigurationValue:
+    """One launch-time parameter value and its display metadata."""
+
+    name: str
+    label: str
+    value: float | None
+    display_value: float | None
+    unit: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class TakeoffConfigurationGroup:
+    """One human-oriented group of launch-time parameters."""
+
+    name: str
+    values: tuple[TakeoffConfigurationValue, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TakeoffConfigurationContext:
+    """Selected configuration snapshotted at the firmware trigger."""
+
+    trigger_time_us: int
+    groups: tuple[TakeoffConfigurationGroup, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class RelativeAltitudeMetrics:
     """POS relative-home altitude observations sharing one trigger baseline."""
 
@@ -140,6 +249,16 @@ class TakeoffPerformanceAnalysis:
     throttle_command: ThrottleCommandContext
     airspeed_envelope: AirspeedEnvelope | None
     relative_altitude: RelativeAltitudeMetrics | None
+    pitch_tracking_residual: PitchTrackingResidual | None
+    trigger_configured_minimum_airspeed_delta: (
+        EventConfiguredMinimumAirspeedDelta | None
+    )
+    interval_configured_minimum_airspeed_delta: (
+        IntervalConfiguredMinimumAirspeedDelta | None
+    )
+    fixed_throttle_target_rise: FixedThrottleTargetRise
+    first_observed_configured_minimum_airspeed: FirstObservedConfiguredMinimumAirspeed
+    configuration: TakeoffConfigurationContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,8 +270,89 @@ class _TelemetryRow:
     row: pd.Series
 
 
+@dataclass(frozen=True, slots=True)
+class _ConfigurationParameterSpec:
+    """Formatting metadata for one selected launch parameter."""
+
+    name: str
+    label: str
+    unit: str | None = None
+    scale: float = 1.0
+
+
 class TakeoffPerformanceProcessor:
     """Build bounded performance evidence for one TAKEOFF-mode execution."""
+
+    _FIXED_THROTTLE_PARAMETERS = (
+        "TKOFF_OPTIONS",
+        "TKOFF_THR_MAX",
+        "THR_MAX",
+        "FWD_BAT_VOLT_MIN",
+        "FWD_BAT_VOLT_MAX",
+        "FWD_BAT_THR_CUT",
+        "BATT_WATT_MAX",
+    )
+    _CONFIGURATION_GROUPS = (
+        (
+            "Launch detection",
+            (
+                _ConfigurationParameterSpec(
+                    "TKOFF_THR_MINACC", "Minimum acceleration", "m/s²"
+                ),
+                _ConfigurationParameterSpec("TKOFF_ACCEL_CNT", "Acceleration count"),
+                _ConfigurationParameterSpec(
+                    "TKOFF_THR_DELAY", "Throttle delay", "s", 0.1
+                ),
+                _ConfigurationParameterSpec(
+                    "TKOFF_THR_MINSPD", "Minimum groundspeed", "m/s"
+                ),
+            ),
+        ),
+        (
+            "Takeoff",
+            (
+                _ConfigurationParameterSpec("TKOFF_ROTATE_SPD", "Rotate speed", "m/s"),
+                _ConfigurationParameterSpec("TKOFF_GND_PITCH", "Ground pitch", "°"),
+                _ConfigurationParameterSpec("TKOFF_LVL_PITCH", "Level-off pitch", "°"),
+                _ConfigurationParameterSpec("TKOFF_ALT", "Takeoff altitude", "m"),
+                _ConfigurationParameterSpec("TKOFF_DIST", "Takeoff distance", "m"),
+                _ConfigurationParameterSpec("TKOFF_LVL_ALT", "Level-off altitude", "m"),
+            ),
+        ),
+        (
+            "Throttle",
+            (
+                _ConfigurationParameterSpec("TKOFF_THR_MAX", "Takeoff maximum", "%"),
+                _ConfigurationParameterSpec("TKOFF_THR_MAX_T", "Maximum duration", "s"),
+                _ConfigurationParameterSpec("TKOFF_THR_SLEW", "Slew rate", "%/s"),
+                _ConfigurationParameterSpec("TKOFF_OPTIONS", "Options"),
+                _ConfigurationParameterSpec("THR_MAX", "Normal maximum", "%"),
+            ),
+        ),
+        (
+            "Pitch / roll",
+            (
+                _ConfigurationParameterSpec("PTCH_TRIM_DEG", "Pitch trim", "°"),
+                _ConfigurationParameterSpec("KFF_THR2PTCH", "Throttle-to-pitch KFF"),
+                _ConfigurationParameterSpec("PTCH_LIM_MAX_DEG", "Maximum pitch", "°"),
+                _ConfigurationParameterSpec(
+                    "LEVEL_ROLL_LIMIT", "Level roll limit", "°"
+                ),
+                _ConfigurationParameterSpec("ROLL_LIMIT_DEG", "Roll limit", "°"),
+            ),
+        ),
+        (
+            "Airspeed",
+            (
+                _ConfigurationParameterSpec(
+                    "AIRSPEED_MIN", "Configured minimum", "m/s"
+                ),
+                _ConfigurationParameterSpec("AIRSPEED_CRUISE", "Cruise", "m/s"),
+                _ConfigurationParameterSpec("ARSPD_USE", "Use airspeed"),
+                _ConfigurationParameterSpec("ARSPD_PRIMARY", "Primary sensor"),
+            ),
+        ),
+    )
 
     def __init__(
         self,
@@ -227,6 +427,24 @@ class TakeoffPerformanceProcessor:
                 trigger,
                 control_interval,
             ),
+            pitch_tracking_residual=self._pitch_tracking_residual(control_interval),
+            trigger_configured_minimum_airspeed_delta=(
+                self._trigger_configured_minimum_airspeed_delta(trigger)
+            ),
+            interval_configured_minimum_airspeed_delta=(
+                self._interval_configured_minimum_airspeed_delta(control_interval)
+            ),
+            fixed_throttle_target_rise=self._fixed_throttle_target_rise(
+                unsuppressed,
+                control_interval,
+            ),
+            first_observed_configured_minimum_airspeed=(
+                self._first_observed_configured_minimum_airspeed(
+                    trigger,
+                    control_interval,
+                )
+            ),
+            configuration=self._configuration_context(trigger.time_us),
         )
 
     def _event_is_owned(self, event: TakeoffExecutionEvent) -> bool:
@@ -453,6 +671,394 @@ class TakeoffPerformanceProcessor:
             ),
         )
 
+    def _pitch_tracking_residual(
+        self,
+        interval: TakeoffControlInterval | None,
+    ) -> PitchTrackingResidual | None:
+        if interval is None:
+            return None
+        first_tecs = next(
+            (
+                telemetry
+                for telemetry in self._interval_rows(
+                    "TECS",
+                    (interval.start_us, interval.end_us),
+                )
+                if self._finite_float(telemetry.row.get("ph")) is not None
+            ),
+            None,
+        )
+        if first_tecs is None:
+            return None
+        later_ctun = [
+            telemetry
+            for telemetry in self._interval_rows(
+                "CTUN",
+                (interval.start_us, interval.end_us),
+            )
+            if telemetry.time_us > first_tecs.time_us
+        ]
+        if len(later_ctun) < 2:
+            return None
+
+        candidates = []
+        for telemetry in later_ctun[1:]:
+            nav_pitch = self._finite_float(telemetry.row.get("NavPitch"))
+            pitch = self._finite_float(telemetry.row.get("Pitch"))
+            if nav_pitch is None or pitch is None:
+                continue
+            if not all(
+                self._parameter_is_zero(parameter, telemetry.time_us)
+                for parameter in (
+                    "KFF_THR2PTCH",
+                    "TKOFF_TDRAG_ELEV",
+                    "TKOFF_TDRAG_SPD1",
+                )
+            ):
+                continue
+            residual = nav_pitch - pitch
+            candidates.append((telemetry, nav_pitch, pitch, residual))
+        if not candidates:
+            return None
+        telemetry, nav_pitch, pitch, residual = max(
+            candidates,
+            key=lambda item: abs(item[3]),
+        )
+        return PitchTrackingResidual(
+            magnitude_deg=abs(residual),
+            signed_residual_deg=residual,
+            nav_pitch_deg=nav_pitch,
+            pitch_deg=pitch,
+            source_time_us=telemetry.time_us,
+            interval_status=interval.status,
+        )
+
+    def _first_observed_configured_minimum_airspeed(
+        self,
+        trigger: TakeoffExecutionEvent,
+        interval: TakeoffControlInterval | None,
+    ) -> FirstObservedConfiguredMinimumAirspeed:
+        if interval is None:
+            return FirstObservedConfiguredMinimumAirspeed(
+                ConfiguredMinimumAirspeedStatus.UNAVAILABLE_EVIDENCE,
+                trigger.time_us,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+
+        comparable_sample_seen = False
+        for telemetry in self._interval_rows(
+            "CTUN",
+            (interval.start_us, interval.end_us),
+        ):
+            airspeed = self._valid_airspeed(telemetry)
+            if airspeed is None:
+                continue
+            configured_minimum = self._parameter_float(
+                "AIRSPEED_MIN",
+                telemetry.time_us,
+            )
+            if configured_minimum is None or configured_minimum < 0:
+                return FirstObservedConfiguredMinimumAirspeed(
+                    ConfiguredMinimumAirspeedStatus.UNAVAILABLE_EVIDENCE,
+                    trigger.time_us,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    interval.status,
+                )
+            comparable_sample_seen = True
+            value, estimate_type = airspeed
+            if value >= configured_minimum:
+                return FirstObservedConfiguredMinimumAirspeed(
+                    ConfiguredMinimumAirspeedStatus.OBSERVED,
+                    trigger.time_us,
+                    telemetry.time_us,
+                    (telemetry.time_us - trigger.time_us) / 1_000_000,
+                    value,
+                    configured_minimum,
+                    estimate_type,
+                    interval.status,
+                )
+
+        if not comparable_sample_seen:
+            status = ConfiguredMinimumAirspeedStatus.UNAVAILABLE_EVIDENCE
+        elif interval.status is TakeoffControlIntervalStatus.COMPLETED:
+            status = ConfiguredMinimumAirspeedStatus.NOT_OBSERVED_COMPLETED
+        else:
+            status = ConfiguredMinimumAirspeedStatus.NOT_OBSERVED_CENSORED_MODE_EXIT
+        return FirstObservedConfiguredMinimumAirspeed(
+            status,
+            trigger.time_us,
+            None,
+            None,
+            None,
+            None,
+            None,
+            interval.status,
+        )
+
+    def _configuration_context(
+        self, trigger_time_us: int
+    ) -> TakeoffConfigurationContext:
+        groups = []
+        for group_name, specs in self._CONFIGURATION_GROUPS:
+            values = []
+            for spec in specs:
+                value = self._parameter_float(spec.name, trigger_time_us)
+                values.append(
+                    TakeoffConfigurationValue(
+                        spec.name,
+                        spec.label,
+                        value,
+                        value * spec.scale if value is not None else None,
+                        spec.unit,
+                    )
+                )
+            groups.append(TakeoffConfigurationGroup(group_name, tuple(values)))
+        return TakeoffConfigurationContext(trigger_time_us, tuple(groups))
+
+    def _trigger_configured_minimum_airspeed_delta(
+        self,
+        trigger: TakeoffExecutionEvent,
+    ) -> EventConfiguredMinimumAirspeedDelta | None:
+        telemetry = self._event_row("CTUN", trigger)
+        airspeed = self._valid_airspeed(telemetry)
+        if telemetry is None or airspeed is None:
+            return None
+        configured_minimum = self._parameter_float(
+            "AIRSPEED_MIN",
+            telemetry.time_us,
+        )
+        if configured_minimum is None:
+            return None
+        value, estimate_type = airspeed
+        return EventConfiguredMinimumAirspeedDelta(
+            delta_m_s=value - configured_minimum,
+            airspeed_m_s=value,
+            configured_minimum_m_s=configured_minimum,
+            estimate_type=estimate_type,
+            source_time_us=telemetry.time_us,
+            age_us=trigger.time_us - telemetry.time_us,
+        )
+
+    def _interval_configured_minimum_airspeed_delta(
+        self,
+        interval: TakeoffControlInterval | None,
+    ) -> IntervalConfiguredMinimumAirspeedDelta | None:
+        if interval is None:
+            return None
+        candidates = []
+        for telemetry in self._interval_rows(
+            "CTUN",
+            (interval.start_us, interval.end_us),
+        ):
+            airspeed = self._valid_airspeed(telemetry)
+            configured_minimum = self._parameter_float(
+                "AIRSPEED_MIN",
+                telemetry.time_us,
+            )
+            if airspeed is None or configured_minimum is None:
+                continue
+            value, estimate_type = airspeed
+            candidates.append(
+                (
+                    telemetry,
+                    value,
+                    configured_minimum,
+                    estimate_type,
+                    value - configured_minimum,
+                )
+            )
+        if not candidates:
+            return None
+        telemetry, value, configured_minimum, estimate_type, delta = min(
+            candidates,
+            key=lambda item: item[4],
+        )
+        return IntervalConfiguredMinimumAirspeedDelta(
+            delta_m_s=delta,
+            airspeed_m_s=value,
+            configured_minimum_m_s=configured_minimum,
+            estimate_type=estimate_type,
+            source_time_us=telemetry.time_us,
+            interval_status=interval.status,
+        )
+
+    def _fixed_throttle_target_rise(
+        self,
+        unsuppressed: TakeoffExecutionEvent | None,
+        interval: TakeoffControlInterval | None,
+    ) -> FixedThrottleTargetRise:
+        if (
+            unsuppressed is None
+            or not self._event_is_owned(unsuppressed)
+            or interval is None
+            or not interval.start_us <= unsuppressed.time_us < interval.end_us
+        ):
+            return FixedThrottleTargetRise(
+                FixedThrottleTargetStatus.UNAVAILABLE_EVIDENCE,
+                None,
+                None,
+                None,
+                None,
+                None,
+                interval.status if interval is not None else None,
+            )
+
+        start_us = unsuppressed.time_us
+        initial_target = self._fixed_throttle_target_at(start_us)
+        if initial_target is None:
+            return self._unavailable_fixed_throttle_target(
+                start_us,
+                interval,
+            )
+
+        for telemetry in self._rows("CTUN"):
+            if not start_us <= telemetry.time_us < interval.end_us:
+                continue
+            target = self._fixed_throttle_target_through(
+                start_us,
+                telemetry.time_us,
+                initial_target,
+            )
+            if target is None:
+                return self._unavailable_fixed_throttle_target(
+                    start_us,
+                    interval,
+                )
+            throttle = self._finite_float(telemetry.row.get("ThO"))
+            if throttle is not None and throttle >= target:
+                return FixedThrottleTargetRise(
+                    status=FixedThrottleTargetStatus.OBSERVED,
+                    suppression_release_time_us=start_us,
+                    effective_target_pct=target,
+                    target_time_us=telemetry.time_us,
+                    elapsed_s=(telemetry.time_us - start_us) / 1_000_000,
+                    observed_throttle_output_pct=throttle,
+                    interval_status=interval.status,
+                )
+
+        target = self._fixed_throttle_target_through(
+            start_us,
+            interval.end_us,
+            initial_target,
+            include_end=False,
+        )
+        if target is None:
+            return self._unavailable_fixed_throttle_target(
+                start_us,
+                interval,
+            )
+        status = (
+            FixedThrottleTargetStatus.NOT_OBSERVED_COMPLETED
+            if interval.status is TakeoffControlIntervalStatus.COMPLETED
+            else FixedThrottleTargetStatus.NOT_OBSERVED_CENSORED_MODE_EXIT
+        )
+        return FixedThrottleTargetRise(
+            status=status,
+            suppression_release_time_us=start_us,
+            effective_target_pct=target,
+            target_time_us=None,
+            elapsed_s=None,
+            observed_throttle_output_pct=None,
+            interval_status=interval.status,
+        )
+
+    def _unavailable_fixed_throttle_target(
+        self,
+        start_us: int,
+        interval: TakeoffControlInterval,
+    ) -> FixedThrottleTargetRise:
+        return FixedThrottleTargetRise(
+            status=FixedThrottleTargetStatus.UNAVAILABLE_CONFIGURATION,
+            suppression_release_time_us=start_us,
+            effective_target_pct=None,
+            target_time_us=None,
+            elapsed_s=None,
+            observed_throttle_output_pct=None,
+            interval_status=interval.status,
+        )
+
+    def _fixed_throttle_target_through(
+        self,
+        start_us: int,
+        end_us: int,
+        expected_target: float,
+        *,
+        include_end: bool = True,
+    ) -> float | None:
+        checkpoints = {start_us}
+        if include_end:
+            checkpoints.add(end_us)
+        for parameter in self._FIXED_THROTTLE_PARAMETERS:
+            checkpoints.update(
+                change.time_us
+                for change in self.flight_log.parameter_history.changes.get(
+                    parameter,
+                    (),
+                )
+                if start_us < change.time_us
+                and (
+                    change.time_us <= end_us if include_end else change.time_us < end_us
+                )
+            )
+        for time_us in sorted(checkpoints):
+            target = self._fixed_throttle_target_at(time_us)
+            if target is None or target != expected_target:
+                return None
+        return expected_target
+
+    def _fixed_throttle_target_at(self, time_us: int) -> float | None:
+        options = self._parameter_integer("TKOFF_OPTIONS", time_us)
+        takeoff_maximum = self._parameter_float("TKOFF_THR_MAX", time_us)
+        if options is None or options & 1 or takeoff_maximum is None:
+            return None
+        target = (
+            takeoff_maximum
+            if takeoff_maximum != 0
+            else self._parameter_float("THR_MAX", time_us)
+        )
+        if target is None or not 0 <= target <= 100:
+            return None
+
+        disabled_dynamic_modifiers = (
+            self._parameter_float("FWD_BAT_VOLT_MIN", time_us) == 0
+            and self._parameter_float("FWD_BAT_VOLT_MAX", time_us) == 0
+            and self._parameter_float("FWD_BAT_THR_CUT", time_us) == 0
+            and self._parameter_float("BATT_WATT_MAX", time_us) == 0
+        )
+        return target if disabled_dynamic_modifiers else None
+
+    def _valid_airspeed(
+        self,
+        telemetry: _TelemetryRow | None,
+    ) -> tuple[float, int] | None:
+        if telemetry is None:
+            return None
+        value = self._finite_float(telemetry.row.get("As"))
+        estimate_type = self._integer(telemetry.row.get("AsT"))
+        if value is None or value < 0 or not estimate_type:
+            return None
+        return value, estimate_type
+
+    def _parameter_is_zero(self, name: str, time_us: int) -> bool:
+        return self._parameter_float(name, time_us) == 0
+
+    def _parameter_float(self, name: str, time_us: int) -> float | None:
+        value = self.flight_log.parameter_history.value_at(name, time_us)
+        return self._finite_float(value)
+
+    def _parameter_integer(self, name: str, time_us: int) -> int | None:
+        value = self.flight_log.parameter_history.value_at(name, time_us)
+        return self._integer(value)
+
     def _relative_altitude(
         self,
         trigger: TakeoffExecutionEvent,
@@ -570,3 +1176,112 @@ class TakeoffPerformanceProcessor:
         if not math.isfinite(numeric) or not numeric.is_integer():
             return None
         return int(numeric)
+
+
+def format_takeoff_performance_report(
+    analysis: TakeoffPerformanceAnalysis,
+    takeoff_number: int,
+) -> str:
+    """Render concise human output using trigger-relative event times."""
+    lines = [f"TAKEOFF {takeoff_number}", "=" * 70, "", "Configuration at launch"]
+    for group in analysis.configuration.groups:
+        lines.extend(("", group.name))
+        lines.extend(
+            f"  {value.name:<24} {_format_configuration_value(value)}"
+            for value in group.values
+        )
+
+    timings = analysis.phase_timings
+    lines.extend(("", "Performance", "", f"{'Firmware trigger':<36} 0.000 s"))
+    for label, elapsed_s in (
+        ("Throttle unsuppressed", timings.trigger_to_throttle_unsuppressed_s),
+        ("Target/course finalized", timings.trigger_to_target_finalized_s),
+        ("Takeoff control complete", timings.trigger_to_control_completed_s),
+        ("Mode exit", timings.trigger_to_mode_exit_s),
+    ):
+        if elapsed_s is not None:
+            lines.append(f"{label:<36} {_format_relative_seconds(elapsed_s)}")
+
+    trigger_delta = analysis.trigger_configured_minimum_airspeed_delta
+    if trigger_delta is not None:
+        lines.extend(
+            (
+                "",
+                "At trigger",
+                f"  {'Airspeed':<34} {trigger_delta.airspeed_m_s:.2f} m/s",
+                (
+                    f"  {'Configured minimum':<34} "
+                    f"{trigger_delta.configured_minimum_m_s:.2f} m/s"
+                ),
+                f"  {'Delta':<34} {trigger_delta.delta_m_s:+.2f} m/s",
+            )
+        )
+
+    first_minimum = analysis.first_observed_configured_minimum_airspeed
+    lines.extend(("", "Airspeed build"))
+    if first_minimum.status is ConfiguredMinimumAirspeedStatus.OBSERVED:
+        lines.extend(
+            (
+                (
+                    f"  {'Configured minimum airspeed':<34} "
+                    f"{first_minimum.configured_minimum_m_s:.2f} m/s"
+                ),
+                (
+                    f"  {'First observed ≥ configured minimum':<34} "
+                    f"{_format_relative_seconds(first_minimum.elapsed_s)}"
+                ),
+                (
+                    f"  {'Observed airspeed':<34} "
+                    f"{first_minimum.observed_airspeed_m_s:.2f} m/s"
+                ),
+            )
+        )
+    else:
+        lines.append(
+            f"  {'First observed ≥ configured minimum':<34} "
+            f"{first_minimum.status.value}"
+        )
+
+    residual = analysis.pitch_tracking_residual
+    if residual is not None:
+        lines.extend(
+            (
+                "",
+                "Takeoff control",
+                (
+                    f"  {'Maximum pitch residual':<34} "
+                    f"{residual.signed_residual_deg:+.2f}°"
+                ),
+            )
+        )
+    return "\n".join(lines)
+
+
+def _format_configuration_value(value: TakeoffConfigurationValue) -> str:
+    """Format one launch parameter without inventing unavailable evidence."""
+    if value.display_value is None:
+        return "unavailable"
+    integer_parameters = {
+        "TKOFF_ACCEL_CNT",
+        "TKOFF_OPTIONS",
+        "ARSPD_USE",
+        "ARSPD_PRIMARY",
+    }
+    rendered = (
+        f"{value.display_value:.0f}"
+        if value.name in integer_parameters
+        else f"{value.display_value:.1f}"
+    )
+    if value.unit is None:
+        return rendered
+    separator = "" if value.unit in {"%", "%/s", "°"} else " "
+    return f"{rendered}{separator}{value.unit}"
+
+
+def _format_relative_seconds(elapsed_s: float | None) -> str:
+    """Format one relative event time for normal human output."""
+    if elapsed_s is None:
+        return "unavailable"
+    if elapsed_s == 0:
+        return "0.000 s"
+    return f"{elapsed_s:+.3f} s"

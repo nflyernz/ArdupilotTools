@@ -1,4 +1,4 @@
-"""Focused tests for retaining runtime mission and status evidence."""
+"""Focused tests for retaining runtime mission and controller evidence."""
 
 from dataclasses import dataclass
 
@@ -104,6 +104,28 @@ def _mise_record():
     )
 
 
+def _tecs_record():
+    """Return representative TECS controller evidence."""
+    return _record(
+        "TECS",
+        TimeUS=1_234_567,
+        h=12.5,
+        dh=0.75,
+        hdem=20.0,
+        dhdem=1.5,
+        spdem=13.0,
+        sp=12.2,
+        dsp=0.1,
+        ith=0.02,
+        iph=0.03,
+        th=0.45,
+        ph=0.125,
+        dspdem=0.2,
+        w=1.0,
+        f=0,
+    )
+
+
 def _stat_record(time_us, stage, suppressed):
     """Return one representative Plane runtime status row."""
     return _record(
@@ -179,6 +201,28 @@ def test_normal_reader_without_mise_preserves_empty_message_behavior(monkeypatch
 
     assert flight_log.get("MISE").empty
     assert not flight_log.has("MISE")
+
+
+def test_normal_reader_retains_full_tecs_records(monkeypatch):
+    """TECS uses normal full-dictionary retention despite config omission."""
+    assert "TECS" not in _ReaderConfig().get("messages")
+
+    flight_log = _read(monkeypatch, (_firmware_record(), _tecs_record()))
+    tecs = flight_log.get("TECS")
+
+    assert len(tecs) == 1
+    assert int(tecs.iloc[0]["TimeUS"]) == 1_234_567
+    assert float(tecs.iloc[0]["ph"]) == 0.125
+    assert float(tecs.iloc[0]["spdem"]) == 13.0
+    assert set(_tecs_record().fields).issubset(tecs.columns)
+
+
+def test_normal_reader_without_tecs_preserves_empty_message_behavior(monkeypatch):
+    """An absent TECS family remains an empty FlightLog dataframe."""
+    flight_log = _read(monkeypatch, (_firmware_record(),))
+
+    assert flight_log.get("TECS").empty
+    assert not flight_log.has("TECS")
 
 
 def test_reader_exposed_mise_is_consumed_by_takeoff_detector(monkeypatch):
