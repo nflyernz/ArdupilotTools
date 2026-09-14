@@ -1,8 +1,9 @@
 # Plane Log Analysis Integration Plan
 
-> **Updated:** 2026-09-11
-> **Current AMC task:** Step 66 — ArduPlane 4.7.x Everyday use / RTL correctness
+> **Updated:** 2026-09-15
+> **Current AMC task:** Real-aircraft ArduPlane configuration walkthrough on the known-good Plane
 > **Configuration-method audit:** COMPLETE
+> **Landing-report readability / grouping:** MERGED upstream — PR #2054
 
 ## Purpose
 
@@ -83,7 +84,7 @@ APT landing regression:       PASS
 APT event/timeline regression PASS
 ```
 
-The sole intentional APT/AMC landing-boundary difference at merge was:
+At merge, the sole intentional APT/AMC landing-boundary difference was:
 
 ``` text
 log_17.bin flight 4
@@ -93,9 +94,18 @@ AMC: DISARM   2848866277 us
 
 This is the accepted causality correction: post-attempt GPS observations must
 not retroactively qualify an earlier low-speed run after the attempt has
-already terminated. APT now incorporates the same correction, so its current
-`log_17.bin` flight 4 boundary is also DISARM at `2848866277 us` and current
-four-log boundary parity is 16/16.
+already terminated.
+
+APT subsequently adopted the same causality rule in:
+
+``` text
+9046aff  fix(landing): bound GPS stop to landing attempt
+```
+
+The corrected APT result for `log_17.bin` flight 4 is now DISARM at
+`2848866277 us`, while the established `log_19` and `log_26` GPS-stop controls
+remain unchanged. The four-log APT/AMC landing-attempt boundary comparison is
+therefore now 16/16.
 
 The final four-log AMC fingerprint remained:
 
@@ -180,14 +190,36 @@ A specific BARO-derived metric must still handle sparse or non-finite
 samples conservatively; subsystem availability does not imply that every
 individual metric can always be produced.
 
-## Flat Analysis Results Initially
+## Flat Analysis Results and Presentation Grouping
 
-Plane landing results should initially use AMC's existing flat
-`LogAnalysisResult` model.
+Plane landing analysis remains analytically flat: AMC still returns the shared
+`LogAnalysisResult` with a list of `LogAnalysis` outcomes. No nested
+per-flight/per-attempt analysis model has been introduced.
 
-A hierarchical per-flight/per-attempt result model should only be
-introduced later if real implementation experience demonstrates that the
-flat result is insufficient.
+Real use of the merged landing report did, however, expose a presentation
+limitation: a long flat list makes naturally structured evidence such as
+attempts, preflare, flare, firmware evidence and rangefinder lifecycle difficult
+to scan.
+
+A prototype therefore tested a deliberately smaller idea than hierarchical
+results: one optional, generic presentation label on each outcome:
+
+``` text
+LogAnalysis.group: str | None
+```
+
+The shared renderer inserts a heading when the group changes, while preserving
+the original list order. Existing analyses with `group=None` render unchanged.
+There is no Plane-specific frontend branch and no tree/parent-child result
+model.
+
+The visual result was materially clearer. For the current Plane report, one
+level of generic grouping appears sufficient; there is no demonstrated need for
+a hierarchical analytical result model at this time.
+
+This remains prototype work, not merged architecture. Any PR should present the
+generic grouping mechanism as shared presentation metadata rather than as a
+Plane-specific renderer.
 
 ------------------------------------------------------------------------
 
@@ -251,6 +283,55 @@ The configuration method owns the remedy. Plane landing analysis continues to
 own the objective evidence and the defensible mapping to the relevant domain or
 step.
 
+
+## Maintainer-requested dogfood pass before method coding
+
+After the initial configuration-method audit and the local Step 66 experiment,
+Amílcar asked for a practical Plane pass before further sequence coding:
+
+``` text
+Create a new ArduPlane project using the existing Plane template.
+Use it to configure the real aircraft and take notes of anything wrong.
+Then improve the ArduPlane configuration JSON, the associated *.param files,
+and the Plane tuning guide.
+```
+
+The current interpretation is:
+
+``` text
+known-good real Plane
+        ↓
+new AMC ArduPlane project from the existing configured Plane template
+        ↓
+walk the method in order
+        ↓
+record concrete defects / omissions / bad ownership / bad ordering / docs issues
+        ↓
+review the resulting Plane-method plan with Amílcar
+        ↓
+only then implement bounded method changes
+```
+
+The user's current Ranger is a useful reference because it is already a
+known-good flying configuration. A full parameter backup should be taken before
+the walk-through; restoring the backup or reflashing remains the recovery path
+if a test write is undesirable.
+
+The exercise should explicitly inspect:
+
+- `configuration_steps_ArduPlane.json`;
+- the Plane template `*.param` files;
+- `TUNING_GUIDE_ArduPlane.md`;
+- documentation links and `why` / `why_now` guidance;
+- forced or derived values versus user judgement;
+- step ownership, ordering and dependencies.
+
+This dogfood pass now comes **before** submitting the parked Step 66 correction
+or starting a broader Plane-method PR.
+
+A short working mission statement for Plane configuration should be reviewed
+with Amílcar after the dogfood pass and before substantial coding.
+
 ------------------------------------------------------------------------
 
 # ArduPlane Configuration-Method Audit — COMPLETE
@@ -294,39 +375,34 @@ Key findings:
 The audit's recommended development strategy is **small domain-specific PRs**.
 No shared architecture rewrite is required before those corrections.
 
-## Next bounded PR — Step 66 Everyday use / RTL
+## Parked candidate — Step 66 Everyday use / RTL
 
-The first implementation PR is intentionally narrow:
+A bounded Step 66 correctness experiment was completed before the dogfood
+direction changed the immediate sequence.
 
-> Make ArduPlane 4.7.x Step 66 **Everyday use / RTL** technically correct and
-> Plane-specific.
+The current local AMC commit is:
 
-Include:
+``` text
+a14f02c4  fix(config): correct ArduPlane RTL altitude
+```
 
-- validate exact ArduPlane 4.7.x `RTL_ALTITUDE` semantics and units;
-- validate `RTL_CLIMB_MIN`;
-- validate the battery-failsafe parameters already owned by Step 66;
-- replace stale/wrong Copter-derived names, values or comments;
-- update Step 66 Plane-specific `why` / `why_now` metadata as required;
-- update both Plane templates consistently;
-- add focused tests proving changed parameters exist in the targeted Plane
-  metadata/default surface and that safety-relevant units are correct.
+It changes the stale Copter-derived `RTL_ALT=3500` content to the Plane
+parameter/unit form `RTL_ALTITUDE=35` in both Plane templates and adds focused
+tests. Source review also established that:
 
-Explicitly exclude:
+- `RTL_ALTITUDE` is a Plane target altitude in metres;
+- `RTL_CLIMB_MIN` is a Plane parameter in metres and `0` disables the added
+  initial climb requirement;
+- Plane battery-failsafe action semantics differ from a simplistic Copter
+  "RTL" interpretation.
 
-- whole-sequence redesign;
-- Step 59 restructuring;
-- airspeed, flaps, crow/spoilers, TECS, takeoff or landing redesign;
-- `normal_plane` version migration;
-- QuadPlane branching;
-- log-analysis changes;
-- dependency-graph infrastructure;
-- Copter changes.
+The experiment proved the stale content was technically wrong, but it did **not**
+prove that 35 m is an appropriate universal Plane recommendation. Because AMC's
+method should organize and expose the relevant ArduPilot configuration rather
+than invent site/aircraft-specific values, this commit is parked until the
+real-vehicle dogfood pass establishes the correct method ownership and guidance.
 
-The review question for this PR is deliberately small:
-
-> **Is ArduPlane's final Everyday use / RTL step technically correct for
-> ArduPlane 4.7.x?**
+Do not open this as the next PR merely because it already exists.
 
 ------------------------------------------------------------------------
 
@@ -907,14 +983,14 @@ Landing analysis regression: PASS
 ```
 
 This assertion-based harness covers all four logs, all established
-termination paths (`abort`, `disarm`, `flight_window_end`, `gps`), a no-flare
+termination paths (`abort`, `flight_window_end`, `gps`), a no-flare
 case, known completed landing measurements, optional ARSP/RFND
 unavailability, and incomplete CMD snapshot rejection.
 
-Its corrected termination and completed-case references include:
+Its completed-case references include:
 
 ``` text
-log_17.bin  flight 4  DISARM   2848866277 us
+log_17.bin  flight 4  GPS stop 2848264000 us  flare→stop 8.00 s  target 22.5 m
 log_19.bin  flight 1  GPS stop  743104000 us  flare→stop 6.70 s  target 19.1 m
 log_26.bin  flight 4  GPS stop 2775037000 us  flare→stop 5.50 s  target 29.4 m
 ```
@@ -1336,10 +1412,6 @@ The two unchanged reference GPS-stop boundaries remained:
 log_19 flight 1:  743104011 us
 log_26 flight 4: 2775037136 us
 ```
-
-APT subsequently incorporated the same reviewed causality rule. Its current
-`log_17` flight 4 boundary is DISARM at `2848866277 us`; the current APT/AMC
-comparison therefore matches 16/16 attempt boundaries.
 
 All 16 reference attempts retained dense RFND acquisition evidence (49 or 50
 samples), and stage-local ARSP/BARO/GPS evidence in the reference logs remained
@@ -1967,6 +2039,150 @@ independently established behavioural evidence.
 
 ------------------------------------------------------------------------
 
+
+# Landing Report Readability and Generic Grouping — MERGED
+
+The merged Plane landing analysis was technically complete but visually dense
+in the shared AMC report window. A bounded prototype showed that most of the
+problem could be solved without a Plane-specific frontend and without replacing
+AMC's flat analytical result model.
+
+The work was rebuilt cleanly from then-current `upstream/master` and submitted as:
+
+``` text
+ArduPilot/MethodicConfigurator PR #2054
+feat(log-analysis): improve report readability and grouping
+MERGED 2026-09-15
+```
+
+The clean PR branch used:
+
+``` text
+feat/log-analysis-report-readability
+
+140b9300  feat(log-analysis): prototype grouped readable reports
+6795a8ed  feat(log-analysis): put timestamps first
+e1e6c282  fix(log-analysis): guard start-of-final evidence
+```
+
+Amílcar reviewed the visual result, recommended putting timestamps first so
+rows align, and later merged the PR.
+
+## Accepted shared presentation capability
+
+`LogAnalysisResult.outcomes` remains a flat `list[LogAnalysis]`.
+
+The accepted extension is one optional generic presentation field:
+
+``` text
+LogAnalysis.group: str | None
+```
+
+The shared renderer displays a group heading when the value changes in list
+order. Existing analyses with `group=None` keep their previous presentation.
+
+This means AMC now has a reusable one-level grouping mechanism without:
+
+- Plane-specific frontend branching;
+- a dedicated Plane report renderer;
+- parent/child result objects;
+- nested analytical results;
+- outcome reordering.
+
+Plane landing analysis is the first consumer, using groups such as Summary,
+Preflare, Flare, Firmware evidence and Rangefinder evidence.
+
+The result of the experiment is important architecturally:
+
+> The analytical result model can remain flat while optional generic grouping
+> supplies enough presentation structure for naturally phased analyses.
+
+A hierarchical analytical result model is therefore not currently justified by
+the landing-report use case.
+
+## Shared readability changes merged with PR #2054
+
+The shared report presentation now includes:
+
+- responsive text wrapping using AMC's existing `<Configure>` pattern;
+- a wider 1200×800 initial report geometry;
+- slightly increased outcome spacing;
+- shared elapsed-time formatting using `m:ss.s` and `h:mm:ss.s` as required;
+- timestamp-first rendering so event times align visually.
+
+The timestamp-first ordering came directly from Amílcar's review of the
+screenshots.
+
+## Plane landing presentation changes
+
+Plane remains an ordinary consumer of the shared renderer.
+
+The merged report composition now includes:
+
+- start-of-final BARO altitude in the initial Summary when the attempt is
+  actually observed from LAND stage 1;
+- existing firmware glide-slope evidence moved into the initial Summary block;
+- concise grouped row wording without redundant low-level `Attempt N` prefixes;
+- one-decimal operator-facing physical measurements;
+- full internal numeric/timestamp precision retained in the analysis objects.
+
+The automated review found one real semantic defect in the new
+start-of-final row: an attempt may begin at LAND stage 2 or 3, in which case
+`attempt.start_s` is not defensibly the start of final approach.
+
+The accepted correction in `e1e6c282` is:
+
+``` text
+attempt.start_stage == 1
+    -> report start-of-final BARO altitude
+
+attempt.start_stage != 1
+    -> report start-of-final altitude as unavailable
+```
+
+No backward inference or earlier-stage search was added.
+
+The same review also identified four new mypy argument errors in frontend tests.
+`_render_outcomes()` now accepts `Sequence[LogAnalysis]`, matching its actual
+read-only iteration semantics.
+
+A separate robustness note about choosing numeric formatting by translated unit
+strings was deliberately left for later because no current failure was
+demonstrated.
+
+## Review and validation
+
+The automated Tridge review at the pre-fix head reported:
+
+``` text
+COMMENT — no blockers
+```
+
+It independently checked three real ArduPlane logs / four landing attempts and
+found every base outcome still present at head with identical values,
+timestamps and ordering. It also mutation-tested the touched behavior and
+verified the responsive wrapping in a real Tk window without a Configure loop.
+
+After the review fix:
+
+``` text
+Focused touched tests:       268 passed
+Full AMC pytest suite:      5087 passed
+Skipped:                      53
+Expected failures:             4
+Unexpected failures:           0
+Ruff:                        PASS
+Ruff format check:           PASS
+git diff --check:            PASS
+```
+
+Amílcar then merged PR #2054 without requesting further changes and thanked the
+contributor.
+
+This work is now upstream behavior, not a local prototype.
+
+------------------------------------------------------------------------
+
 # Current Work Sequence
 
 ``` text
@@ -1983,46 +2199,37 @@ Timestamped ParameterHistory / PR #1995          MERGED
         │
         ▼
 Plane landing analysis / PR #2024                MERGED
-        ├── 208 focused Plane landing tests
-        ├── mutation-backed review hardening
-        ├── 16/16 current APT boundary parity
-        ├── log_17 causality correction incorporated into APT
-        ├── Tridge APPROVE — no blockers
-        └── Amílcar squashed and merged
+        ├── Tridge APPROVE
+        ├── Amílcar APPROVE
+        └── APT causality backport now restores 16/16 boundary parity
         │
-        ▼
-Local/fork synchronization                       COMPLETE
+        ├───────────────► Landing-report readability / PR #2054
+        │                    ├── MERGED upstream
+        │                    ├── generic LogAnalysis.group accepted
+        │                    ├── responsive shared GUI
+        │                    ├── start-final context with stage-1 guard
+        │                    ├── timestamp-first presentation
+        │                    └── full AMC suite 5087 passed
         │
         ▼
 ArduPlane configuration-method audit             COMPLETE
-        ├── configuration_steps_ArduPlane.json
-        ├── all associated Plane *.param files
-        ├── step ownership/dependency inventory
-        ├── Copter/QuadPlane inheritance identified
-        └── P0/P1/P2/P3 findings frozen in audit doc
         │
         ▼
-PR 1 — Step 66 Everyday use / RTL                NEXT
-        ├── validate Plane 4.7.x parameter semantics
-        ├── correct stale RTL ownership/content
-        ├── validate existing battery-failsafe content
-        ├── update Plane-specific step metadata
-        └── add focused configuration-content tests
+Real-aircraft AMC Plane dogfood pass              CURRENT / NEXT
+        ├── new Plane project from existing template
+        ├── configure known-good Ranger through sequence
+        ├── record concrete errors / gaps / ownership issues
+        ├── inspect JSON + *.param + TUNING_GUIDE_ArduPlane.md
+        └── draft Plane-method mission statement for Amílcar review
         │
         ▼
-Further Plane method PRs                         LATER
-        ├── sequence/template conformance
-        ├── fixed-wing frame/output foundation
-        ├── propulsion/failsafes
-        ├── airspeed/flight envelope
-        ├── takeoff/landing/tuning/TECS/navigation
-        └── QuadPlane applicability boundaries
+Bounded Plane method PR(s)                       AFTER REVIEW
+        ├── use dogfood evidence
+        ├── keep conventional fixed-wing scope
+        └── park Step 66 candidate until ownership/guidance is confirmed
         │
         ▼
-Map log-analysis findings to configuration steps LATER
-        ├── identify earliest relevant canonical owner
-        ├── preserve evidence-first semantics
-        └── let AMC's method own the corrective workflow
+Analysis → canonical configuration-step mapping  LATER
         │
         ▼
 APT continues as Plane log-analysis R&D environment
@@ -2030,46 +2237,38 @@ APT continues as Plane log-analysis R&D environment
 
 ## Immediate AMC Configuration-Method Sequence
 
-The broad read-only configuration-method audit is complete. Do not repeat it
-for each PR.
+The broad read-only audit is complete. The next task is **not** another broad
+audit and is no longer automatically the Step 66 PR.
 
-The immediate task is **PR 1 — Step 66 Everyday use / RTL correctness**:
+The immediate method work is:
 
-1. Validate the exact ArduPlane 4.7.x firmware/source semantics for
-   `RTL_ALTITUDE`, `RTL_CLIMB_MIN`, and the battery-failsafe parameters already
-   present in Step 66.
-2. Determine the smallest technically correct change to
-   `66_everyday_use.param` in both Plane templates.
-3. Update only the Step 66 Plane metadata needed to make its purpose and timing
-   technically accurate.
-4. Add focused tests for parameter existence and safety-relevant units/semantics
-   using Plane metadata as the oracle.
-5. Run the applicable AMC configuration/template tests and static checks.
-6. Review the diff strictly against the bounded PR scope.
-7. Obtain maintainer review before moving to the next method domain.
+1. Back up the known-good Ranger's complete current parameters and note the
+   firmware build.
+2. Create a new AMC ArduPlane project from the existing configured Plane
+   template.
+3. Walk the configuration sequence in order using the real aircraft as the
+   reference.
+4. Record concrete problems rather than fixing the method ad hoc while walking:
+   irrelevant content, missing Plane domains, stale/wrong parameters, bad
+   ordering, duplicate ownership, poor documentation links, misleading
+   rationale, and inappropriate forced/derived values.
+5. Compare the observations with the frozen configuration-method audit.
+6. Draft a short Plane-method mission statement and proposed first bounded
+   changes.
+7. Run that plan by Amílcar before substantial method coding.
+8. Then implement small reviewable PRs in
+   `configuration_steps_ArduPlane.json`, the relevant `*.param` files and
+   `TUNING_GUIDE_ArduPlane.md`.
 
-Do **not** use this PR to fix unrelated findings from the audit. Preserve those
-as separately reviewable follow-up work.
+The parked `a14f02c4` Step 66 correction is evidence available to this process,
+not the predetermined next PR.
 
-The provisional follow-up order from the audit is:
-
-``` text
-PR 1  Everyday use / RTL correctness
-  ↓
-PR 2  Sequence / template conformance
-  ↓
-PR 3  Fixed-wing frame + output/control-surface foundation
-  ↓
-PR 4  Power / propulsion / failsafes
-  ↓
-PR 5  Airspeed + flight envelope
-  ↓
-later: takeoff / landing / attitude tuning / TECS / navigation / QuadPlane
-```
+Current scope is **conventional fixed-wing Plane**. QuadPlane/VTOL method design
+is left to other contributors unless Amílcar specifically asks for it.
 
 Direct parameter-value recommendations from landing analysis remain out of
-scope. First make the configuration method authoritative enough that analysis
-can safely identify the relevant configuration step.
+scope. First make the configuration method coherent enough that analysis can
+later identify the appropriate canonical step.
 
 ## Secondary APT R&D Sequence
 
@@ -2195,27 +2394,41 @@ acceptance record for that infrastructure work:
     first problem to solve.
 -   [x] Preserve the full audit in
     `Docs/Implementation/ArduPlane_Configuration_Method_Audit.md`.
--   [x] Select the first bounded implementation task: Step 66 Everyday use / RTL.
+-   [x] Complete a bounded Step 66 correctness experiment (`a14f02c4`) without
+    submitting it as a PR.
 
-## PR 1 — Step 66 Everyday use / RTL
+## Real-aircraft dogfood pass — CURRENT
 
--   [ ] Validate `RTL_ALTITUDE` semantics and units against ArduPlane 4.7.x
-    source/metadata.
--   [ ] Validate `RTL_CLIMB_MIN` for the same firmware scope.
--   [ ] Validate existing Step 66 battery-failsafe parameters for Plane 4.7.x.
--   [ ] Correct stale/wrong Plane Step 66 parameter content without mechanically
-    translating Copter values or units.
--   [ ] Update Step 66 Plane-specific rationale/documentation as required.
--   [ ] Keep both Plane templates consistent.
--   [ ] Add focused tests for changed Plane configuration content.
--   [ ] Run applicable configuration-step/template tests and static checks.
--   [ ] Keep the PR free of unrelated sequence, landing-analysis or architecture
-    changes.
--   [ ] Obtain maintainer review.
+-   [ ] Back up the Ranger's complete known-good parameter set.
+-   [ ] Record the exact firmware/build used for the walk-through.
+-   [ ] Create a new AMC ArduPlane project from the existing configured Plane
+    template.
+-   [ ] Walk the method in order on the real aircraft.
+-   [ ] Record concrete defects in sequence, ownership, parameters, docs and
+    user-decision flow.
+-   [ ] Compare findings with
+    `Docs/Implementation/ArduPlane_Configuration_Method_Audit.md`.
+-   [ ] Review `configuration_steps_ArduPlane.json`, relevant `*.param` files and
+    `TUNING_GUIDE_ArduPlane.md` together.
+-   [ ] Draft a short Plane-method mission statement.
+-   [ ] Run the proposed method direction by Amílcar before substantial coding.
+
+## Parked Step 66 candidate
+
+-   [x] Validate `RTL_ALTITUDE` parameter name, metres units and target-altitude
+    semantics against Plane 4.7.x.
+-   [x] Validate `RTL_CLIMB_MIN` existence and metres semantics.
+-   [x] Confirm the stale `RTL_ALT=3500` content is not correct Plane 4.7.x
+    configuration.
+-   [x] Implement a narrow local correction in `a14f02c4` with focused tests.
+-   [ ] Decide, after dogfood, whether Step 66 is the right canonical owner and
+    whether `35 m` should remain an example/template value.
+-   [ ] Rebuild from current upstream and submit only if the method review still
+    supports it.
 
 ## Later method work
 
--   [ ] Resolve sequence/template conformance issues as a separate PR.
+-   [ ] Resolve sequence/template conformance issues through small reviewable PRs.
 -   [ ] Establish fixed-wing frame, mixer, servo/output and control-surface
     foundations.
 -   [ ] Validate Plane propulsion and failsafe ownership.
@@ -2223,7 +2436,8 @@ acceptance record for that infrastructure work:
     dependent flight/tuning stages.
 -   [ ] Add coherent Plane takeoff, landing, attitude-tuning, TECS and navigation
     paths incrementally.
--   [ ] Establish explicit QuadPlane applicability boundaries.
+-   [ ] Keep current work conventional fixed-wing; leave QuadPlane/VTOL method
+    design out of scope unless specifically requested.
 -   [ ] Only after canonical ownership exists, map Plane log-analysis findings to
     the earliest relevant configuration step through AMC's existing result path.
 
@@ -2407,28 +2621,33 @@ AMC Plane infrastructure
         ├── Flight segmentation / PR #1989       MERGED
         ├── ParameterHistory / PR #1995          MERGED
         └── Plane landing / PR #2024             MERGED
-                ├── 208 focused Plane tests
+                ├── 208 focused Plane tests at merge
                 ├── Tridge APPROVE
-                ├── Amílcar APPROVE
-                └── squash/merge complete
+                └── Amílcar APPROVE / squash-merge
+        │
+        ├── APT GPS-stop causality backport      COMPLETE (9046aff)
+        │       └── current four-log parity       16/16
+        │
+        ├── AMC report readability / PR #2054    MERGED
+        │       ├── generic LogAnalysis.group accepted upstream
+        │       ├── shared responsive layout
+        │       ├── start-final altitude + glide slope in Summary
+        │       ├── stage-2/3 start reported unavailable
+        │       ├── timestamp-first display per Amílcar
+        │       └── full suite: 5087 passed / 53 skipped / 4 xfailed
         │
         ▼
 ArduPlane configuration-method audit             COMPLETE
-        ├── master @ c58eb9f8
-        ├── configuration_steps_ArduPlane.json
-        ├── Plane *.param inventory
-        ├── ownership/dependency map
-        └── prioritized P0/P1/P2/P3 findings
         │
         ▼
-Step 66 Everyday use / RTL                       NEXT PR
-        ├── validate Plane 4.7.x RTL semantics
-        ├── correct stale RTL content
-        ├── validate battery-failsafe ownership
-        └── focused configuration-content tests
+Real-aircraft AMC Plane dogfood                  CURRENT / NEXT
+        ├── known-good Ranger as reference
+        ├── existing Plane template
+        ├── JSON + *.param + tuning-guide notes
+        └── mission statement / plan to Amílcar before coding
         │
         ▼
-Remaining Plane method domains                   LATER / SMALL PRs
+Bounded Plane method PR(s)                       AFTER REVIEW
         │
         ▼
 Analysis → configuration-step mapping            LATER
@@ -2437,16 +2656,17 @@ Analysis → configuration-step mapping            LATER
 APT continues as Plane log-analysis R&D environment
 ```
 
-The active AMC task is now a bounded correction of ArduPlane Step 66, not
-another broad configuration audit and not another landing-analysis metric.
+The active AMC configuration-method task is now the real-aircraft dogfood pass,
+not another broad repository audit and not an automatic Step 66 submission.
 
-The complete configuration-method audit is preserved at:
+The complete configuration-method audit remains preserved at:
 
 ``` text
 Docs/Implementation/ArduPlane_Configuration_Method_Audit.md
 ```
 
-Future method work should consume that audit as the baseline and address its
-findings through small reviewable PRs. New APT research should continue to
+Future method work should combine that audit with observations from the actual
+AMC Plane walk-through and address the resulting findings through small
+reviewable PRs. New APT research should continue to
 start from a concrete engineering question, establish evidence semantics and
 real-log validation, and only then be considered for AMC-native implementation.
