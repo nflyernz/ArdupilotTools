@@ -981,7 +981,8 @@ def test_report_uses_relative_timing_and_preserves_internal_timeus():
     report = format_takeoff_performance_report(analysis, 2)
     assert "Firmware trigger                     0.000 s" in report
     assert "Throttle unsuppressed                +1.000 s" in report
-    assert "First observed ≥ configured minimum +0.500 s" in report
+    assert "Source                   Sensor" in report
+    assert "First observed ≥ minimum           +0.500 s" in report
     assert str(TRIGGER_US) not in report
     assert str(UNSUPPRESSED_US) not in report
     assert analysis.phase_timings.trigger_time_us == TRIGGER_US
@@ -989,3 +990,75 @@ def test_report_uses_relative_timing_and_preserves_internal_timeus():
         analysis.first_observed_configured_minimum_airspeed.observation_time_us
         == 2_500_000
     )
+
+
+def test_report_labels_synthetic_airspeed_without_calling_it_measured():
+    """AsT 2/3 evidence is explicitly presented as a synthetic estimate."""
+    flight_log = _flight_log(
+        ctun=(
+            (1_900_000, 0.0, 0.0, 0.0, 0.0, 8.0, 2, 0.0),
+            (2_500_000, 0.0, 0.0, 0.0, 0.0, 12.0, 3, 0.0),
+        ),
+        parameter_history=_history({"AIRSPEED_MIN": 11.0}),
+    )
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    report = format_takeoff_performance_report(analysis, 1)
+    assert analysis.airspeed_estimate_types == (2, 3)
+    assert "Source                   Synthetic estimate" in report
+    assert "Trigger airspeed" in report
+    assert "Airspeed at observation" in report
+    assert "measured airspeed" not in report.lower()
+
+
+def test_report_labels_mixed_interval_sources_conservatively():
+    """A mixed interval is not presented as uniformly sensor-derived."""
+    flight_log = _flight_log(
+        ctun=(
+            (1_900_000, 0.0, 0.0, 0.0, 0.0, 8.0, 1, 0.0),
+            (2_500_000, 0.0, 0.0, 0.0, 0.0, 9.0, 2, 0.0),
+        ),
+        parameter_history=_history({"AIRSPEED_MIN": 11.0}),
+    )
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    assert analysis.airspeed_estimate_types == (1, 2)
+    assert "Source                   Mixed sensor / synthetic estimate" in (
+        format_takeoff_performance_report(analysis, 1)
+    )
+
+
+def test_unavailable_airspeed_omits_performance_but_keeps_configuration():
+    """Missing usable AsT evidence produces no fabricated performance values."""
+    history = _history(
+        {
+            "AIRSPEED_MIN": 11.0,
+            "AIRSPEED_CRUISE": 13.0,
+            "ARSPD_USE": 1.0,
+            "ARSPD_PRIMARY": 0.0,
+        }
+    )
+    flight_log = _flight_log(
+        ctun=(
+            (1_900_000, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0),
+            (2_500_000, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0),
+        ),
+        parameter_history=history,
+    )
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    report = format_takeoff_performance_report(analysis, 1)
+    assert analysis.airspeed_estimate_types == ()
+    assert "Source                   Unavailable" in report
+    assert "AIRSPEED_MIN             11.0 m/s" in report
+    assert "AIRSPEED_CRUISE          13.0 m/s" in report
+    assert "Airspeed performance" not in report
+    assert "Trigger airspeed" not in report
+    assert "Delta to configured minimum" not in report
+    assert "First observed ≥ minimum" not in report
+    assert "Airspeed at observation" not in report
+    assert "0.00 m/s" not in report
+    assert str(TRIGGER_US) not in report

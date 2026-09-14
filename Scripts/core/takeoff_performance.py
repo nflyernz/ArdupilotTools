@@ -259,6 +259,7 @@ class TakeoffPerformanceAnalysis:
     fixed_throttle_target_rise: FixedThrottleTargetRise
     first_observed_configured_minimum_airspeed: FirstObservedConfiguredMinimumAirspeed
     configuration: TakeoffConfigurationContext
+    airspeed_estimate_types: tuple[int, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -445,6 +446,10 @@ class TakeoffPerformanceProcessor:
                 )
             ),
             configuration=self._configuration_context(trigger.time_us),
+            airspeed_estimate_types=self._airspeed_estimate_types(
+                trigger_context,
+                control_interval,
+            ),
         )
 
     def _event_is_owned(self, event: TakeoffExecutionEvent) -> bool:
@@ -1048,6 +1053,25 @@ class TakeoffPerformanceProcessor:
             return None
         return value, estimate_type
 
+    def _airspeed_estimate_types(
+        self,
+        trigger_context: TakeoffTriggerContext,
+        interval: TakeoffControlInterval | None,
+    ) -> tuple[int, ...]:
+        """Return distinct raw AsT values for usable presented evidence."""
+        estimate_types = set()
+        if trigger_context.airspeed is not None:
+            estimate_types.add(trigger_context.airspeed.estimate_type)
+        if interval is not None:
+            for telemetry in self._interval_rows(
+                "CTUN",
+                (interval.start_us, interval.end_us),
+            ):
+                airspeed = self._valid_airspeed(telemetry)
+                if airspeed is not None:
+                    estimate_types.add(airspeed[1])
+        return tuple(sorted(estimate_types))
+
     def _parameter_is_zero(self, name: str, time_us: int) -> bool:
         return self._parameter_float(name, time_us) == 0
 
@@ -1184,8 +1208,11 @@ def format_takeoff_performance_report(
 ) -> str:
     """Render concise human output using trigger-relative event times."""
     lines = [f"TAKEOFF {takeoff_number}", "=" * 70, "", "Configuration at launch"]
+    airspeed_source = _airspeed_source_label(analysis.airspeed_estimate_types)
     for group in analysis.configuration.groups:
         lines.extend(("", group.name))
+        if group.name == "Airspeed":
+            lines.append(f"  {'Source':<24} {airspeed_source}")
         lines.extend(
             f"  {value.name:<24} {_format_configuration_value(value)}"
             for value in group.values
@@ -1202,45 +1229,40 @@ def format_takeoff_performance_report(
         if elapsed_s is not None:
             lines.append(f"{label:<36} {_format_relative_seconds(elapsed_s)}")
 
-    trigger_delta = analysis.trigger_configured_minimum_airspeed_delta
-    if trigger_delta is not None:
-        lines.extend(
-            (
-                "",
-                "At trigger",
-                f"  {'Airspeed':<34} {trigger_delta.airspeed_m_s:.2f} m/s",
+    if airspeed_source != "Unavailable":
+        lines.extend(("", "Airspeed performance"))
+        trigger_delta = analysis.trigger_configured_minimum_airspeed_delta
+        if trigger_delta is not None:
+            lines.extend(
                 (
-                    f"  {'Configured minimum':<34} "
-                    f"{trigger_delta.configured_minimum_m_s:.2f} m/s"
-                ),
-                f"  {'Delta':<34} {trigger_delta.delta_m_s:+.2f} m/s",
+                    f"  {'Trigger airspeed':<34} {trigger_delta.airspeed_m_s:.2f} m/s",
+                    (
+                        f"  {'Delta to configured minimum':<34} "
+                        f"{trigger_delta.delta_m_s:+.2f} m/s"
+                    ),
+                )
             )
-        )
 
-    first_minimum = analysis.first_observed_configured_minimum_airspeed
-    lines.extend(("", "Airspeed build"))
-    if first_minimum.status is ConfiguredMinimumAirspeedStatus.OBSERVED:
-        lines.extend(
-            (
+        first_minimum = analysis.first_observed_configured_minimum_airspeed
+        if first_minimum.status is ConfiguredMinimumAirspeedStatus.OBSERVED:
+            lines.extend(
                 (
-                    f"  {'Configured minimum airspeed':<34} "
-                    f"{first_minimum.configured_minimum_m_s:.2f} m/s"
-                ),
-                (
-                    f"  {'First observed ≥ configured minimum':<34} "
-                    f"{_format_relative_seconds(first_minimum.elapsed_s)}"
-                ),
-                (
-                    f"  {'Observed airspeed':<34} "
-                    f"{first_minimum.observed_airspeed_m_s:.2f} m/s"
-                ),
+                    (
+                        f"  {'First observed ≥ minimum':<34} "
+                        f"{_format_relative_seconds(first_minimum.elapsed_s)}"
+                    ),
+                    (
+                        f"  {'Airspeed at observation':<34} "
+                        f"{first_minimum.observed_airspeed_m_s:.2f} m/s"
+                    ),
+                )
             )
-        )
-    else:
-        lines.append(
-            f"  {'First observed ≥ configured minimum':<34} "
-            f"{first_minimum.status.value}"
-        )
+        elif first_minimum.status is not (
+            ConfiguredMinimumAirspeedStatus.UNAVAILABLE_EVIDENCE
+        ):
+            lines.append(
+                f"  {'First observed ≥ minimum':<34} {first_minimum.status.value}"
+            )
 
     residual = analysis.pitch_tracking_residual
     if residual is not None:
@@ -1276,6 +1298,18 @@ def _format_configuration_value(value: TakeoffConfigurationValue) -> str:
         return rendered
     separator = "" if value.unit in {"%", "%/s", "°"} else " "
     return f"{rendered}{separator}{value.unit}"
+
+
+def _airspeed_source_label(estimate_types: tuple[int, ...]) -> str:
+    """Describe retained CTUN airspeed sources without implying uniformity."""
+    sources = set(estimate_types)
+    if not sources or not sources <= {1, 2, 3}:
+        return "Unavailable"
+    if sources == {1}:
+        return "Sensor"
+    if 1 not in sources:
+        return "Synthetic estimate"
+    return "Mixed sensor / synthetic estimate"
 
 
 def _format_relative_seconds(elapsed_s: float | None) -> str:
