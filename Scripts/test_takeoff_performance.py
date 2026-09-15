@@ -1069,17 +1069,36 @@ def test_unavailable_airspeed_omits_performance_but_keeps_configuration():
     assert str(TRIGGER_US) not in report
 
 
-def test_comparative_report_consolidates_identical_configuration_once():
-    """Equal trigger-time values produce one clearly scoped configuration."""
+def test_comparative_report_starts_with_summary_and_consolidates_configuration():
+    """Overview counts and three rows precede one shared configuration block."""
     first = _analyse(_flight_log(parameter_history=_configuration_history()))
-    second = _analyse(_flight_log(parameter_history=_configuration_history()))
+    second = _analyse(
+        _flight_log(parameter_history=_configuration_history()),
+        _execution(completion=False),
+    )
+    third = _analyse(_flight_log(parameter_history=_configuration_history()))
 
     assert first is not None
     assert second is not None
-    report = format_takeoff_performance_reports((first, second))
-    assert report.count("Takeoff configuration") == 1
-    assert "Applies to TAKEOFF 1–2" in report
+    assert third is not None
+    report = format_takeoff_performance_reports(
+        (first, second, third),
+        detected_execution_count=5,
+    )
+    assert report.count("TAKEOFF CONFIGURATION") == 1
+    assert "Applies to TAKEOFF 1–3" in report
     assert report.count("TKOFF_THR_MINACC") == 1
+    assert "5 TAKEOFF-mode executions detected" in report
+    assert "3 triggered takeoffs analysed" in report
+    assert "2 non-trigger executions omitted" in report
+    summary = report.split("\n\nTAKEOFF 1", maxsplit=1)[0]
+    assert "1    Completed" in summary
+    assert "2    Censored — mode exit" in summary
+    assert "3    Completed" in summary
+    assert report.index("Summary") < report.index("TAKEOFF 1")
+    assert report.index("TAKEOFF 1") < report.index("TAKEOFF 2")
+    assert report.index("TAKEOFF 2") < report.index("TAKEOFF 3")
+    assert report.index("TAKEOFF 3") < report.index("TAKEOFF CONFIGURATION")
 
 
 def test_comparative_report_does_not_collapse_differing_configuration():
@@ -1093,9 +1112,75 @@ def test_comparative_report_does_not_collapse_differing_configuration():
     assert second is not None
     report = format_takeoff_performance_reports((first, second))
     assert "Applies to TAKEOFF" not in report
-    assert report.count("Takeoff configuration") == 2
+    assert report.count(" CONFIGURATION") == 2
+    assert "TAKEOFF 1 CONFIGURATION" in report
+    assert "TAKEOFF 2 CONFIGURATION" in report
     assert "TKOFF_ROTATE_SPD             0.0 m/s" in report
     assert "TKOFF_ROTATE_SPD             12.0 m/s" in report
+    assert report.index("TAKEOFF 2\n") < report.index("TAKEOFF 1 CONFIGURATION")
+
+
+def test_single_takeoff_report_omits_comparative_table_and_places_config_last():
+    """One result retains the overview without pointless comparative clutter."""
+    analysis = _analyse(_flight_log(parameter_history=_configuration_history()))
+
+    assert analysis is not None
+    report = format_takeoff_performance_reports((analysis,))
+    assert "1 TAKEOFF-mode execution detected" in report
+    assert "1 triggered takeoff analysed" in report
+    assert "0 non-trigger executions omitted" in report
+    assert "Summary" not in report
+    assert "First ≥ AIRSPEED_MIN" not in report
+    assert report.index("TAKEOFF 1\n") < report.index("TAKEOFF CONFIGURATION")
+    assert "Applies to TAKEOFF" not in report
+
+
+def test_summary_uses_dash_for_unavailable_airspeed_without_fabricating_zero():
+    """Optional airspeed remains concise and absent in the opening comparison."""
+    first = _analyse(_flight_log())
+    second = _analyse(_flight_log())
+
+    assert first is not None
+    assert second is not None
+    report = format_takeoff_performance_reports((first, second))
+    summary = report.split("\n\nTAKEOFF 1", maxsplit=1)[0]
+    assert "First ≥ AIRSPEED_MIN" in summary
+    assert "—" in summary
+    assert "0.000 s" not in summary
+    assert report.count("Airspeed source                    Unavailable") == 2
+    assert "Airspeed build" not in report
+
+
+def test_report_delta_format_distinguishes_positive_negative_and_zero():
+    """Signed deltas retain direction while exact zero has no positive sign."""
+    positive_negative = _analyse(
+        _flight_log(
+            pos=(
+                (1_900_000, 10.0),
+                (2_500_000, 9.5),
+                (COMPLETION_US, 20.0),
+            )
+        )
+    )
+    zero = _analyse(
+        _flight_log(
+            pos=(
+                (1_900_000, 10.0),
+                (2_500_000, 10.0),
+                (COMPLETION_US, 10.0),
+            )
+        )
+    )
+
+    assert positive_negative is not None
+    assert zero is not None
+    directional_report = format_takeoff_performance_report(positive_negative, 1)
+    zero_report = format_takeoff_performance_report(zero, 2)
+    assert "Minimum altitude delta             -0.50 m" in directional_report
+    assert "Altitude gain at completion        +10.00 m" in directional_report
+    assert "Minimum altitude delta             0.00 m" in zero_report
+    assert "Altitude gain at completion        0.00 m" in zero_report
+    assert "+0.00 m" not in zero_report
 
 
 def test_rotation_control_wording_is_neutral_and_parameter_based():
@@ -1156,7 +1241,7 @@ def test_report_exposes_existing_status_trigger_and_control_evidence():
     assert "Pitch demand / achieved            6.00° / 4.00°" in completed_report
     assert "Roll demand / achieved             2.00° / 1.00°" in completed_report
     assert "Throttle command                   10.00%" in completed_report
-    assert "Automatic-control envelope         9.00–15.00 m/s" in completed_report
+    assert "Envelope                           9.00–15.00 m/s" in completed_report
     assert (
         "Largest |pitch residual|           9.00° (signed +9.00°)" in completed_report
     )
@@ -1187,7 +1272,7 @@ def test_airspeed_source_is_execution_evidence_not_shared_configuration():
     assert sensor is not None
     assert synthetic is not None
     report = format_takeoff_performance_reports((sensor, synthetic))
-    configuration, executions = report.split("\n\nTAKEOFF 1", maxsplit=1)
+    executions, configuration = report.split("\n\nTAKEOFF CONFIGURATION", maxsplit=1)
     assert "Airspeed source" not in configuration
     assert "Airspeed source                    Sensor" in executions
     assert "Airspeed source                    Synthetic estimate" in executions

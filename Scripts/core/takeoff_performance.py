@@ -1210,10 +1210,6 @@ def format_takeoff_performance_report(
 ) -> str:
     """Render concise human output using trigger-relative event times."""
     lines = [f"TAKEOFF {takeoff_number}", "-" * 70]
-    if include_configuration:
-        lines.extend(("", "Takeoff configuration"))
-        lines.extend(_format_configuration(analysis.configuration))
-
     lines.extend(("", f"{'Status':<36} {_execution_status(analysis)}"))
     lines.extend(("", "Timing", f"  {'Firmware trigger':<34} 0.000 s"))
     timings = analysis.phase_timings
@@ -1238,7 +1234,8 @@ def format_takeoff_performance_report(
     trigger_delta = analysis.trigger_configured_minimum_airspeed_delta
     if trigger_delta is not None and airspeed_source != "Unavailable":
         lines.append(
-            f"  {'Delta to AIRSPEED_MIN':<34} {trigger_delta.delta_m_s:+.2f} m/s"
+            f"  {'Delta to AIRSPEED_MIN':<34} "
+            f"{_format_signed_decimal(trigger_delta.delta_m_s)} m/s"
         )
     if context.nav_pitch_deg is not None and context.pitch_deg is not None:
         lines.append(
@@ -1281,7 +1278,7 @@ def format_takeoff_performance_report(
         envelope = analysis.airspeed_envelope
         if envelope is not None:
             lines.append(
-                f"  {'Automatic-control envelope':<34} "
+                f"  {'Envelope':<34} "
                 f"{envelope.minimum.value_m_s:.2f}–{envelope.maximum.value_m_s:.2f} m/s"
             )
 
@@ -1299,7 +1296,8 @@ def format_takeoff_performance_report(
     if altitude is not None:
         if altitude.minimum_delta_m is not None:
             lines.append(
-                f"  {'Minimum altitude delta':<34} {altitude.minimum_delta_m:+.2f} m"
+                f"  {'Minimum altitude delta':<34} "
+                f"{_format_signed_decimal(altitude.minimum_delta_m)} m"
             )
         if altitude.endpoint_delta_m is not None:
             endpoint_label = (
@@ -1309,17 +1307,45 @@ def format_takeoff_performance_report(
                 is TakeoffControlIntervalStatus.COMPLETED
                 else "Altitude delta at mode exit"
             )
-            lines.append(f"  {endpoint_label:<34} {altitude.endpoint_delta_m:+.2f} m")
+            lines.append(
+                f"  {endpoint_label:<34} "
+                f"{_format_signed_decimal(altitude.endpoint_delta_m)} m"
+            )
 
     lines.extend(_format_throttle_context(analysis))
+    if include_configuration:
+        lines.extend(("", "Takeoff configuration"))
+        lines.extend(_format_configuration(analysis.configuration))
     return "\n".join(lines)
 
 
 def format_takeoff_performance_reports(
     analyses: tuple[TakeoffPerformanceAnalysis, ...],
+    *,
+    detected_execution_count: int | None = None,
 ) -> str:
-    """Render a comparative report, consolidating identical configuration."""
+    """Render an operational overview followed by evidence and configuration."""
     lines = ["TAKEOFF ANALYSIS", "=" * 70]
+    detected_count = (
+        len(analyses) if detected_execution_count is None else detected_execution_count
+    )
+    if detected_count < len(analyses):
+        raise ValueError("detected execution count cannot be less than analyses")
+    omitted_count = detected_count - len(analyses)
+    lines.extend(
+        (
+            "",
+            (
+                f"{detected_count} TAKEOFF-mode "
+                f"{_plural(detected_count, 'execution')} detected"
+            ),
+            f"{len(analyses)} triggered {_plural(len(analyses), 'takeoff')} analysed",
+            (
+                f"{omitted_count} non-trigger "
+                f"{_plural(omitted_count, 'execution')} omitted"
+            ),
+        )
+    )
     if not analyses:
         return "\n".join(lines)
 
@@ -1327,10 +1353,8 @@ def format_takeoff_performance_reports(
         analysis.configuration.groups == analyses[0].configuration.groups
         for analysis in analyses[1:]
     )
-    if shared_configuration:
-        applies_to = "TAKEOFF 1" if len(analyses) == 1 else f"TAKEOFF 1–{len(analyses)}"
-        lines.extend(("", "Takeoff configuration", f"Applies to {applies_to}"))
-        lines.extend(_format_configuration(analyses[0].configuration))
+    if len(analyses) > 1:
+        lines.extend(("", "Summary", "-" * 70, _format_comparison_table(analyses)))
 
     for number, analysis in enumerate(analyses, 1):
         lines.extend(
@@ -1340,12 +1364,27 @@ def format_takeoff_performance_reports(
                 format_takeoff_performance_report(
                     analysis,
                     number,
-                    include_configuration=not shared_configuration,
+                    include_configuration=False,
                 ),
             )
         )
 
-    lines.extend(("", "", _format_comparison_table(analyses)))
+    if shared_configuration:
+        lines.extend(("", "", "TAKEOFF CONFIGURATION", "=" * 70))
+        if len(analyses) > 1:
+            lines.append(f"Applies to TAKEOFF 1–{len(analyses)}")
+        lines.extend(_format_configuration(analyses[0].configuration))
+    else:
+        for number, analysis in enumerate(analyses, 1):
+            lines.extend(
+                (
+                    "",
+                    "",
+                    f"TAKEOFF {number} CONFIGURATION",
+                    "=" * 70,
+                    *_format_configuration(analysis.configuration),
+                )
+            )
     return "\n".join(lines)
 
 
@@ -1429,13 +1468,13 @@ def _format_comparison_table(
 ) -> str:
     """Render a compact comparison using only existing result quantities."""
     headers = (
-        "TAKEOFF",
+        "No.",
         "Status",
         "First ≥ AIRSPEED_MIN",
         "Largest |pitch residual|",
         "Max |roll|",
-        "Min altitude delta",
-        "Endpoint delta/gain",
+        "Min altitude Δ",
+        "Endpoint altitude Δ",
     )
     rows = []
     for number, analysis in enumerate(analyses, 1):
@@ -1443,31 +1482,26 @@ def _format_comparison_table(
         residual = analysis.pitch_tracking_residual
         roll = analysis.launch_response_roll
         altitude = analysis.relative_altitude
-        endpoint_suffix = (
-            "completion"
-            if analysis.control_interval is not None
-            and analysis.control_interval.status
-            is TakeoffControlIntervalStatus.COMPLETED
-            else "mode exit"
-        )
         rows.append(
             (
                 str(number),
                 _execution_status(analysis),
-                _format_relative_seconds(first.elapsed_s),
-                f"{residual.magnitude_deg:.2f}°"
-                if residual is not None
-                else "Unavailable",
-                f"{roll.magnitude_deg:.2f}°" if roll is not None else "Unavailable",
                 (
-                    f"{altitude.minimum_delta_m:+.2f} m"
+                    _format_relative_seconds(first.elapsed_s)
+                    if first.status is ConfiguredMinimumAirspeedStatus.OBSERVED
+                    else "—"
+                ),
+                f"{residual.magnitude_deg:.2f}°" if residual is not None else "—",
+                f"{roll.magnitude_deg:.2f}°" if roll is not None else "—",
+                (
+                    f"{_format_signed_decimal(altitude.minimum_delta_m)} m"
                     if altitude is not None and altitude.minimum_delta_m is not None
-                    else "Unavailable"
+                    else "—"
                 ),
                 (
-                    f"{altitude.endpoint_delta_m:+.2f} m ({endpoint_suffix})"
+                    f"{_format_signed_decimal(altitude.endpoint_delta_m)} m"
                     if altitude is not None and altitude.endpoint_delta_m is not None
-                    else "Unavailable"
+                    else "—"
                 ),
             )
         )
@@ -1475,16 +1509,27 @@ def _format_comparison_table(
         max(len(header), *(len(row[index]) for row in rows))
         for index, header in enumerate(headers)
     ]
-    lines = ["Cross-takeoff comparison"]
-    lines.append(
+    lines = [
         "  ".join(header.ljust(widths[index]) for index, header in enumerate(headers))
-    )
+    ]
     lines.append("  ".join("-" * width for width in widths))
     lines.extend(
         "  ".join(value.ljust(widths[index]) for index, value in enumerate(row))
         for row in rows
     )
     return "\n".join(lines)
+
+
+def _plural(count: int, singular: str) -> str:
+    """Return a simple count-sensitive report noun."""
+    return singular if count == 1 else f"{singular}s"
+
+
+def _format_signed_decimal(value: float) -> str:
+    """Render a signed delta without decorating exact zero as positive."""
+    if value == 0:
+        return "0.00"
+    return f"{value:+.2f}"
 
 
 def _format_configuration_value(value: TakeoffConfigurationValue) -> str:
