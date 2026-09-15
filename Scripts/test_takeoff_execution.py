@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 from core.flight_data import FlightLog
 from core.takeoff_execution import (
+    TakeoffEntryContext,
     TakeoffExecutionEvent,
     TakeoffExecutionEventType,
     TakeoffTerminationReason,
@@ -11,6 +12,8 @@ from core.takeoff_execution import (
 from core.takeoff_execution_detector import TakeoffExecutionDetector
 
 AUTO_MODE = 10
+TAKEOFF_MODE = 13
+FBWA_MODE = 5
 MANUAL_MODE = 0
 NAV_TAKEOFF = 22
 NAV_WAYPOINT = 16
@@ -31,6 +34,7 @@ def _flight_log(
     msg=(),
     arm=(),
     cmd=(),
+    stat=(),
     log_end_us=LOG_END_US,
 ):
     """Build only the message evidence consumed by the detector."""
@@ -40,6 +44,7 @@ def _flight_log(
         "MSG": _table(msg, ("TimeUS", "Message")),
         "ARM": _table(arm, ("TimeUS", "ArmState")),
         "CMD": _table(cmd, ("TimeUS", "CNum", "CId")),
+        "STAT": _table(stat, ("TimeUS", "Stage", "Sup")),
     }
     if log_end_us is not None:
         messages["GPS"] = _table(((log_end_us,),), ("TimeUS",))
@@ -373,3 +378,374 @@ def test_unusable_mise_fields_do_not_create_execution_starts():
         )
         == []
     )
+
+
+def test_takeoff_mode_outer_ownership_and_reentry():
+    """Mode 13 owns one window per entry and ignores duplicate observations."""
+    executions = _detect(
+        mise=(),
+        mode=(
+            (1_000_000, TAKEOFF_MODE),
+            (1_500_000, TAKEOFF_MODE),
+            (4_000_000, FBWA_MODE),
+            (6_000_000, TAKEOFF_MODE),
+            (8_000_000, MANUAL_MODE),
+        ),
+    )
+
+    assert len(executions) == 2
+    first, second = executions
+    assert first.entry_context is TakeoffEntryContext.TAKEOFF_MODE
+    assert (first.start_us, first.end_us) == (1_000_000, 4_000_000)
+    assert first.termination_reason is TakeoffTerminationReason.MODE_EXIT
+    assert second.entry_context is TakeoffEntryContext.TAKEOFF_MODE
+    assert (second.start_us, second.end_us) == (6_000_000, 8_000_000)
+    assert second.termination_reason is TakeoffTerminationReason.MODE_EXIT
+
+
+def test_takeoff_mode_log_end_censors_open_execution():
+    """A Mode-13 execution still active at log end remains censored."""
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE),),
+        log_end_us=5_000_000,
+    )[0]
+
+    assert execution.start_us == 1_000_000
+    assert execution.end_us == 5_000_000
+    assert execution.termination_reason is TakeoffTerminationReason.LOG_END
+
+
+def test_takeoff_mode_exit_excludes_later_messages():
+    """Messages after Mode-13 exit cannot leak into its finalized window."""
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE), (5_000_000, FBWA_MODE)),
+        msg=(
+            (2_000_000, "Triggered AUTO. GPS speed = 2.0"),
+            (6_000_000, "Bad launch AUTO"),
+            (7_000_000, "Takeoff to 40m for 200m heading 90 deg"),
+        ),
+    )[0]
+
+    assert [event.time_us for event in execution.events] == [2_000_000]
+
+
+def test_takeoff_mode_owns_shared_launch_messages():
+    """Shared AUTO launch-check messages remain Mode-13 observations."""
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE), (8_000_000, FBWA_MODE)),
+        msg=(
+            (2_000_000, "Armed AUTO, xaccel = 6.0 m/s/s, waiting 0.0 sec"),
+            (3_000_000, "Timeout AUTO"),
+            (4_000_000, "Bad launch AUTO"),
+            (5_000_000, "Triggered AUTO. GPS speed = 2.0"),
+        ),
+    )[0]
+
+    assert execution.entry_context is TakeoffEntryContext.TAKEOFF_MODE
+    assert [event.event_type for event in execution.pretrigger_events] == [
+        TakeoffExecutionEventType.ARMED_AUTO,
+        TakeoffExecutionEventType.PRETRIGGER_TIMEOUT,
+        TakeoffExecutionEventType.BAD_LAUNCH,
+    ]
+    assert execution.launch_trigger is not None
+    assert execution.launch_trigger.time_us == 5_000_000
+
+
+def test_takeoff_to_is_target_course_observation_only():
+    """The full firmware target detail is evidence, not a boundary or trigger."""
+    detail = "Takeoff to 40m for 200m heading 90 deg"
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE), (6_000_000, FBWA_MODE)),
+        msg=((3_000_000, detail),),
+    )[0]
+
+    target = execution.target_course_finalization
+    assert target is not None
+    assert target.event_type is TakeoffExecutionEventType.TARGET_COURSE_FINALIZED
+    assert target.time_us == 3_000_000
+    assert target.detail == detail
+    assert execution.launch_trigger is None
+    assert execution.takeoff_control_completion is None
+    assert execution.end_us == 6_000_000
+    assert execution.termination_reason is TakeoffTerminationReason.MODE_EXIT
+
+
+def test_takeoff_control_completion_is_inner_observation():
+    """Confirmed TAKEOFF-to-NORMAL does not close outer Mode-13 ownership."""
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE), (7_000_000, FBWA_MODE)),
+        stat=(
+            (2_000_000, 1, 0),
+            (4_000_000, 3, 0),
+            (4_100_000, 3, 0),
+        ),
+        msg=((6_000_000, "Bad launch AUTO"),),
+    )[0]
+
+    completion = execution.takeoff_control_completion
+    assert completion is not None
+    assert completion.time_us == 4_000_000
+    assert execution.end_us == 7_000_000
+    assert execution.termination_reason is TakeoffTerminationReason.MODE_EXIT
+    assert any(event.time_us == 6_000_000 for event in execution.events)
+
+
+def test_mode_exit_generated_normal_does_not_manufacture_completion():
+    """One pre-exit NORMAL can be the new mode's synchronous stage write."""
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE), (5_000_000, FBWA_MODE)),
+        stat=(
+            (2_000_000, 1, 0),
+            (4_900_000, 3, 0),
+        ),
+    )[0]
+
+    assert execution.takeoff_control_completion is None
+
+
+def test_second_pre_exit_normal_confirms_first_completion_candidate():
+    """A second owned NORMAL retains the first candidate's timestamp."""
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE), (5_000_000, FBWA_MODE)),
+        stat=(
+            (2_000_000, 1, 0),
+            (4_000_000, 3, 0),
+            (4_100_000, 3, 0),
+        ),
+    )[0]
+
+    completion = execution.takeoff_control_completion
+    assert completion is not None
+    assert completion.time_us == 4_000_000
+
+
+def test_equal_time_normal_and_mode_exit_remain_unowned():
+    """Equal-time STAT cannot be ordered before the Mode-13 exit boundary."""
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE), (5_000_000, FBWA_MODE)),
+        stat=(
+            (2_000_000, 1, 0),
+            (4_900_000, 3, 0),
+            (5_000_000, 3, 0),
+        ),
+    )[0]
+
+    assert execution.takeoff_control_completion is None
+
+
+def test_inner_completion_requires_launch_response_evidence():
+    """A bare stage change without trigger or unsuppression is insufficient."""
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE), (6_000_000, FBWA_MODE)),
+        stat=(
+            (2_000_000, 1, 1),
+            (4_000_000, 3, 1),
+            (4_100_000, 3, 1),
+        ),
+    )[0]
+
+    assert execution.throttle_unsuppressed is None
+    assert execution.takeoff_control_completion is None
+
+
+def test_trigger_qualifies_later_takeoff_control_completion():
+    """An earlier launch-check trigger establishes a defensible response."""
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE), (6_000_000, FBWA_MODE)),
+        msg=((1_500_000, "Triggered AUTO. GPS speed = 2.0"),),
+        stat=(
+            (2_000_000, 1, 1),
+            (4_000_000, 3, 1),
+            (4_100_000, 3, 1),
+        ),
+    )[0]
+
+    assert execution.throttle_unsuppressed is None
+    assert execution.takeoff_control_completion is not None
+    assert execution.takeoff_control_completion.time_us == 4_000_000
+
+
+def test_already_flying_mode_entry_exists_without_launch_messages():
+    """Mode 13 itself establishes outer ownership without launch messages."""
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE), (6_000_000, FBWA_MODE)),
+    )[0]
+
+    assert execution.entry_context is TakeoffEntryContext.TAKEOFF_MODE
+    assert execution.launch_trigger is None
+    assert execution.takeoff_control_completion is None
+
+
+def test_already_flying_unsuppressed_stage_transition_can_complete_control():
+    """STAT.Sup=0 can qualify an observed transition without launch messages."""
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE), (6_000_000, FBWA_MODE)),
+        stat=(
+            (2_000_000, 1, 0),
+            (4_000_000, 3, 0),
+            (4_100_000, 3, 0),
+        ),
+    )[0]
+
+    assert execution.launch_trigger is None
+    assert execution.throttle_unsuppressed is None
+    assert execution.takeoff_control_completion is not None
+    assert execution.takeoff_control_completion.time_us == 4_000_000
+
+
+def test_takeoff_mode_and_auto_mission_contexts_remain_distinct():
+    """Adjacent execution contexts retain only their own observations."""
+    executions = _detect(
+        mise=((6_000_000, 1, NAV_TAKEOFF),),
+        mode=(
+            (1_000_000, TAKEOFF_MODE),
+            (5_000_000, AUTO_MODE),
+        ),
+        msg=(
+            (2_000_000, "Triggered AUTO. GPS speed = 2.0"),
+            (3_000_000, "Takeoff to 40m for 200m heading 90 deg"),
+            (7_000_000, "Triggered AUTO. GPS speed = 2.2"),
+            (8_000_000, "Takeoff complete at 40m"),
+        ),
+    )
+
+    assert len(executions) == 2
+    mode_execution, auto_execution = executions
+    assert mode_execution.entry_context is TakeoffEntryContext.TAKEOFF_MODE
+    assert [event.time_us for event in mode_execution.events] == [
+        2_000_000,
+        3_000_000,
+    ]
+    assert mode_execution.target_course_finalization is not None
+    assert auto_execution.entry_context is TakeoffEntryContext.AUTO_MISSION
+    assert [event.time_us for event in auto_execution.events] == [
+        7_000_000,
+        8_000_000,
+    ]
+    assert auto_execution.target_course_finalization is None
+    assert auto_execution.completion is not None
+
+
+def test_trigger_qualifies_first_later_unsuppressed_observation():
+    """Launch-check success directly qualifies the next owned Sup=0 sample."""
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE), (6_000_000, FBWA_MODE)),
+        msg=((3_000_000, "Triggered AUTO. GPS speed = 2.0"),),
+        stat=(
+            (2_000_000, 1, 1),
+            (4_000_000, 1, 0),
+        ),
+    )[0]
+
+    assert execution.throttle_unsuppressed is not None
+    assert execution.throttle_unsuppressed.time_us == 4_000_000
+
+
+def test_lone_pre_exit_unsuppressed_candidate_is_not_owned():
+    """A mode-exit-generated Sup=0 sample cannot leak into Mode 13."""
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE), (5_000_000, MANUAL_MODE)),
+        stat=(
+            (2_000_000, 1, 1),
+            (4_999_982, 3, 0),
+        ),
+    )[0]
+
+    assert execution.throttle_unsuppressed is None
+    assert execution.takeoff_control_completion is None
+
+
+def test_second_owned_unsuppressed_sample_confirms_first_candidate():
+    """No-trigger persistence retains the first Sup=0 candidate timestamp."""
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE), (6_000_000, FBWA_MODE)),
+        stat=(
+            (2_000_000, 1, 1),
+            (4_000_000, 1, 0),
+            (4_100_000, 1, 0),
+        ),
+    )[0]
+
+    assert execution.throttle_unsuppressed is not None
+    assert execution.throttle_unsuppressed.time_us == 4_000_000
+
+
+def test_equal_time_unsuppressed_and_mode_exit_is_not_owned():
+    """Equal-time STAT cannot be ordered before the Mode-13 exit boundary."""
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE), (5_000_000, FBWA_MODE)),
+        stat=(
+            (2_000_000, 1, 1),
+            (4_900_000, 1, 0),
+            (5_000_000, 1, 0),
+        ),
+    )[0]
+
+    assert execution.throttle_unsuppressed is None
+
+
+def test_already_unsuppressed_entry_does_not_fabricate_transition():
+    """Continuous Sup=0 across entry is state, not a Mode-13 transition."""
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE), (6_000_000, FBWA_MODE)),
+        stat=(
+            (900_000, 3, 0),
+            (2_000_000, 3, 0),
+            (2_100_000, 3, 0),
+        ),
+    )[0]
+
+    assert execution.throttle_unsuppressed is None
+
+
+def test_unconfirmed_unsuppressed_candidate_at_log_end_is_unavailable():
+    """Inclusive log end does not confirm a lone no-trigger candidate."""
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE),),
+        stat=(
+            (2_000_000, 1, 1),
+            (5_000_000, 1, 0),
+        ),
+        log_end_us=None,
+    )[0]
+
+    assert execution.end_us == 5_000_000
+    assert execution.termination_reason is TakeoffTerminationReason.LOG_END
+    assert execution.throttle_unsuppressed is None
+
+
+def test_triggered_unsuppressed_observation_at_log_end_is_retained():
+    """An earlier trigger qualifies the final inclusive Sup=0 observation."""
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE),),
+        msg=((3_000_000, "Triggered AUTO. GPS speed = 2.0"),),
+        stat=(
+            (2_000_000, 1, 1),
+            (5_000_000, 1, 0),
+        ),
+        log_end_us=None,
+    )[0]
+
+    assert execution.end_us == 5_000_000
+    assert execution.termination_reason is TakeoffTerminationReason.LOG_END
+    assert execution.throttle_unsuppressed is not None
+    assert execution.throttle_unsuppressed.time_us == 5_000_000
