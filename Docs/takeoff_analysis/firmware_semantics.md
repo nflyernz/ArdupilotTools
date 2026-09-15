@@ -1,474 +1,678 @@
-# ArduPlane Takeoff Analysis — Firmware Semantics and Initial Analysis Contract
+# ArduPlane Takeoff Analysis — Firmware Semantics Contract
 
-**Scope:** ArduPlane 4.7.x / APT research project  
-**Source audit basis:** Plane-4.7.1  
-**Status:** Source semantics established; execution-window semantics ready for prototype
+**Scope:** conventional fixed-wing ArduPlane TAKEOFF mode and AUTO mission
+`NAV_TAKEOFF` in stable Plane 4.7.x
 
-## 1. Purpose and decision
+**Primary source basis:** Plane-4.7.0
 
-**Purpose.** Define what an evidence-first APT takeoff analysis is allowed to call a takeoff execution, which firmware events own that execution, how the execution ends, and which DataFlash observations can be used to evaluate ArduPlane response. This document deliberately stops before performance-threshold tuning or real-log-specific detector tuning.
+**Compatibility check:** the relevant Plane-4.7.1 source is unchanged
 
-**Primary decision.** The analysis is about firmware behaviour, not reconstructing the physical act of hand release. Physical hand release is therefore not an analysis boundary and no release-time inference is required for the initial model. The central response anchor is the firmware AUTO launch trigger, and the analysis remains owned by the active AUTO `NAV_TAKEOFF` execution only while that execution remains in control.
+**Status:** source semantics established; the current AUTO-only prototype must
+be revised before metric work
 
-**Hard ownership rule.** A takeoff execution window ends when the active AUTO `NAV_TAKEOFF` execution ends. A mode change away from AUTO is a hard end boundary even if the mission is later resumed. Re-entry to AUTO starts a new analysis execution window; the old window is never reopened or extended with later observations.
+## 1. Purpose and decisions
 
-| Boundary | Meaning for analysis | Classification |
+This document defines the firmware ownership, event, and evidence semantics
+that APT may use for fixed-wing takeoff analysis. It deliberately stops before
+performance metrics, threshold tuning, or safety judgments.
+
+The primary operational entry context is ArduPlane **TAKEOFF mode**
+(`ModeNum=13`). The contract is not specific to hand launch. It covers
+conventional rolling/surface and non-surface launches wherever Plane 4.7.x
+uses the same TAKEOFF-mode machinery. QuadPlane/VTOL and other vehicle takeoff
+implementations are outside this contract. Tow/winch, air-drop, and carrier
+launches are also excluded because this bounded audit found no dedicated
+stable-4.7.0 conventional TAKEOFF-mode state that would justify separate
+semantics for them.
+
+AUTO mission `MAV_CMD_NAV_TAKEOFF` remains a second, separately owned entry
+context. It shares substantial launch and controller code with TAKEOFF mode,
+but its start, target, completion, and outer ownership are different.
+
+The analysis concerns **firmware behavior**. It does not infer physical hand
+release, launcher release, wheel rotation, wheel liftoff, or physical thrust.
+
+### 1.1 Two boundaries are required for TAKEOFF mode
+
+| Boundary | Definition | Intended analytical use |
 |---|---|---|
-| `NAV_TAKEOFF` command start | AUTO mission takeoff command is active and its state has been initialized. | Firmware ownership start |
-| `Triggered AUTO` | Launch detector accepts configured trigger conditions; post-trigger takeoff response begins. | Strong firmware event |
-| `Takeoff complete` | Firmware verifier completes `NAV_TAKEOFF` and allows mission progression. | Normal firmware termination |
-| Mode change away from AUTO | AUTO stops owning the running takeoff sequence; subsequent observations no longer belong to this execution. | Hard analysis termination |
-| Takeoff timeout / disarm | Configured post-trigger timeout or another disarm has ended the execution. | Abnormal firmware termination |
-| Log end / missing terminal evidence | Ownership cannot be proven beyond available observations. | Incomplete / censored termination |
+| Outer execution | Successful logged transition into `MODE=13` through the first authoritative transition to `MODE!=13` (or log end) | Ownership and context |
+| Inner automatic takeoff-control phase | The source-defined TAKEOFF-stage control interval, interpreted with launch/suppression context, through a defensible `FlightStage::TAKEOFF -> NORMAL` transition | Later firmware-response measurements |
 
-## 2. Scope
+The boundaries need not coincide. After the inner stage becomes `NORMAL`,
+TAKEOFF mode continues to own navigation and normally loiters at its target
+until another mode is selected.
 
-This source audit applies to fixed-wing ArduPlane AUTO mission takeoff using `MAV_CMD_NAV_TAKEOFF` in Plane 4.7.x. Source references in this document are pinned to the Plane-4.7.1 tag unless stated otherwise.
+### 1.2 Causality is mandatory
 
-- Research environment: APT (`~/ArduPilotTools`).
-- Operational context: Volantex Ranger 2000, hand launch, AUTO takeoff, SpeedyBee F405 Wing.
-- The aircraft has recently become lighter; historical speed assumptions are context only and are not analytical truth.
-- This document does not modify AMC, `configuration_steps_ArduPlane.json`, Plane template parameter files, or `TUNING_GUIDE_ArduPlane.md`.
-- This document does not define safe/unsafe thresholds or scoring.
+An observation may affect an execution only while that execution owns it.
+Mode exit closes the outer TAKEOFF-mode window. A later re-entry creates a new
+window. No later observation may repair, extend, or rewrite a closed window,
+and any persistence requirement must complete before ownership ends.
 
-**Out of scope for the initial model:** physical hand-release timing, physical liftoff timing, actual propeller thrust, and any inferred “stable climb” state. Those can only be added later with separate, explicit evidence semantics if they prove operationally useful.
+APT does not retain a universal raw order across different DataFlash message
+types at equal `TimeUS`. Unsupported same-timestamp cross-stream ordering must
+remain ambiguous unless firmware control flow establishes the relationship.
 
-For this aircraft, a real repeat hand launch is expected to involve a fresh arm/re-arm cycle. Repeated `NAV_TAKEOFF` execution while continuously armed is therefore an edge case for robustness testing, not a design-driving operational case.
+## 2. Firmware and corpus scope
 
-## 3. Event ownership and causality contract
+### 2.1 Stable source target
 
-This section is normative for the first APT implementation. It carries forward the event-ownership and causality rule established during the earlier landing-analysis review: **an observation can only influence an event or metric while it is owned by the execution window that is still causally active.**
+Plane-4.7.0 is authoritative for this project. `Logs/log_0.bin` identifies
+itself as `ArduPlane V4.7.0 (1511f271)` and is the stable real-log reference.
 
-### 3.1 Ownership is established before evidence is interpreted
+A bounded comparison found the relevant Plane-4.7.0 and Plane-4.7.1 files
+byte-for-byte identical: `mode_takeoff.cpp`, `takeoff.cpp`, `servos.cpp`,
+`Log.cpp`, `Plane.cpp`, `mode.cpp`, `system.cpp`, `mode.h`, `Plane.h`,
+`Parameters.cpp`, `Parameters.h`, `Attitude.cpp`, `commands_logic.cpp`,
+`mode_auto.cpp`, and `AP_FixedWing.h`. The ownership, launch check, rotation,
+suppression, flight-stage, completion, mode-transition, and STAT semantics in
+this contract are therefore stable across those two tags. This is not a
+claim about unrelated Plane subsystems or later firmware.
 
-APT must first determine the enclosing AUTO `NAV_TAKEOFF` execution window. Only then may observations be selected for event detection, state interpretation, or derived metrics.
+### 2.2 Available real-log evidence
 
-The intended order is:
+The five available logs contain 13 operational launch sequences. All 13:
+
+- have `Armed AUTO` and `Triggered AUTO` messages;
+- have those messages while the latest established mode is `MODE=13`;
+- later leave TAKEOFF mode, usually for FBWA;
+- contain no runtime `MISE MAV_CMD_NAV_TAKEOFF`.
+
+The corpus therefore represents TAKEOFF-mode execution, not AUTO mission
+takeoff. In particular, `AUTO` in `Armed AUTO` and `Triggered AUTO` names the
+shared automatic launch-check mechanism; it does **not** prove that flight mode
+AUTO (`ModeNum=10`) owned the event.
+
+`log_0.bin` is the design-reference log. The other four logs identify as
+custom Plane 4.7.0 beta builds: beta4 (`log_11`), beta7 (`log_17` and
+`log_19`), and beta8 (`log_26`). They are later compatibility evidence, not
+alternative design targets.
+
+## 3. TAKEOFF-mode outer ownership
+
+### 3.1 Successful entry and the logged start
+
+`Plane::set_mode()` selects the prospective mode and calls `Mode::enter()`.
+The generic entry path resets shared navigation/takeoff state, including
+highest airspeed and `rotation_complete`. `ModeTakeoff::_enter()` then does
+only two mode-local operations:
+
+- sets `takeoff_mode_setup=false`;
+- sets `have_autoenabled_fences=false`.
+
+After `_enter()` succeeds, generic `Mode::enter()` sets
+`throttle_suppressed=true` because TAKEOFF mode uses automatic throttle, and
+updates the flight stage. `Plane::set_mode()` then exits the old mode and
+writes the new `MODE` record.
+
+Consequently, a valid `MODE=13` record is direct evidence that TAKEOFF-mode
+entry succeeded. It occurs after `_enter()` but before the first necessarily
+observable `ModeTakeoff::update()` setup. It is the strongest ordinary
+DataFlash start boundary for the **outer** TAKEOFF execution. There is no
+stronger dedicated “TAKEOFF mode setup started” log event.
+
+### 3.2 First update and setup
+
+`update_control_mode()` is a fast task and calls `ModeTakeoff::update()`.
+Setup is deferred until position and home are valid. Without them, the mode
+calculates normal navigation attitude, commands zero throttle at that point,
+and returns without establishing the takeoff target or TAKEOFF stage.
+
+For the normal not-already-flying path, the first usable update:
+
+1. stores the configured `TKOFF_ALT` as the relative takeoff altitude;
+2. captures the current location as the start and initial waypoint context;
+3. constructs a target `TKOFF_DIST` ahead at `TKOFF_ALT`;
+4. clears crash state;
+5. stores `TKOFF_LVL_PITCH` as takeoff pitch;
+6. sets `FlightStage::TAKEOFF`.
+
+This is controller setup, not launch acceptance. The mode remains
+`takeoff_mode_setup=false` until suppression has ended and groundspeed is high
+enough to establish a useful course.
+
+### 3.3 Outer end
+
+TAKEOFF mode has no mode-specific `_exit()` cleanup. Nevertheless, once
+`Plane::set_mode()` successfully changes to another mode, `control_mode` no
+longer points to `mode_takeoff`; the new mode owns subsequent control and the
+old mode's `update()` is no longer called.
+
+The first authoritative `MODE` transition from 13 to another mode is therefore
+the outer ownership end. A later `MODE=13` is a new execution. At log end,
+an otherwise active window is censored; log end is not proof of normal inner
+completion.
+
+One logging-order detail matters: the new mode's `enter()` calls
+`update_flight_stage()` before `Plane::set_mode()` writes the new `MODE`
+record. A `STAT.Stage=NORMAL` immediately before a `MODE!=13` record can thus
+be an effect of the mode change rather than independent evidence that TAKEOFF
+mode completed its inner stage. Analysis must not classify that ordering by
+timestamp proximity alone.
+
+## 4. Shared automatic launch check
+
+### 4.1 Call path in TAKEOFF mode
+
+TAKEOFF mode does not call `auto_takeoff_check()` directly. The stable 4.7.0
+path is:
 
 ```text
-establish execution ownership
-    -> identify firmware events inside that ownership
-    -> select measured observations
-    -> determine observation validity/usability
-    -> calculate derived metrics
+ModeTakeoff (automatic throttle)
+  -> servo/output cycle
+  -> Plane::set_throttle()
+  -> Plane::suppress_throttle()
+  -> special mode_takeoff branch
+  -> Plane::auto_takeoff_check()
 ```
 
-A convenient signal must not be allowed to define ownership merely because it appears near a takeoff.
+This shared function is why TAKEOFF mode emits messages containing `AUTO`.
+The string is historical/shared mechanism wording, not a mode identifier.
 
-### 3.2 First valid termination closes the window
+### 4.2 Trigger gates
 
-The first authoritative terminating event ends the execution window. Examples include:
+For a normal fresh launch, `auto_takeoff_check()` applies these executable
+conditions:
 
-- firmware `Takeoff complete`;
-- mode change away from AUTO;
-- explicit `TKOFF_TIMEOUT` termination/disarm;
-- another disarm that removes takeoff ownership;
-- log end when no stronger terminal event is observable.
+| Gate/state | Stable 4.7.0 behavior |
+|---|---|
+| Armed and safety off | Otherwise all takeoff state is reset and the check fails. |
+| Continuous servicing | A gap greater than 200 ms resets launch-check state (while preserving the conditional autoland direction state). |
+| Rudder neutral | After rudder arming, the check waits for neutral and periodically reports that wait. |
+| GPS | At least a 3D fix is required. |
+| Acceleration | If `TKOFF_THR_MINACC` is nonzero, longitudinal TECS acceleration must meet it. `TKOFF_ACCEL_CNT` can require alternating positive/negative events; a gap over 500 ms resets their count. |
+| Timer arm | The accepted acceleration state starts the launch timer and may emit `Armed AUTO`. With `TKOFF_THR_MINACC=0`, this arming step is reached without an acceleration gate. |
+| Delay/expiry | Groundspeed acceptance waits `TKOFF_THR_DELAY * 100 ms`. The candidate expires strictly after that delay plus 100 ms, emits `Timeout AUTO` subject to report throttling, and resets. |
+| Attitude | Unless disabled by the relevant flight option, pitch must be greater than -30 degrees and less than 45 degrees; non-inverted roll magnitude must not exceed 30 degrees. Rejection emits `Bad launch AUTO` and resets the candidate. |
+| Groundspeed | GPS groundspeed must exceed `TKOFF_THR_MINSPD`, unless that parameter is zero. |
 
-Once closed, the execution window is immutable.
+On acceptance, firmware emits `Triggered AUTO. GPS speed = ...`, resets the
+candidate timer, initializes takeoff and throttle-max timestamps and course
+error, and returns `true`. The caller then releases throttle suppression.
 
-### 3.3 No post-window evidence may rewrite the past
+`Armed AUTO`, `Timeout AUTO`, and `Bad launch AUTO` describe launch-check
+observations or retries inside the same outer TAKEOFF-mode execution. They do
+not create new execution windows. A missing message remains missing evidence;
+message rate limiting and log loss prevent reasoning from absence alone.
 
-Observations after `termination_time` do not belong to the closed execution and must not:
+## 5. Physical launch-method semantics
 
-- complete a persistence test that had not yet completed;
-- establish a peak/minimum that occurred after ownership ended;
-- replace an already selected termination reason;
-- retroactively turn an incomplete event into a completed one;
-- qualify a derived event that required future samples outside the window.
+Plane 4.7.0 has no TAKEOFF-mode enum or state identifying “wheels”, “dolly”,
+“skis”, “hand”, “catapult”, “rail”, or “bungee”. These physical methods share
+the same outer mode, suppression/launch detector, flight stage, and controller
+functions. Source-backed differences are parameter-driven.
 
-A later observation may only affect the earlier execution if ArduPlane firmware semantics explicitly define that later observation as completing the earlier firmware transition. No such exception is assumed by default.
+### 5.1 Rolling or surface takeoff
 
-This is the same causal principle that prevents a persistence detector from borrowing post-attempt samples to supersede an earlier valid termination.
+Wheeled runway, dolly, and similar surface runs are analytically one firmware
+family unless other evidence proves a different controller configuration.
 
-### 3.4 Persistence and confirmation must finish inside ownership
+The shared launch detector still controls suppression. A common rolling
+configuration disables the acceleration gate (`TKOFF_THR_MINACC=0`) and uses
+the configured delay and/or groundspeed gate; that is parameter behavior, not
+a separate detector.
 
-If a future takeoff metric requires persistence—for example, groundspeed above a threshold for N milliseconds, pitch tracking settled for N samples, or climb rate remaining positive for a defined interval—the full confirmation interval must lie within the active execution window.
+`TKOFF_ROTATE_SPD>0` enables the rolling rotation path in
+`takeoff_calc_pitch()`:
 
-If the window terminates before confirmation completes, the condition is **unconfirmed**, not retrospectively true.
+- while `auto_state.highest_airspeed < TKOFF_ROTATE_SPD`, demanded pitch is
+  fixed at `TKOFF_GND_PITCH`, and TECS pitch minimum and maximum are both set
+  to that ground-run pitch;
+- after rotate airspeed is reached, while GPS groundspeed is no greater than
+  `AIRSPEED_CRUISE`, firmware scales from a minimum 5-degree climb demand
+  toward the configured takeoff pitch;
+- after that path is passed, firmware sets the internal
+  `rotation_complete=true` and uses the normal takeoff pitch/TECS path.
 
-### 3.5 Event-time sampling must not cross the boundary
+`TKOFF_ROTATE_SPD` is an airspeed threshold inside command generation. It is
+not logged as a dedicated rotation event and does not prove physical rotation
+or liftoff. `rotation_complete` is not exposed in `STAT`.
 
-When reporting values “at” a firmware event, nearest-sample logic must respect ownership. A sample after a hard termination must not be borrowed to represent a value at the final event simply because it is temporally closer.
+Rolling control can additionally use:
 
-Each event-sampling rule must therefore define:
+- `TKOFF_TDRAG_ELEV` and `TKOFF_TDRAG_SPD1` for initial tail hold or wheel-load
+  management;
+- `GROUND_STEER_ALT`, steering configuration, and the ground-steering
+  controller while close to the ground;
+- `LEVEL_ROLL_LIMIT` before rotation and the altitude-scaled roll restriction
+  after rotation;
+- `TKOFF_THR_SLEW` to moderate acceleration.
 
-- source message/field;
-- allowed time direction: previous-only, next-only, or nearest;
-- maximum admissible time offset if required;
-- whether the selected sample must lie strictly inside the execution window;
-- missing-value behaviour.
+During TAKEOFF stage, pilot rudder-rate input is suppressed in the ground-yaw
+controller and heading/error control is used. Ordinary logs can show attitude,
+desired attitude, steering, airspeed, groundspeed, and outputs, but none is a
+firmware-authored wheel-liftoff event.
 
-### 3.6 Derived metrics inherit the ownership of their inputs
+### 5.2 Hand launch
 
-A derived metric is only valid if all required observations are valid and owned by the same execution window or by an explicitly defined event context.
+Hand launch uses the same detector. Parameter documentation recommends an
+acceleration gate and, for pusher aircraft, a delay and suitable minimum
+groundspeed to prevent premature motor engagement. `TKOFF_ROTATE_SPD=0`
+bypasses the rolling rotation branch so the takeoff pitch path is used as soon
+as takeoff control runs. Firmware does not log physical hand release, and APT
+must not infer it.
 
-Examples:
+### 5.3 Catapult or rail launch
 
-- trigger-to-termination duration belongs to one execution;
-- maximum roll excursion uses only samples between trigger and termination;
-- minimum airspeed after trigger cannot inspect samples after mode exit;
-- parameter interpretation uses the value effective at the event/sample timestamp, not the final value in the log.
+Catapult/rail launch also has no separate firmware state. Acceleration,
+groundspeed, and delay parameters can defer motor engagement until launcher
+clearance. Parameter documentation prefers acceleration plus delay over sole
+reliance on GPS speed because GPS velocity lags and can be noisy.
+`TKOFF_ROTATE_SPD=0` is the documented catapult setting. Mechanical launcher
+release is not directly logged.
 
-### 3.7 Re-entry to AUTO creates new ownership
+### 5.4 Bungee launch
 
-If AUTO is exited and later re-entered, any subsequent `NAV_TAKEOFF` execution is a new analysis window. It must not be stitched to the previous window even if:
+Bungee launch is another configuration of the same detector, not another
+state machine. Parameter documentation specifically identifies a larger
+`TKOFF_THR_DELAY` as a way to allow the bungee to release before motor start,
+and identifies `TKOFF_THR_MINACC` as applicable. No distinct “bungee
+released” event exists.
 
-- the same mission item is resumed;
-- the aircraft remains armed;
-- the new command is only seconds later;
-- the logs make the two intervals visually continuous.
+### 5.5 What may be classified
 
-Mode change is the causal break.
+Later analysis may report the configured firmware behavior—for example,
+“rotation-speed path enabled” or “acceleration-gated delayed launch.” It must
+not infer a physical launcher class solely from that configuration because
+multiple physical methods can use the same values.
 
-### 3.8 Missing evidence remains missing
+## 6. Throttle suppression and release
 
-DataFlash is an observation stream, not a full firmware execution trace. If a firmware message is absent, APT must not fabricate it from nearby values unless a separately defined inference method exists.
+Entering TAKEOFF mode starts with `throttle_suppressed=true`. In the TAKEOFF
+branch of `suppress_throttle()` it remains true until either:
 
-In particular:
+1. the already-flying escape conditions are satisfied; or
+2. `auto_takeoff_check()` returns true.
 
-- absence of `Triggered AUTO` text does not prove launch detection never triggered;
-- absence of `Bad launch AUTO` does not prove attitude was never rejected;
-- absence of `Timeout AUTO` does not prove the pre-trigger detector never reset;
-- log end does not prove normal completion.
+On launch-check success, `suppress_throttle()` sets
+`throttle_suppressed=false`, records barometric takeoff altitude, and returns
+false to the output path. Before release, `set_throttle()` normally substitutes
+zero throttle, or `TKOFF_THR_IDLE` during TAKEOFF stage; configured manual
+pass-through and landing-specific cases are separate output rules.
 
-## 4. AUTO `NAV_TAKEOFF` firmware lifecycle
+The concepts must remain separate:
 
-### 4.1 Command start
+| Evidence/concept | What it means |
+|---|---|
+| `Triggered AUTO` | The shared launch check accepted its configured gates. |
+| `STAT.Sup=0` after suppressed context | Logged firmware state showing suppression is no longer active by that sample. |
+| CTUN/AETR/RCOU/servo value | A controller command or output observation. |
+| Motor RPM/ESC telemetry | Additional motor behavior evidence when present. |
+| Physical thrust | Not established by throttle command or suppression state. |
 
-When `MAV_CMD_NAV_TAKEOFF` starts, `Plane::do_takeoff()` initializes the takeoff command state. It loads the mission pitch, substitutes 4 degrees when the mission pitch is zero or negative, calculates the relative takeoff target altitude, clears takeoff/rotation completion state, resets course-hold state, and records barometric takeoff altitude.
+The message and suppression change occur in one firmware call path, but their
+DataFlash timestamps come from different log writes. APT must not invent
+cross-stream micro-ordering when timestamps tie or records are missing.
 
-This is the correct firmware-level start of the mission takeoff command. It is not evidence that launch detection has fired.
+## 7. Meaning of `Takeoff to ...`
+
+In normal fresh TAKEOFF-mode setup, firmware initially leaves
+`takeoff_mode_setup=false`. On a later `ModeTakeoff::update()`, only after:
+
+- throttle is no longer suppressed; and
+- groundspeed exceeds `GPS_GND_CRS_MIN_SPD` (5 m/s),
+
+it emits:
 
 ```text
-NAV_TAKEOFF start
-  -> initialise takeoff pitch and target altitude
-  -> clear takeoff_complete / rotation_complete
-  -> reset takeoff course state
-  -> record barometric takeoff reference
+Takeoff to <altitude>m for <distance>m heading <direction> deg
 ```
 
-`AP_Mission` logs the starting mission item as `MISE` when the relevant mission-command logging is enabled. `MISE` is therefore strong evidence that a particular mission command execution has begun; the stored mission alone is only configuration.
+It then initializes/reinitializes takeoff timing, marks setup complete, and
+locks the takeoff course from the current groundspeed direction. Thus this is
+a firmware-originated **post-release course/target-finalization observation**.
+It is not launch detection, physical launch, rotation, or automatic takeoff
+completion. It should not replace `Triggered AUTO`; the two messages represent
+different state changes.
 
-### 4.2 Launch detection
+The already-flying branches use `Above TKOFF alt - loitering` or `Climbing to
+TKOFF alt then loitering` instead and do not require this normal setup message.
 
-`Plane::auto_takeoff_check()` performs the fixed-wing AUTO launch check. Its executable sequence in Plane-4.7.1 is: armed/safety state, continuity of the launch-check process, rudder-neutral handling where applicable, GPS 3D fix, optional longitudinal-acceleration trigger, configured delay, attitude validity gate, and GPS groundspeed threshold.
+## 8. Inner `FlightStage::TAKEOFF` phase
 
-If accepted, firmware emits `Triggered AUTO. GPS speed = ...`, records the takeoff start timestamp used by the post-trigger timeout logic, starts the maximum-throttle timer, and returns `true`.
+### 8.1 Entry and pre-trigger behavior
 
-| Input / gate | Plane 4.7.1 behaviour | Analytical meaning |
-|---|---|---|
-| Armed + safety off | Disarmed state clears takeoff state and prevents trigger. | Prerequisite, not a launch event |
-| GPS fix | At least 3D GPS fix is required. | Prerequisite |
-| `TKOFF_THR_MINACC` | If non-zero, TECS longitudinal acceleration must satisfy configured event logic. | Trigger precursor |
-| `TKOFF_ACCEL_CNT` | Can require multiple alternating acceleration events. | Trigger precursor |
-| `TKOFF_THR_DELAY` | Delay after acceleration arming before groundspeed acceptance. | Timing gate |
-| Attitude check | Rejects launch candidates outside permitted pitch/roll envelope unless disabled. | Validity gate |
-| `TKOFF_THR_MINSPD` | GPS groundspeed must exceed threshold unless the parameter is zero. | Final trigger gate |
-| `Triggered AUTO` | Launch conditions accepted; firmware proceeds with takeoff response. | Primary launch-response anchor |
+For a fresh TAKEOFF-mode entry with valid position/home,
+`ModeTakeoff::update()` sets `FlightStage::TAKEOFF` before launch detection has
+necessarily succeeded. While suppression remains active, the separate 10 Hz
+`update_flight_stage()` path falls back to `NORMAL`; the next fast TAKEOFF-mode
+update can set TAKEOFF again because setup is still incomplete.
 
-**Key semantic result:** airspeed is not an input to the AUTO hand-launch detector. Pitch and roll are acceptance gates, not positive launch identifiers. Throttle is a response/output path rather than an input used to prove launch.
+Accordingly, pre-trigger logs can alternate `STAT.Stage=1` and
+`STAT.Stage=3`. A Stage=1 sample alone is not proof that launch was accepted,
+that throttle was released, or that the aircraft was airborne. For a later
+response interval, stage evidence must be interpreted with `Triggered AUTO`
+and/or `STAT.Sup=0`, not as a free-standing launch detector.
 
-### 4.3 Pre-trigger retries are not separate completed takeoffs
+While the current update sees TAKEOFF stage, it calls:
 
-The launch check can arm, reject, reset, and try again while the same `NAV_TAKEOFF` command remains active. If the delay window expires, firmware may report `Timeout AUTO`; if the attitude gate fails it reports `Bad launch AUTO`.
+- `takeoff_calc_roll()`;
+- `takeoff_calc_pitch()`;
+- `takeoff_calc_throttle()`.
 
-In both cases the internal launch timer is reset and another trigger opportunity may follow. These observations are pre-trigger events owned by the same execution window, not automatically independent takeoff attempts.
+Pitch and roll demands can therefore be computed before launch acceptance,
+while the later output path still suppresses throttle. The useful
+post-trigger response interval must not be confused with initial controller
+setup.
 
-A source-code detail should be preserved: the introductory comment in `takeoff.cpp` still mentions a 2.5 s retry timeout, while executable Plane-4.7.1 code expires the candidate when elapsed time exceeds `TKOFF_THR_DELAY + 100 ms`. Executable code is authoritative for the model.
+### 8.2 Normal and abnormal transitions to `NORMAL`
 
-### 4.4 Takeoff response after trigger
+For TAKEOFF mode, `ModeTakeoff::update()` changes the stage from TAKEOFF to
+NORMAL through these source-defined paths:
 
-Once the active `NAV_TAKEOFF` has triggered, `ModeAuto::update()` continues to call the takeoff-specific roll, pitch and throttle calculations while `NAV_TAKEOFF` remains the current navigation command.
+| Path | Stable 4.7.0 condition |
+|---|---|
+| Altitude | Height from the captured start location reaches `TKOFF_ALT * 100 - 200 cm` (two metres below the target). |
+| Distance | Distance from the captured start location reaches `TKOFF_DIST`. |
+| Post-trigger takeoff timeout | `TKOFF_TIMEOUT>0`, the timer is active, and groundspeed remains below 4 m/s beyond the configured duration; firmware emits the timeout message and disarms. TAKEOFF mode also clears setup. |
+| Pitch level-off timeout | `TKOFF_PLIM_SEC` level-off timing has started and then expires. |
+| Already flying above target | The already-flying entry branch selects NORMAL immediately. |
 
-This is the interval of primary operational interest: the firmware is commanding a takeoff and the log can be used to evaluate how the aircraft responded.
+Crossing `TKOFF_LVL_ALT` or the target distance while course is not yet locked
+can update the target bearing/course; that update is not independently a
+completion event. The actual completion test is the altitude-or-distance test
+above.
 
-The pitch logic is not simply a fixed mission-pitch command. For hand launch, `TKOFF_ROTATE_SPD` is normally zero, after which the takeoff pitch path establishes a minimum takeoff pitch and, when an airspeed sensor is in use, allows normal pitch calculation subject to that minimum. Plane 4.7.1 also reduces pitch demand when roll error becomes large under stall-prevention logic, specifically to improve robustness of hand launches and cross-wind recovery.
+`FlightStage::TAKEOFF -> NORMAL`, when proven to have occurred under continuing
+TAKEOFF-mode ownership rather than as a side effect of mode exit, is the
+firmware definition of **automatic takeoff-control completion** for this entry
+context. It is not a derived “stable climb” event.
 
-This makes demanded-versus-achieved pitch and roll important paired observations rather than isolated attitude values.
+### 8.3 Behavior after inner completion
 
-### 4.5 Firmware completion
+While stage is TAKEOFF, the takeoff-specific controllers above run. Once stage
+is NORMAL, `ModeTakeoff::update()` auto-enables the applicable fences once,
+uses ordinary navigation roll/pitch/throttle calculation, handles a deferred
+long failsafe, and `navigate()` continues loiter navigation. Mode 13 remains
+the outer owner until an actual mode transition.
 
-`Plane::verify_takeoff()` completes `NAV_TAKEOFF` when adjusted relative altitude exceeds the mission takeoff altitude, or when the configured pitch-level-off timeout path completes. Firmware emits `Takeoff complete at ...m`, sets `takeoff_complete`, releases takeoff course-hold state, and returns `true` so the mission can advance.
+## 9. `STAT` evidence and timestamp limits
 
-**Therefore `Takeoff complete` means mission-command completion, not physical liftoff and not an analytical declaration of stable climb.** If a future stable-climb metric is wanted, it must remain a separately derived concept with its own definition and ownership rules.
-
-### 4.6 Post-trigger timeout
-
-`TKOFF_TIMEOUT` creates an explicit abnormal termination path. If enabled, and GPS groundspeed has not reached 4 m/s within the configured time after `Triggered AUTO`, Plane emits a takeoff-timeout message, disarms using the `TAKEOFFTIMEOUT` arming method, and `verify_takeoff()` resets the mission.
-
-This is qualitatively different from the pre-trigger `Timeout AUTO` retry event.
-
-| Observed text / event | Stage | Meaning |
-|---|---|---|
-| `Armed AUTO` | Pre-trigger | Acceleration/event logic armed the launch timer; not launch completion. |
-| `Timeout AUTO` | Pre-trigger | Current trigger candidate expired and detector reset; same execution may continue. |
-| `Bad launch AUTO` | Pre-trigger | Attitude gate rejected candidate; same execution may continue. |
-| `Triggered AUTO` | Trigger | Firmware accepted launch conditions. |
-| Takeoff timeout `<4m/s` | Post-trigger | Configured abnormal takeoff termination; may disarm/reset mission. |
-| `Takeoff complete` | Post-trigger | Normal `NAV_TAKEOFF` verifier completion. |
-
-### 4.7 Mode change away from AUTO
-
-Mode exit is a hard analysis boundary. AUTO no longer owns the takeoff sequence after the mode change, so later aircraft behaviour must not be attributed to the closed takeoff execution.
-
-For the first APT model:
+Stable 4.7.0 defines `STAT` fields:
 
 ```text
-AUTO NAV_TAKEOFF active
-    -> mode changes away from AUTO
-    -> terminate execution at mode-change timestamp
-    -> ignore all later observations for this execution
+TimeUS,isFlying,isFlyProb,Armed,Safety,Crash,Still,Stage,Hit,Sup
 ```
 
-If AUTO is later re-entered and `NAV_TAKEOFF` runs again, APT creates a new execution window. No later samples may extend or repair the old one.
+For this contract:
 
-## 5. Evidence classification
+- `Stage=1` is `FlightStage::TAKEOFF`;
+- `Stage=3` is `FlightStage::NORMAL`;
+- `Sup=1` means throttle suppression is active;
+- `Sup=0` means it is not active at the logged sample.
 
-The takeoff model must preserve the difference between firmware events, logged measurements, controller outputs, and derived metrics.
+`Log_Write_Status()` copies the current firmware stage and suppression flag.
+It is called by the 5 Hz `update_is_flying_5Hz()` task and immediately after
+`set_flight_stage()` changes the stage. The immediate write makes STAT strong
+state-transition evidence when retained, but the logged `TimeUS` is taken
+after the in-memory assignment, and a record can be absent or dropped. The
+first retained Stage=3 sample proves NORMAL state **by that sample**; it must
+not be described as the exact internal transition instruction's microsecond.
 
-| Observation | Classification | What it can establish |
+Three qualifications are essential:
+
+1. pre-trigger Stage 1/3 alternation is expected from the two firmware update
+   paths described above;
+2. a Stage=3 observation immediately associated with `MODE!=13` may have been
+   generated by new-mode entry, so it does not independently prove inner
+   completion;
+3. if the relevant STAT record is absent, inner completion time remains
+   unavailable rather than being invented from altitude or distance telemetry.
+
+Altitude/distance can later corroborate or explain the transition, but using
+them to manufacture a missing firmware stage event would be a separate,
+explicitly derived rule.
+
+`STAT.isFlying` is a probabilistic estimator, not physical liftoff. No normal
+DataFlash field directly exposes `rotation_complete`, hand/launcher release,
+wheel liftoff, or thrust.
+
+## 10. Already-flying TAKEOFF-mode entry
+
+Before normal fresh setup, TAKEOFF mode checks whether Plane already considers
+itself flying, has done so for more than 10 seconds, and has groundspeed above
+3 m/s.
+
+- If already at or above `TKOFF_ALT`, firmware emits `Above TKOFF alt -
+  loitering`, sets the loiter target to current location, completes setup, and
+  selects NORMAL stage.
+- If below `TKOFF_ALT`, it emits `Climbing to TKOFF alt then loitering`, builds
+  a climb/loiter target from current position, completes setup, and selects
+  TAKEOFF stage.
+
+Separately, `suppress_throttle()` has an already-flying escape that can release
+suppression without `Triggered AUTO`. It requires the aircraft to be considered
+flying for more than the larger of five seconds or `TKOFF_THR_DELAY + 2 s`, to
+be more than 5 m above the adjusted reference, to have absolute pitch below
+30 degrees, and to have GPS movement (at least 2D fix and 5 m/s groundspeed).
+Therefore `Triggered AUTO` is not mandatory evidence for the already-flying
+path.
+
+This is an edge case for entering Mode 13 in flight, not a physical launch
+method. It must be represented separately and must not redefine the normal
+fresh-arm/surface-or-non-surface execution model.
+
+## 11. AUTO mission `NAV_TAKEOFF` as a separate context
+
+AUTO mission takeoff shares the following with TAKEOFF mode:
+
+- `suppress_throttle()` and `auto_takeoff_check()`;
+- the `Armed AUTO`, `Timeout AUTO`, `Bad launch AUTO`, and `Triggered AUTO`
+  messages;
+- takeoff roll, pitch, throttle, rotation, tail-hold, roll-limit, suppression,
+  and post-trigger timeout machinery;
+- relevant shared takeoff parameters.
+
+Its ownership and completion differ:
+
+| Concern | TAKEOFF mode | AUTO mission `NAV_TAKEOFF` |
 |---|---|---|
-| Executed `MISE NAV_TAKEOFF` | Firmware-originated event | Mission takeoff command execution began, when logging is present. |
-| `Armed AUTO` message | Firmware-originated observation | Launch acceleration/event logic armed at an observed reporting point. |
-| `Bad launch AUTO` message | Firmware-originated event | Attitude gate rejected a trigger candidate. |
-| `Timeout AUTO` message | Firmware-originated event | Pre-trigger candidate expired/reset. |
-| `Triggered AUTO` message | Strong firmware event | `auto_takeoff_check()` accepted launch conditions. |
-| `STAT.Stage` / `STAT.Sup` | Firmware state sample | Flight-stage and throttle-suppression context at sample time. |
-| `ATT` | Logged target + attitude | Desired and achieved aircraft attitude. |
-| `CTUN` | Controller/state sample | Navigation attitude targets, throttle values and related control context. |
-| `ARSP` | Sensor-derived measurement | Airspeed-system observation when available and valid. |
-| `GPS` | Sensor-derived measurement | Position, track and groundspeed. |
-| `BARO` / altitude source | Sensor/state measurement | Altitude evidence subject to explicit source choice. |
-| `AETR` / `RCOU` | Command/output | Surface/throttle outputs; not aerodynamic response or thrust. |
-| `Takeoff timeout...` | Firmware event | Explicit post-trigger timeout path. |
-| `Takeoff complete...` | Strong firmware event | Firmware verifier completed `NAV_TAKEOFF`. |
-| Physical hand release | Unavailable directly | Outside initial analysis scope. |
-| Physical liftoff | Unavailable directly | No direct ordinary DataFlash event. |
-| Actual propeller thrust | Unavailable normally | Throttle/output does not prove physical thrust. |
-| Pitch tracking error | Derived | Demand minus achieved pitch under defined signal conventions. |
-| Distance / altitude gain / extrema | Derived | Requires explicit source and ownership window. |
+| Direct start evidence | Successful `MODE=13` | Runtime `MISE CId=22` under established AUTO ownership, when retained |
+| Target altitude/pitch | `TKOFF_ALT` and `TKOFF_LVL_PITCH` | Mission item altitude and `p1` pitch; nonpositive pitch becomes 4 degrees |
+| Course/target message | `Takeoff to ...` after suppression release and >5 m/s | `Holding course ...` may establish mission course |
+| Normal completion | TAKEOFF stage becomes NORMAL at altitude-minus-2 m or distance; mode continues | `verify_takeoff()` exceeds mission altitude or completes pitch-level-off timeout, emits `Takeoff complete`, and allows mission advance |
+| Outer ownership end | First transition away from Mode 13 | First loss of AUTO/NAV_TAKEOFF ownership: mission advance/restart, mode exit, applicable timeout/disarm, or log end |
 
-`STAT.is_flying` is a firmware estimator, not a physical liftoff switch. It may be useful supporting context but must not be renamed as release/liftoff time.
+Stored `CMD` mission definitions are configuration, not runtime execution
+evidence. The five current logs have no `MISE NAV_TAKEOFF`, so this AUTO entry
+context does not describe their 13 launches.
 
-## 6. Controller demand and response signals
+This document does not prescribe whether later code should use shared base
+classes or separate detectors. It only records which firmware semantics are
+common and which ownership rules are not.
 
-### 6.1 Pitch and roll
+## 12. Parameter classification
 
-For the first APT implementation, `ATT` should be the primary signal family for demanded-versus-achieved attitude because it provides final desired attitude and achieved attitude on a common log message.
+All interpretation must use APT `ParameterHistory.value_at(name, time_us)` so
+later parameter changes cannot rewrite earlier behavior. This table classifies
+firmware applicability; it does not recommend values.
 
-Recommended interpretation:
-
-- `ATT.DesPitch` versus `ATT.Pitch` for pitch demand/response;
-- `ATT.DesRoll` versus `ATT.Roll` for roll demand/response;
-- `CTUN` as a controller cross-check when investigating takeoff control behaviour;
-- `PIDP` / `PIDR` only when deeper control-loop diagnosis is required.
-
-Any metric comparing demand and response must state its sample-alignment method and must not pair samples across the execution boundary.
-
-### 6.2 Throttle
-
-The analysis may use throttle demand/output messages appropriate to the specific log and logging configuration. These are controller/output observations. They do not prove actual propeller thrust.
-
-If RPM or ESC telemetry exists it can add evidence, but even RPM is not direct thrust measurement. Metric names should therefore describe command/output behaviour rather than claim physical thrust.
-
-### 6.3 Airspeed, groundspeed and wind
-
-Airspeed during the takeoff window is operationally important even though it is not a launch-trigger input. Groundspeed and airspeed should be presented independently.
-
-Their scalar difference is not generally wind. Wind should only be reported from a defensible logged estimate or an explicit vector calculation with defined validity conditions.
-
-## 7. Parameter context
-
-Takeoff interpretation must use event-time parameter values from the existing APT `ParameterHistory`. Final parameter values in a log must never be used to explain an earlier takeoff if a parameter was changed later.
-
-Parameter lookup itself follows causality: the effective value at time `t` is the most recent applicable parameter state at or before `t` according to established `ParameterHistory` semantics; later parameter changes cannot alter earlier interpretation.
-
-| Parameter / input | Role in Plane 4.7.x takeoff analysis |
-|---|---|
-| `NAV_TAKEOFF p1` | Mission takeoff pitch; firmware substitutes 4 degrees when `<= 0`. |
-| `NAV_TAKEOFF altitude` | Normal firmware completion altitude target. |
-| `TKOFF_THR_MINACC` | Forward acceleration threshold for launch-check arming; zero disables this test. |
-| `TKOFF_ACCEL_CNT` | Number/pattern of acceleration events required. |
-| `TKOFF_THR_DELAY` | Delay between acceleration arming and final groundspeed acceptance. |
-| `TKOFF_THR_MINSPD` | GPS groundspeed threshold used before throttle is unsuppressed; zero disables speed requirement. |
-| `TKOFF_TIMEOUT` | Post-trigger timeout if 4 m/s GPS groundspeed is not achieved. |
-| `TKOFF_THR_MAX` / `TKOFF_THR_MAX_T` | Takeoff maximum-throttle limit and forced-maximum interval. |
-| `TKOFF_THR_MIN` / `TKOFF_OPTIONS` | Takeoff throttle range behaviour. |
-| `TKOFF_THR_IDLE` | Idle throttle before takeoff. |
-| `TKOFF_THR_SLEW` | Takeoff throttle slew behaviour. |
-| `TKOFF_ROTATE_SPD` | Ground-takeoff rotation path; zero is the hand-launch configuration. |
-| `TKOFF_PLIM_SEC` | Pitch-minimum level-off reduction and timeout path near takeoff target altitude. |
-| `TKOFF_LVL_ALT` / `LEVEL_ROLL_LIMIT` | Takeoff roll limiting with altitude. |
-| Flight option disabling takeoff attitude check | Changes whether pitch/roll can reject a launch candidate. |
-
-## 8. Initial APT execution-window model
-
-The first implementation should remain narrow. It should model one firmware-owned AUTO `NAV_TAKEOFF` execution and attach observations to that window. It should not invent physical launch phases before the evidence requires them.
-
-| Field / concept | Initial semantics |
-|---|---|
-| `command_start` | Timestamp and mission identity for executed `NAV_TAKEOFF`. |
-| `parameter_context` | Relevant `ParameterHistory` values at command start and event/sample times. |
-| `pretrigger_events` | Observed `Armed AUTO` / `Timeout AUTO` / `Bad launch AUTO` / rudder-wait evidence; explicitly incomplete if logging omits messages. |
-| `launch_trigger` | `Triggered AUTO` timestamp when directly observed. |
-| `post_trigger_response` | Timeseries evidence from trigger until execution termination. |
-| `termination_time` | First authoritative end of the firmware-owned execution window. |
-| `termination_reason` | `completed` / `mode_change` / `takeoff_timeout` / `disarm` / `log_end` / other evidence-based reason. |
-| `completion` | Firmware `NAV_TAKEOFF` completion evidence where present. |
-| `timeseries` | ATT, CTUN, ARSP, GPS, altitude and throttle/output sources selected by explicit rules. |
-| `derived_metrics` | Only metrics with explicit definitions, windows, source fields and validity conditions. |
-
-**No `physical_release` field is required.** The operational question is how the firmware behaves while it owns the takeoff sequence and especially after it declares `Triggered AUTO`. Inferring the instant the aircraft left the launcher’s hand would add uncertainty without improving that evaluation.
-
-### 8.1 Execution finalization rule
-
-An execution may be finalized as soon as its first authoritative termination is known. After finalization:
-
-- its time bounds do not move;
-- its termination reason does not change because of later samples;
-- its derived metrics cannot consume later samples;
-- a later AUTO entry creates a new execution object.
-
-This is the key guard against retroactive causality.
-
-## 9. Candidate first metrics
-
-The first useful metrics should be limited to quantities with clean event and ownership semantics. This is a research target, not yet an implementation requirement.
-
-| Metric | Proposed window / anchor | Status |
+| Parameter/input | Classification | Firmware role |
 |---|---|---|
-| Command duration | `command_start -> termination_time` | Straightforward once boundaries are resolved |
-| Trigger-to-termination time | `launch_trigger -> termination_time` | Straightforward when trigger exists |
-| Airspeed at trigger / termination | Explicit event-sampling rule using valid ARSP observation | Measured/sampled; validity required |
-| Groundspeed at trigger / termination | Explicit event-sampling rule using GPS observation | Measured/sampled |
-| Pitch demand / achieved at trigger | ATT desired/actual pitch near event | Measured/sampled |
-| Maximum pitch tracking error | Post-trigger firmware-owned window only | Derived; define sample alignment |
-| Maximum absolute roll / roll error | Post-trigger firmware-owned window only | Derived; distinguish attitude from tracking error |
-| Minimum altitude after trigger | `launch_trigger -> termination_time` | Derived; choose altitude source explicitly |
-| Altitude gain to termination | Event-defined altitude difference | Derived |
-| Throttle rise after trigger | `launch_trigger -> defined output threshold`, inside window | Derived from command/output, not thrust |
-| Minimum airspeed after trigger | Trigger to termination or narrower validated critical window | Derived; no safety score yet |
+| `TKOFF_THR_MINACC` | Shared launch detector; especially non-surface configuration | Longitudinal acceleration gate; zero disables it. |
+| `TKOFF_ACCEL_CNT` | Shared launch detector; especially non-surface configuration | Count/polarity sequence of acceleration events used to arm the timer. |
+| `TKOFF_THR_DELAY` | Shared launch detector; especially non-surface configuration | Delay in deciseconds before speed acceptance; hand/catapult/bungee can use it for clearance. |
+| `TKOFF_THR_MINSPD` | Shared launch detector | GPS groundspeed gate for suppression release; zero disables the speed threshold. |
+| takeoff-attitude-check flight option | Shared launch detector | Enables/disables pitch/roll rejection. |
+| `TKOFF_TIMEOUT` | Shared by TAKEOFF mode and AUTO mission | Post-trigger failure to reach 4 m/s can emit timeout and disarm. |
+| `TKOFF_THR_IDLE` | Shared by both entry contexts | Optional throttle output while TAKEOFF stage remains suppressed. |
+| `TKOFF_THR_MIN`, `TKOFF_THR_MAX`, `TKOFF_OPTIONS` | Shared by both entry contexts | Takeoff throttle limits/range behavior. |
+| `TKOFF_THR_MAX_T` | Shared by both entry contexts | Duration for forcing the takeoff maximum after its timer starts. |
+| `TKOFF_THR_SLEW` | Shared by both entry contexts; often material to rolling performance | Takeoff throttle slew; zero uses normal slew and -1 disables limiting. |
+| `TKOFF_ROTATE_SPD` | Shared controller; rolling/surface behavior | Enables airspeed-based ground-pitch/rotation path when nonzero. |
+| `TKOFF_GND_PITCH` | Shared controller; rolling/surface behavior | Pitch demand below rotate speed. Despite its `TKOFF_` mode group location, shared `takeoff_calc_pitch()` uses it in both contexts. |
+| `TKOFF_TDRAG_ELEV`, `TKOFF_TDRAG_SPD1` | Shared rolling/surface behavior | Tail hold/wheel-load behavior before the configured airspeed. |
+| `GROUND_STEER_ALT`, `GROUND_STEER_DPS` and steering configuration | Shared rolling/surface behavior | Availability and response of ground steering; not a liftoff detector. |
+| `TKOFF_PLIM_SEC` | Shared controller, with context-specific completion effect | Reduces pitch minimum near target and supplies a level-off timeout. TAKEOFF mode selects NORMAL; AUTO verification completes the mission item. |
+| `TKOFF_LVL_ALT`, `LEVEL_ROLL_LIMIT`, normal roll limit | Shared by both entry contexts | Level/altitude-scaled roll restriction during automatic takeoff. |
+| `TKOFF_ALT` | TAKEOFF-mode target/completion; also used by the shared roll limiter | Mode target altitude and one completion threshold; also caps the altitude over which `takeoff_calc_roll()` transitions from `LEVEL_ROLL_LIMIT` toward the normal roll limit in both entry contexts. |
+| `TKOFF_DIST` | TAKEOFF-mode-specific | Mode loiter distance, course/target placement, and one completion threshold. |
+| `TKOFF_LVL_PITCH` | TAKEOFF-mode-specific | Mode takeoff pitch stored in `auto_state.takeoff_pitch_cd`. |
+| Mission `NAV_TAKEOFF` altitude and `p1` | AUTO-mission-specific | Mission completion altitude and takeoff pitch. |
 
-Deferred until separately justified: physical release time, liftoff time, stable-climb time, wind-effect scoring, airspeed safety margin, and any good/bad assessment.
+Physical launch type must not be inferred solely from this table. For example,
+an acceleration-gated delayed configuration can serve hand, rail, or bungee
+launches.
 
-No persistence-based metric should be added without an explicit rule that its confirmation interval must complete before the execution terminates.
+## 13. Evidence and ownership contract
 
-## 10. Synthetic cases required before real-log validation
+APT must establish the entry context and outer owner before interpreting
+events or extracting future metrics:
 
-Synthetic tests should freeze ownership, causality and event semantics before expectations are taken from the Ranger logs.
+```text
+establish outer ownership
+  -> identify firmware events and stage/suppression state
+  -> establish a defensible inner response interval
+  -> select valid observations within that interval
+  -> calculate explicitly defined derived metrics
+```
 
-At minimum:
+### 13.1 Direct versus derived evidence
 
-1. Normal `NAV_TAKEOFF` command start -> `Triggered AUTO` -> `Takeoff complete`.
-2. Pre-trigger acceleration arm followed by `Timeout AUTO`, then a successful trigger within the same command execution.
-3. Bad-launch attitude rejection followed by a later successful trigger.
-4. Command starts but mode changes away from AUTO before `Triggered AUTO`.
-5. Mode changes away from AUTO after `Triggered AUTO` but before firmware completion.
-6. AUTO is later re-entered and `NAV_TAKEOFF` runs again; this must create a new execution window.
-7. A post-window sample would satisfy a candidate persistence rule; test must prove it is rejected.
-8. A post-window sample is temporally nearest to termination; test must prove event sampling does not cross the hard boundary unless the sampling contract explicitly allows it.
-9. `TKOFF_TIMEOUT` causes post-trigger disarm and mission reset.
-10. Disarm for another reason while `NAV_TAKEOFF` remains active.
-11. Takeoff completion is observed but `Triggered AUTO` text is missing from the log.
-12. Log ends during an active takeoff execution; result remains incomplete rather than inferred.
-13. Parameter changes between separate takeoff executions in one log; each execution receives event-time values.
-14. Later observations contradict or extend a finalized execution; test must prove they cannot rewrite its bounds, termination, or metrics.
-15. Multiple real-style hand launches in one log separated by disarm/re-arm create independent execution windows.
-16. Continuously armed repeated `NAV_TAKEOFF` execution is handled without corrupting ownership, but remains an edge case rather than the normal operational model.
+| Observation | Classification | Defensible meaning |
+|---|---|---|
+| `MODE=13` | Firmware event | Successful TAKEOFF-mode entry / outer start. |
+| `MODE!=13` following Mode 13 | Firmware event | Outer ownership ended. |
+| Runtime `MISE NAV_TAKEOFF` | Firmware event | AUTO mission item began, subject to established AUTO ownership. |
+| `Armed AUTO`, `Timeout AUTO`, `Bad launch AUTO` | Firmware observations | Shared launch-check arming/retry state. |
+| `Triggered AUTO` | Strong firmware event | Shared launch check accepted configured gates. |
+| `Takeoff to ...` | Firmware observation | TAKEOFF-mode course/target setup finalized after suppression release and sufficient groundspeed. |
+| `STAT.Stage`, `STAT.Sup` | Firmware state observations | Stage and suppression state by the sample, with the qualifications in section 9. |
+| `Takeoff complete ...` | Strong firmware event | AUTO mission verifier completed `NAV_TAKEOFF`; not TAKEOFF-mode completion. |
+| ATT/CTUN/GPS/ARSP/BARO | Logged measurements/state | Aircraft/controller context subject to source validity and owned sampling. |
+| AETR/RCOU/servo output | Command/output | Output behavior, not aerodynamic response or thrust. |
+| Physical release, rotation, liftoff, thrust | Not directly available | Must not be asserted by this initial model. |
 
-## 11. Real-log validation plan
+### 13.2 Finalization rules
 
-Only after the synthetic semantics pass should the first Li-ion flight log with multiple AUTO takeoffs be used. The objective of the first real-log pass is not to tune thresholds; it is to verify that source-defined ownership windows and firmware events can be recovered from ordinary DataFlash evidence without special-casing that log.
+- The first authoritative outer termination closes the execution.
+- Mode exit is a hard boundary for TAKEOFF mode.
+- Re-entry creates a new execution; windows are never stitched.
+- Events at a shared boundary require source-supported ownership; timestamp
+  equality alone supplies no order.
+- A sample after termination cannot be borrowed for nearest-event lookup or to
+  complete persistence.
+- Log end is inclusive of the final retained observation but is a censored
+  termination, not normal completion.
+- Missing trigger, STAT, completion, or output evidence remains missing.
+- All event-time parameter evidence uses absolute BIN `TimeUS` microseconds.
 
-1. Enumerate AUTO `NAV_TAKEOFF` execution windows from mission/mode evidence.
-2. Confirm each window ends at the first authoritative completion, mode exit, timeout/disarm, or unavailable/log-end evidence.
-3. Confirm no sample after termination is consumed by that execution.
-4. Locate `Triggered AUTO` where present and inspect the transition from suppressed/pre-trigger behaviour to takeoff response.
-5. Plot ATT pitch/roll demand versus achieved response inside each firmware-owned window.
-6. Add CTUN throttle demand/output, ARSP airspeed, GPS groundspeed and altitude evidence using event-time parameters.
-7. Compare repeated takeoff executions for consistency without declaring thresholds good/bad.
-8. Record any mismatch between source-predicted state transitions and what normal DataFlash exposes; adjust evidence semantics before adding metrics.
-9. Explicitly test whether each derived metric can be finalized causally at or before the execution termination.
+## 14. Stable and beta compatibility findings
 
-## 12. What the source audit establishes — and what it does not
+### 14.1 Plane-4.7.0 to Plane-4.7.1
 
-| Established from Plane 4.7.x source / project causality rules | Not established / not assumed |
-|---|---|
-| `NAV_TAKEOFF` has a distinct command-init path and verifier. | Physical hand release time. |
-| Launch detection can depend on acceleration, delay, attitude and GPS groundspeed. | Physical liftoff time. |
-| Airspeed is not a launch-trigger input. | Actual thrust from throttle output alone. |
-| `Triggered AUTO` is a strong firmware event and starts post-trigger timeout timing. | A universal safe airspeed margin. |
-| Pre-trigger timeout/bad-attitude events reset and may retry within the same execution. | That every retry message is logged. |
-| Takeoff completion is altitude/level-off-verifier based. | That completion equals stable climb. |
-| Mode exit from AUTO ends analysis ownership. | That observations after mode exit still belong to the earlier takeoff. |
-| Re-entry to AUTO creates new analysis ownership. | That a resumed mission should be stitched to the previous window. |
-| Post-trigger `TKOFF_TIMEOUT` can disarm and reset mission. | That all takeoff failures use the same abort mechanism. |
-| First authoritative termination closes the execution. | That future samples may supersede a completed termination. |
-| Persistence confirmation must complete while the execution is active. | That post-window samples may be borrowed to finish a condition. |
-| Event-time parameter values explain event-time behaviour. | That final log parameter values explain earlier takeoffs. |
+The relevant source files listed in section 2.1 are identical between the two
+stable tags. No material change was found in:
 
-## 13. Implementation guardrails
+- TAKEOFF-mode entry or exit ownership;
+- shared launch detection and its messages;
+- rolling rotation or ground-pitch behavior;
+- throttle suppression/release;
+- TAKEOFF-stage entry or completion;
+- already-flying handling;
+- `STAT.Stage` or `STAT.Sup` logging;
+- AUTO mission takeoff behavior used by this contract.
 
-The first detector/model implementation must satisfy these rules before performance metrics are added:
+These semantics may therefore be treated as the project's audited stable
+Plane 4.7.x contract.
 
-- ownership is determined before metric extraction;
-- every execution has explicit start and termination semantics;
-- mode exit is a hard boundary;
-- the first authoritative termination wins;
-- finalized executions are immutable;
-- no observation after termination can affect the closed execution unless a specific firmware rule explicitly requires it;
-- persistence conditions must complete inside ownership;
-- missing evidence remains missing;
-- parameter lookup uses established `ParameterHistory` semantics;
-- measured, firmware-originated and derived values remain labelled separately;
-- no physical-release inference is needed;
-- no safety/good/bad judgement is encoded.
+### 14.2 Corpus beta builds
 
-These are stronger requirements than simply producing plausible takeoff windows. The implementation must be causally defensible.
+The exact relevant files at the beta4 (`571e8c7b`), beta7 (`97775f82`), and
+beta8 (`cb872be0`) commits recorded by the four beta logs were compared with
+stable 4.7.0. `mode_takeoff.cpp`, `takeoff.cpp`, `servos.cpp`, `Log.cpp`,
+`Parameters.cpp`, `mode.cpp`, `system.cpp`, and `Attitude.cpp` are identical.
+Beta7 and beta8 also have the same audited `Plane.cpp`. Beta4 differs only in
+the scheduler rate/budget for the logger periodic task (50 Hz/400 us there,
+400 Hz/300 us in stable), not in `set_flight_stage()`, stage selection,
+suppression, or launch ownership.
 
-## 14. Recommended next step
+Plane 4.7 release history also records “Throttle slew fixed during first
+takeoff” in beta2 (PR 32381). The fix ensures the slew limiter is allocated
+even if initially disabled. It can change throttle-response measurements in
+beta1 or earlier behavior, but it does not redefine Mode 13 ownership, launch
+acceptance, suppression release, rotation state, or stage completion. Every
+available beta corpus log is beta4 or later and therefore includes that fix.
 
-The next APT task should be a bounded implementation of the execution-window and event model only, backed by synthetic tests. It should not yet calculate every candidate performance metric.
+Policy remains:
 
-The first implementation should prove that APT can reliably identify:
+1. develop against stable 4.7.0 semantics;
+2. validate first against `log_0.bin`;
+3. run the same model unchanged across the four beta logs;
+4. record any demonstrated incompatibility;
+5. add no beta-specific logic otherwise.
 
-- AUTO `NAV_TAKEOFF` command start;
-- pre-trigger event observations without over-interpreting missing messages;
-- `Triggered AUTO` when available;
-- hard termination on mode change;
-- firmware completion;
-- explicit takeoff timeout/disarm;
-- new execution ownership if AUTO later resumes/re-enters;
-- event-time parameter context;
-- causal finalization with no post-window evidence leakage.
+Performance results must still retain the firmware identity. A logging-service
+or throttle-slew implementation difference can affect sampling or measured
+response without changing semantic ownership.
 
-Only after those boundaries are stable should pitch/roll tracking, airspeed/groundspeed growth, altitude behaviour and throttle-response metrics be layered onto the window.
+## 15. Required revision of the current APT prototype
 
-## 15. Source references
+The current `takeoff_execution.py`, `takeoff_execution_detector.py`, and
+synthetic tests are intentionally left unchanged by this audit. Before metric
+work, a separate implementation task must revise these assumptions:
 
-**ArduPlane Plane-4.7.1: `takeoff.cpp`**  
-https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.1/ArduPlane/takeoff.cpp  
-`auto_takeoff_check()`, `takeoff_calc_roll()`, `takeoff_calc_pitch()`, `takeoff_calc_throttle()`, `check_takeoff_timeout()`.
+- TAKEOFF-mode executions must be discoverable from Mode 13 entry/exit; they
+  must not require AUTO mode or runtime `MISE NAV_TAKEOFF`.
+- `Triggered AUTO` must be owned by the established entry context and must not
+  itself imply Mode 10.
+- the model must distinguish outer TAKEOFF-mode ownership from inner
+  TAKEOFF-stage completion;
+- `Takeoff complete` and mission advance are AUTO-mission completion evidence,
+  not TAKEOFF-mode completion evidence;
+- the normal reader must retain `STAT` before direct stage/suppression evidence
+  can be used (the current landing reader configuration does not request it);
+- pre-trigger stage alternation and mode-exit-caused Stage=NORMAL observations
+  need explicit tests;
+- rolling rotation remains controller context, not a directly logged event;
+- AUTO mission support and its strict `MISE`/AUTO ownership rules should remain
+  available as the separate context described in section 11.
 
-**ArduPlane Plane-4.7.1: `commands_logic.cpp`**  
-https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.1/ArduPlane/commands_logic.cpp  
-`do_takeoff()`, `verify_takeoff()`, mission callbacks.
+This section identifies semantic work only. It does not prescribe public APIs,
+class hierarchy, or metric implementation.
 
-**ArduPlane Plane-4.7.1: `mode_auto.cpp`**  
-https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.1/ArduPlane/mode_auto.cpp  
-AUTO entry/exit, mission stop/resume, takeoff-specific controller update path.
+## 16. Unresolved evidence limitations
 
-**AP_Mission Plane-4.7.1: `AP_Mission.cpp`**  
-https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.1/libraries/AP_Mission/AP_Mission.cpp  
-`MISE` logging, `stop()`, `resume()`, `start_or_resume()`, command re-initialisation.
+- DataFlash has no direct physical release, launcher-release, rotation,
+  liftoff, or thrust event for this conventional Plane path.
+- `rotation_complete` is internal and absent from `STAT`.
+- `Triggered AUTO` can be missing because of logging/reporting loss; absence is
+  not proof that suppression never ended.
+- `STAT` records can be absent or dropped, and their timestamp is an observed
+  log time rather than the exact internal assignment instruction.
+- Pre-trigger Stage 1/3 alternation prevents naive “first Stage=TAKEOFF” start
+  detection.
+- A Stage=NORMAL log emitted during a mode transition can be mistaken for
+  inner completion unless the mode-transition call order is respected.
+- Physical launch class cannot be recovered uniquely from parameters.
+- The current real-log corpus has no AUTO mission `NAV_TAKEOFF`, no asserted
+  rolling takeoff reference, and no direct evidence for validating physical
+  rotation semantics.
 
-**ArduPlane Plane-4.7.1: `Log.cpp`**  
-https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.1/ArduPlane/Log.cpp  
-CTUN, STAT and AETR definitions.
+These limitations do not block a narrow TAKEOFF-mode ownership/stage model.
+They do constrain event naming and timing precision.
 
-**AP_AHRS log structure**  
-https://github.com/ArduPilot/ardupilot/blob/master/libraries/AP_AHRS/LogStructure.h  
-ATT desired/achieved attitude fields.
+## 17. Source references
 
-*Research note: source semantics are pinned to Plane-4.7.1 for this audit. Before migrating the model to materially different ArduPlane versions, re-check the relevant functions rather than assuming the state machine is unchanged.*
+Primary Plane-4.7.0 sources:
+
+- [`mode_takeoff.cpp`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/ArduPlane/mode_takeoff.cpp): mode parameters, entry, setup, `Takeoff to ...`, stage completion, post-completion behavior, already-flying path.
+- [`takeoff.cpp`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/ArduPlane/takeoff.cpp): shared launch detector, roll/pitch/throttle control, rotation, tail hold, level-off and post-trigger timeouts.
+- [`servos.cpp`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/ArduPlane/servos.cpp): throttle slew, suppression, release, idle/output handling.
+- [`mode.cpp`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/ArduPlane/mode.cpp) and [`system.cpp`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/ArduPlane/system.cpp): generic mode entry/exit and MODE logging order.
+- [`Plane.cpp`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/ArduPlane/Plane.cpp): scheduler, control-mode update, flight-stage selection, immediate STAT write on stage changes.
+- [`Log.cpp`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/ArduPlane/Log.cpp): STAT structure and field definitions.
+- [`AP_FixedWing.h`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/libraries/AP_Vehicle/AP_FixedWing.h): numeric flight-stage definitions.
+- [`Attitude.cpp`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/ArduPlane/Attitude.cpp): conventional ground steering behavior.
+- [`Parameters.cpp`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/ArduPlane/Parameters.cpp): launch, rotation, throttle, taildragger, roll, and timeout parameter semantics.
+- [`commands_logic.cpp`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/ArduPlane/commands_logic.cpp) and [`mode_auto.cpp`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/ArduPlane/mode_auto.cpp): separate AUTO mission `NAV_TAKEOFF` setup, control, and verification.
+- [`ReleaseNotes.txt`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/ArduPlane/ReleaseNotes.txt): bounded beta compatibility history, including the beta2 first-takeoff throttle-slew fix.
+- [PR 32381](https://github.com/ArduPilot/ardupilot/pull/32381): scope and mechanism of the beta2 first-takeoff slew-limiter allocation fix.
+
+Stable compatibility reference:
+
+- [Plane-4.7.1 tag](https://github.com/ArduPilot/ardupilot/tree/Plane-4.7.1)
+
+Before applying this contract to another firmware family, re-audit these
+functions rather than extrapolating from current `master`.
