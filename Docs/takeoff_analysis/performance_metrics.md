@@ -716,7 +716,50 @@ and
 [`suppress_throttle()`, `apply_throttle_limits()`, `set_throttle()`, and
 `throttle_slew_limit()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/servos.cpp).
 
-### 16.6 Firmware-defined throttle target
+### 16.6 Propulsion response to configured minimum airspeed
+
+When both suppression release and the first owned CTUN observation satisfying
+event-time `As >= AIRSPEED_MIN` are available, define the propulsion-build
+interval as the inclusive observed interval between those two timestamps. Do
+not substitute the trigger or another boundary when suppression-release
+evidence is missing. The interval must remain inside the owning TAKEOFF
+execution and must not extend beyond the first qualifying airspeed row.
+
+Within that interval, report the maximum finite observed `CTUN.ThO` as
+**peak throttle**. If the maximum occurs more than once, its source timestamp
+is the earliest matching CTUN sample. **Time to peak throttle** is the elapsed
+time from observed suppression release to that first maximum sample. It is an
+observed sample-to-sample duration with no interpolation, not an observed slew
+rate and not a comparison with an idealized ramp.
+
+**Time at peak throttle** is available only when every finite `CTUN.ThO`
+observation from the first peak sample through the qualifying AIRSPEED_MIN
+sample equals that peak exactly, including the qualifying sample itself. It is
+the duration from the first peak timestamp to the AIRSPEED_MIN timestamp,
+without interpolation or tolerance. A valid below-peak observation breaks the
+continuous hold; separated peak periods are not summed. This duration is
+distinct from **time to peak throttle**, which starts at suppression release.
+
+Report **throttle at AIRSPEED_MIN** from the `ThO` field of the same CTUN row
+that established the first qualifying airspeed; an invalid same-row value is
+unavailable and must not be replaced by a nearby sample. These values are
+normalized throttle-function commands in percent, not electrical power, motor
+output, or thrust. The trigger-time `TKOFF_THR_SLEW` parameter remains separate
+configuration context in `%/s`; no measured slew rate is derived from it.
+
+`BAT.Curr` provides electrical battery current in amperes and `BAT.Inst`
+identifies the monitor instance. Use finite current from primary instance zero
+only and report the highest observed value in the same inclusive interval as
+**peak battery current before AIRSPEED_MIN**. Missing instance-zero evidence is
+unavailable; another instance must not silently replace it. Battery-current
+absence does not invalidate otherwise usable throttle evidence. This metric
+does not infer watts, efficiency, voltage sag, or physical thrust.
+
+All selected CTUN and BAT values retain their source `TimeUS` internally. The
+normal report presents values and trigger-relative timing only, without
+absolute timestamps or interpolation.
+
+### 16.7 Firmware-defined throttle target
 
 A precise scalar is possible only for a qualified configuration. First derive
 the configured takeoff maximum:
@@ -741,7 +784,7 @@ make the effective bound dynamic. In those cases, retain the existing
 threshold-free `ThD`/`ThO` command context or expose their co-sampled trajectory
 rather than inventing a 50%, 90%, or static-parameter target.
 
-### 16.7 Airspeed context and next-metric disposition
+### 16.8 Airspeed context and next-metric disposition
 
 `AIRSPEED_MIN=11 m/s` is the controller's configured minimum airspeed context,
 not a measured stall speed and not proof of margin to stall.
@@ -761,7 +804,7 @@ evidence.
 - controller-airspeed delta from event-time `AIRSPEED_MIN`, explicitly named
   configured-minimum airspeed delta and never stall margin;
 - time to the effective forced takeoff maximum only when the source conditions
-  in section 16.6 prove a fixed target and dynamic modifiers are excluded or
+  in section 16.7 prove a fixed target and dynamic modifiers are excluded or
   represented.
 
 **Defer:**

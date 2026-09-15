@@ -199,6 +199,28 @@ class FirstObservedConfiguredMinimumAirspeed:
 
 
 @dataclass(frozen=True, slots=True)
+class TimedObservedValue:
+    """One finite observed value with its retained source timestamp."""
+
+    value: float
+    source_time_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class PropulsionToConfiguredMinimumAirspeed:
+    """Throttle-command and primary-battery evidence over the speed build."""
+
+    start_us: int
+    end_us: int
+    maximum_throttle_command_pct: TimedObservedValue | None
+    time_to_maximum_throttle_s: float | None
+    continuous_peak_throttle_duration_s: float | None
+    throttle_at_minimum_airspeed_pct: TimedObservedValue | None
+    peak_battery_current_a: TimedObservedValue | None
+    battery_instance: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class TakeoffConfigurationValue:
     """One launch-time parameter value and its display metadata."""
 
@@ -258,6 +280,9 @@ class TakeoffPerformanceAnalysis:
     )
     fixed_throttle_target_rise: FixedThrottleTargetRise
     first_observed_configured_minimum_airspeed: FirstObservedConfiguredMinimumAirspeed
+    propulsion_to_configured_minimum_airspeed: (
+        PropulsionToConfiguredMinimumAirspeed | None
+    )
     configuration: TakeoffConfigurationContext
     airspeed_estimate_types: tuple[int, ...]
 
@@ -382,6 +407,10 @@ class TakeoffPerformanceProcessor:
         maximum_throttle_pct, maximum_throttle_time_us = self._maximum_throttle(
             launch_response
         )
+        first_minimum_airspeed = self._first_observed_configured_minimum_airspeed(
+            trigger,
+            control_interval,
+        )
 
         phase_timings = TakeoffPhaseTimings(
             trigger_time_us=trigger.time_us,
@@ -439,9 +468,11 @@ class TakeoffPerformanceProcessor:
                 unsuppressed,
                 control_interval,
             ),
-            first_observed_configured_minimum_airspeed=(
-                self._first_observed_configured_minimum_airspeed(
-                    trigger,
+            first_observed_configured_minimum_airspeed=first_minimum_airspeed,
+            propulsion_to_configured_minimum_airspeed=(
+                self._propulsion_to_configured_minimum_airspeed(
+                    unsuppressed,
+                    first_minimum_airspeed,
                     control_interval,
                 )
             ),
@@ -808,6 +839,128 @@ class TakeoffPerformanceProcessor:
             None,
             interval.status,
         )
+
+    def _propulsion_to_configured_minimum_airspeed(
+        self,
+        unsuppressed: TakeoffExecutionEvent | None,
+        first_minimum: FirstObservedConfiguredMinimumAirspeed,
+        interval: TakeoffControlInterval | None,
+    ) -> PropulsionToConfiguredMinimumAirspeed | None:
+        """Measure observed command/current from suppression release to speed."""
+        end_us = first_minimum.observation_time_us
+        if (
+            unsuppressed is None
+            or not self._event_is_owned(unsuppressed)
+            or interval is None
+            or first_minimum.status is not ConfiguredMinimumAirspeedStatus.OBSERVED
+            or end_us is None
+            or not interval.start_us <= unsuppressed.time_us <= end_us
+            or end_us >= interval.end_us
+        ):
+            return None
+
+        qualifying_row = self._configured_minimum_airspeed_row(
+            first_minimum,
+            interval,
+        )
+        if qualifying_row is None:
+            return None
+
+        start_us = unsuppressed.time_us
+        throttle_candidates = []
+        for telemetry in self._rows("CTUN"):
+            if not start_us <= telemetry.time_us <= end_us:
+                continue
+            throttle = self._finite_float(telemetry.row.get("ThO"))
+            if throttle is not None:
+                throttle_candidates.append((telemetry, throttle))
+        maximum_throttle = None
+        if throttle_candidates:
+            maximum_value = max(value for _, value in throttle_candidates)
+            maximum_throttle = next(
+                candidate
+                for candidate in throttle_candidates
+                if candidate[1] == maximum_value
+            )
+
+        throttle_at_minimum = self._finite_float(qualifying_row.row.get("ThO"))
+        continuous_peak_duration_s = None
+        if maximum_throttle is not None and throttle_at_minimum is not None:
+            peak_time_us = maximum_throttle[0].time_us
+            peak_value = maximum_throttle[1]
+            if throttle_at_minimum == peak_value and all(
+                throttle == peak_value
+                for telemetry, throttle in throttle_candidates
+                if peak_time_us <= telemetry.time_us <= end_us
+            ):
+                continuous_peak_duration_s = (end_us - peak_time_us) / 1_000_000
+        current_candidates = []
+        for telemetry in self._rows("BAT"):
+            if not start_us <= telemetry.time_us <= end_us:
+                continue
+            if self._integer(telemetry.row.get("Inst")) != 0:
+                continue
+            current = self._finite_float(telemetry.row.get("Curr"))
+            if current is not None:
+                current_candidates.append((telemetry, current))
+        peak_current = (
+            max(current_candidates, key=lambda item: item[1])
+            if current_candidates
+            else None
+        )
+
+        return PropulsionToConfiguredMinimumAirspeed(
+            start_us=start_us,
+            end_us=end_us,
+            maximum_throttle_command_pct=(
+                TimedObservedValue(maximum_throttle[1], maximum_throttle[0].time_us)
+                if maximum_throttle is not None
+                else None
+            ),
+            time_to_maximum_throttle_s=(
+                (maximum_throttle[0].time_us - start_us) / 1_000_000
+                if maximum_throttle is not None
+                else None
+            ),
+            continuous_peak_throttle_duration_s=continuous_peak_duration_s,
+            throttle_at_minimum_airspeed_pct=(
+                TimedObservedValue(throttle_at_minimum, qualifying_row.time_us)
+                if throttle_at_minimum is not None
+                else None
+            ),
+            peak_battery_current_a=(
+                TimedObservedValue(peak_current[1], peak_current[0].time_us)
+                if peak_current is not None
+                else None
+            ),
+        )
+
+    def _configured_minimum_airspeed_row(
+        self,
+        first_minimum: FirstObservedConfiguredMinimumAirspeed,
+        interval: TakeoffControlInterval,
+    ) -> _TelemetryRow | None:
+        """Recover the exact CTUN row that established the first observation."""
+        for telemetry in self._interval_rows(
+            "CTUN",
+            (interval.start_us, interval.end_us),
+        ):
+            if telemetry.time_us != first_minimum.observation_time_us:
+                continue
+            airspeed = self._valid_airspeed(telemetry)
+            configured_minimum = self._parameter_float(
+                "AIRSPEED_MIN",
+                telemetry.time_us,
+            )
+            if (
+                airspeed is not None
+                and configured_minimum is not None
+                and airspeed[0] == first_minimum.observed_airspeed_m_s
+                and airspeed[1] == first_minimum.estimate_type
+                and configured_minimum == first_minimum.configured_minimum_m_s
+            ):
+                return telemetry
+        return None
 
     def _configuration_context(
         self, trigger_time_us: int
@@ -1234,7 +1387,7 @@ def format_takeoff_performance_report(
     trigger_delta = analysis.trigger_configured_minimum_airspeed_delta
     if trigger_delta is not None and airspeed_source != "Unavailable":
         lines.append(
-            f"  {'Delta to AIRSPEED_MIN':<34} "
+            f"  {'Airspeed vs AIRSPEED_MIN':<34} "
             f"{_format_signed_decimal(trigger_delta.delta_m_s)} m/s"
         )
     if context.nav_pitch_deg is not None and context.pitch_deg is not None:
@@ -1247,11 +1400,6 @@ def format_takeoff_performance_report(
             f"  {'Roll demand / achieved':<34} "
             f"{context.nav_roll_deg.value:.2f}° / {context.roll_deg.value:.2f}°"
         )
-    if context.throttle_output_pct is not None:
-        lines.append(
-            f"  {'Throttle command':<34} {context.throttle_output_pct.value:.2f}%"
-        )
-
     if airspeed_source != "Unavailable":
         lines.extend(("", "Airspeed build"))
         first_minimum = analysis.first_observed_configured_minimum_airspeed
@@ -1259,11 +1407,11 @@ def format_takeoff_performance_report(
             lines.extend(
                 (
                     (
-                        f"  {'First observed ≥ AIRSPEED_MIN':<34} "
+                        f"  {'Time to AIRSPEED_MIN':<34} "
                         f"{_format_relative_seconds(first_minimum.elapsed_s)}"
                     ),
                     (
-                        f"  {'Airspeed at observation':<34} "
+                        f"  {'Airspeed at AIRSPEED_MIN':<34} "
                         f"{first_minimum.observed_airspeed_m_s:.2f} m/s"
                     ),
                 )
@@ -1272,13 +1420,13 @@ def format_takeoff_performance_report(
             ConfiguredMinimumAirspeedStatus.UNAVAILABLE_EVIDENCE
         ):
             lines.append(
-                f"  {'First observed ≥ AIRSPEED_MIN':<34} "
+                f"  {'Time to AIRSPEED_MIN':<34} "
                 f"{_minimum_airspeed_status(first_minimum.status)}"
             )
         envelope = analysis.airspeed_envelope
         if envelope is not None:
             lines.append(
-                f"  {'Envelope':<34} "
+                f"  {'Airspeed range':<34} "
                 f"{envelope.minimum.value_m_s:.2f}–{envelope.maximum.value_m_s:.2f} m/s"
             )
 
@@ -1417,7 +1565,7 @@ def _execution_status(analysis: TakeoffPerformanceAnalysis) -> str:
         return "Unavailable"
     if analysis.control_interval.status is TakeoffControlIntervalStatus.COMPLETED:
         return "Completed"
-    return "Censored — mode exit"
+    return "Mode exit before completion"
 
 
 def _minimum_airspeed_status(status: ConfiguredMinimumAirspeedStatus) -> str:
@@ -1430,37 +1578,85 @@ def _minimum_airspeed_status(status: ConfiguredMinimumAirspeedStatus) -> str:
 
 
 def _format_throttle_context(analysis: TakeoffPerformanceAnalysis) -> list[str]:
-    """Render existing threshold-free throttle evidence when available."""
+    """Render propulsion-build evidence without implying power or thrust."""
     throttle = analysis.throttle_command
-    lines = []
-    if throttle.at_unsuppressed is not None:
-        lines.append(
-            f"  {'Throttle at unsuppression':<34} {throttle.at_unsuppressed.value:.2f}%"
+    propulsion = analysis.propulsion_to_configured_minimum_airspeed
+    if propulsion is None:
+        return []
+
+    maximum = propulsion.maximum_throttle_command_pct
+    time_to_maximum = propulsion.time_to_maximum_throttle_s
+    continuous_peak_duration = propulsion.continuous_peak_throttle_duration_s
+    at_minimum = propulsion.throttle_at_minimum_airspeed_pct
+    peak_current = propulsion.peak_battery_current_a
+    fixed = analysis.fixed_throttle_target_rise
+    fixed_is_presented = fixed.status in {
+        FixedThrottleTargetStatus.OBSERVED,
+        FixedThrottleTargetStatus.NOT_OBSERVED_COMPLETED,
+        FixedThrottleTargetStatus.NOT_OBSERVED_CENSORED_MODE_EXIT,
+    }
+    if not any(
+        (
+            throttle.at_unsuppressed,
+            maximum,
+            at_minimum,
+            peak_current,
+            fixed_is_presented,
         )
-    if throttle.at_target_finalized is not None:
-        lines.append(
-            f"  {'Throttle at target finalization':<34} "
-            f"{throttle.at_target_finalized.value:.2f}%"
-        )
-    if throttle.launch_response_max_pct is not None:
-        lines.append(
-            f"  {'Maximum trigger-response throttle':<34} "
-            f"{throttle.launch_response_max_pct:.2f}%"
+    ):
+        return []
+
+    evidence_lines = [
+        (
+            f"  {'Throttle at unsuppression':<38} "
+            f"{_format_optional_percentage(throttle.at_unsuppressed.value if throttle.at_unsuppressed else None)}"
+        ),
+        (
+            f"  {'Peak throttle':<38} "
+            f"{_format_optional_percentage(maximum.value if maximum else None)}"
+        ),
+        (
+            f"  {'Time to peak throttle':<38} "
+            f"{_format_relative_seconds(time_to_maximum)}"
+        ),
+        (
+            f"  {'Time at peak throttle':<38} "
+            f"{_format_duration_seconds(continuous_peak_duration)}"
+        ),
+        (
+            f"  {'Throttle at AIRSPEED_MIN':<38} "
+            f"{_format_optional_percentage(at_minimum.value if at_minimum else None)}"
+        ),
+    ]
+    if peak_current is not None:
+        evidence_lines.append(
+            f"  {'Peak battery current':<38} {peak_current.value:.1f} A"
         )
 
-    fixed = analysis.fixed_throttle_target_rise
     if fixed.status is FixedThrottleTargetStatus.OBSERVED:
-        lines.append(
-            f"  {'Fixed throttle target':<34} Observed at "
+        evidence_lines.append(
+            f"  {'Fixed throttle target':<38} Observed at "
             f"{fixed.observed_throttle_output_pct:.2f}%"
         )
     elif fixed.status is FixedThrottleTargetStatus.NOT_OBSERVED_COMPLETED:
-        lines.append(f"  {'Fixed throttle target':<34} Not observed before completion")
+        evidence_lines.append(
+            f"  {'Fixed throttle target':<38} Not observed before completion"
+        )
     elif fixed.status is FixedThrottleTargetStatus.NOT_OBSERVED_CENSORED_MODE_EXIT:
-        lines.append(f"  {'Fixed throttle target':<34} Not observed before mode exit")
-    else:
-        lines.append(f"  {'Fixed throttle target':<34} Unavailable")
-    return lines
+        evidence_lines.append(
+            f"  {'Fixed throttle target':<38} Not observed before mode exit"
+        )
+    return ["", "Propulsion to AIRSPEED_MIN", *evidence_lines] if evidence_lines else []
+
+
+def _format_optional_percentage(value: float | None) -> str:
+    """Format optional normalized throttle command evidence."""
+    return f"{value:.1f}%" if value is not None else "Unavailable"
+
+
+def _format_duration_seconds(duration_s: float | None) -> str:
+    """Format one observed duration without relative-time sign notation."""
+    return f"{duration_s:.3f} s" if duration_s is not None else "unavailable"
 
 
 def _format_comparison_table(
@@ -1470,7 +1666,7 @@ def _format_comparison_table(
     headers = (
         "No.",
         "Status",
-        "First ≥ AIRSPEED_MIN",
+        "Time to AIRSPEED_MIN",
         "Pitch tracking error",
         "Max |roll|",
         "Min altitude Δ",

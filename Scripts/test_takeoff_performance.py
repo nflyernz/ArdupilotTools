@@ -42,6 +42,7 @@ def _event(time_us, event_type):
 def _execution(
     *,
     trigger=True,
+    unsuppressed=True,
     target=True,
     completion=True,
     entry_context=TakeoffEntryContext.TAKEOFF_MODE,
@@ -50,12 +51,13 @@ def _execution(
     events = []
     if trigger:
         events.append(_event(TRIGGER_US, TakeoffExecutionEventType.TRIGGERED_AUTO))
-    events.append(
-        _event(
-            UNSUPPRESSED_US,
-            TakeoffExecutionEventType.THROTTLE_UNSUPPRESSED,
+    if unsuppressed:
+        events.append(
+            _event(
+                UNSUPPRESSED_US,
+                TakeoffExecutionEventType.THROTTLE_UNSUPPRESSED,
+            )
         )
-    )
     if target:
         events.append(
             _event(
@@ -89,6 +91,7 @@ def _history(initial_values=None, changes=None):
 def _flight_log(
     *,
     ctun=(),
+    bat=(),
     gps=(),
     pos=(),
     baro=(),
@@ -111,6 +114,7 @@ def _flight_log(
                     "ThO",
                 ),
             ),
+            "BAT": _table(bat, ("TimeUS", "Inst", "Curr")),
             "GPS": _table(gps, ("TimeUS", "I", "Status", "Spd", "U")),
             "POS": _table(pos, ("TimeUS", "RelHomeAlt")),
             "BARO": _table(baro, ("TimeUS", "Alt")),
@@ -862,6 +866,205 @@ def test_first_observed_minimum_airspeed_rejects_unusable_evidence():
     )
 
 
+def test_propulsion_response_uses_owned_inclusive_interval_and_primary_battery():
+    """Throttle and BAT instance zero share the suppression-to-speed bounds."""
+    flight_log = _flight_log(
+        ctun=(
+            (2_900_000, 0.0, 0.0, 0.0, 0.0, 9.0, 1, 99.0),
+            (UNSUPPRESSED_US, 0.0, 0.0, 0.0, 0.0, 9.0, 1, 20.0),
+            (3_500_000, 0.0, 0.0, 0.0, 0.0, 9.5, 1, 90.0),
+            (3_700_000, 0.0, 0.0, 0.0, 0.0, 9.5, 1, math.inf),
+            (TARGET_US, 0.0, 0.0, 0.0, 0.0, 10.0, 1, 90.0),
+            (4_100_000, 0.0, 0.0, 0.0, 0.0, 11.0, 1, 100.0),
+        ),
+        bat=(
+            (2_900_000, 0, 50.0),
+            (UNSUPPRESSED_US, 0, 5.0),
+            (3_400_000, 1, 99.0),
+            (3_600_000, 0, 25.0),
+            (3_700_000, 0, math.inf),
+            (TARGET_US, 0, 30.0),
+            (4_100_000, 0, 100.0),
+        ),
+        parameter_history=_history({"AIRSPEED_MIN": 10.0}),
+    )
+
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    response = analysis.propulsion_to_configured_minimum_airspeed
+    assert response is not None
+    assert response.start_us == UNSUPPRESSED_US
+    assert response.end_us == TARGET_US
+    assert response.battery_instance == 0
+    assert response.maximum_throttle_command_pct is not None
+    assert response.maximum_throttle_command_pct.value == 90.0
+    assert response.maximum_throttle_command_pct.source_time_us == 3_500_000
+    assert response.time_to_maximum_throttle_s == 0.5
+    assert response.continuous_peak_throttle_duration_s == 0.5
+    assert response.throttle_at_minimum_airspeed_pct is not None
+    assert response.throttle_at_minimum_airspeed_pct.value == 90.0
+    assert response.throttle_at_minimum_airspeed_pct.source_time_us == TARGET_US
+    assert response.peak_battery_current_a is not None
+    assert response.peak_battery_current_a.value == 30.0
+    assert response.peak_battery_current_a.source_time_us == TARGET_US
+
+    report = format_takeoff_performance_report(analysis, 1)
+    assert "Propulsion to AIRSPEED_MIN" in report
+    assert "Throttle at unsuppression              20.0%" in report
+    assert any(
+        line.strip().startswith("Peak throttle") and line.endswith("90.0%")
+        for line in report.splitlines()
+    )
+    assert any(
+        line.strip().startswith("Time to peak throttle") and line.endswith("+0.500 s")
+        for line in report.splitlines()
+    )
+    assert any(
+        line.strip().startswith("Time at peak throttle") and line.endswith("0.500 s")
+        for line in report.splitlines()
+    )
+    assert "Time at peak throttle                  +0.500 s" not in report
+    assert "Throttle at AIRSPEED_MIN               90.0%" in report
+    assert "Peak battery current                   30.0 A" in report
+    for time_us in (UNSUPPRESSED_US, TARGET_US, 3_500_000, 3_600_000):
+        assert str(time_us) not in report
+
+
+def test_propulsion_response_does_not_borrow_invalid_qualifying_throttle():
+    """An invalid same-row ThO stays unavailable while earlier throttle remains."""
+    flight_log = _flight_log(
+        ctun=(
+            (UNSUPPRESSED_US, 0.0, 0.0, 0.0, 0.0, 9.0, 1, 20.0),
+            (3_500_000, 0.0, 0.0, 0.0, 0.0, 9.5, 1, 80.0),
+            (TARGET_US, 0.0, 0.0, 0.0, 0.0, 10.0, 1, math.nan),
+        ),
+        parameter_history=_history({"AIRSPEED_MIN": 10.0}),
+    )
+
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    response = analysis.propulsion_to_configured_minimum_airspeed
+    assert response is not None
+    assert response.maximum_throttle_command_pct is not None
+    assert response.maximum_throttle_command_pct.value == 80.0
+    assert response.time_to_maximum_throttle_s == 0.5
+    assert response.continuous_peak_throttle_duration_s is None
+    assert response.throttle_at_minimum_airspeed_pct is None
+    assert response.peak_battery_current_a is None
+    report = format_takeoff_performance_report(analysis, 1)
+    assert any(
+        line.strip().startswith("Peak throttle") and line.endswith("80.0%")
+        for line in report.splitlines()
+    )
+    assert any(
+        line.strip().startswith("Time to peak throttle") and line.endswith("+0.500 s")
+        for line in report.splitlines()
+    )
+    assert "Throttle at AIRSPEED_MIN               Unavailable" in report
+    assert "Peak battery current" not in report
+    assert "Fixed throttle target" not in report
+
+
+def test_peak_hold_requires_airspeed_minimum_sample_to_remain_at_peak():
+    """The qualifying CTUN sample participates in continuous-hold evidence."""
+    flight_log = _flight_log(
+        ctun=(
+            (UNSUPPRESSED_US, 0.0, 0.0, 0.0, 0.0, 9.0, 1, 20.0),
+            (3_500_000, 0.0, 0.0, 0.0, 0.0, 9.5, 1, 90.0),
+            (3_750_000, 0.0, 0.0, 0.0, 0.0, 9.5, 1, 90.0),
+            (TARGET_US, 0.0, 0.0, 0.0, 0.0, 10.0, 1, 80.0),
+        ),
+        parameter_history=_history({"AIRSPEED_MIN": 10.0}),
+    )
+
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    response = analysis.propulsion_to_configured_minimum_airspeed
+    assert response is not None
+    assert response.maximum_throttle_command_pct is not None
+    assert response.maximum_throttle_command_pct.source_time_us == 3_500_000
+    assert response.continuous_peak_throttle_duration_s is None
+    assert "Time at peak throttle                  unavailable" in (
+        format_takeoff_performance_report(analysis, 1)
+    )
+
+
+def test_peak_hold_does_not_sum_separated_peak_periods():
+    """One valid below-peak row breaks an otherwise repeated peak run."""
+    flight_log = _flight_log(
+        ctun=(
+            (UNSUPPRESSED_US, 0.0, 0.0, 0.0, 0.0, 9.0, 1, 20.0),
+            (3_400_000, 0.0, 0.0, 0.0, 0.0, 9.5, 1, 90.0),
+            (3_600_000, 0.0, 0.0, 0.0, 0.0, 9.5, 1, 80.0),
+            (TARGET_US, 0.0, 0.0, 0.0, 0.0, 10.0, 1, 90.0),
+        ),
+        parameter_history=_history({"AIRSPEED_MIN": 10.0}),
+    )
+
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    response = analysis.propulsion_to_configured_minimum_airspeed
+    assert response is not None
+    assert response.maximum_throttle_command_pct is not None
+    assert response.maximum_throttle_command_pct.source_time_us == 3_400_000
+    assert response.time_to_maximum_throttle_s == 0.4
+    assert response.continuous_peak_throttle_duration_s is None
+
+
+def test_propulsion_response_requires_observed_throttle_unsuppression():
+    """The trigger is not substituted when suppression-release evidence is absent."""
+    flight_log = _flight_log(
+        ctun=((TARGET_US, 0.0, 0.0, 0.0, 0.0, 10.0, 1, 70.0),),
+        bat=((3_500_000, 0, 25.0),),
+        parameter_history=_history({"AIRSPEED_MIN": 10.0}),
+    )
+
+    analysis = _analyse(flight_log, _execution(unsuppressed=False))
+
+    assert analysis is not None
+    assert analysis.first_observed_configured_minimum_airspeed.status is (
+        ConfiguredMinimumAirspeedStatus.OBSERVED
+    )
+    assert analysis.propulsion_to_configured_minimum_airspeed is None
+    assert "Propulsion to AIRSPEED_MIN" not in format_takeoff_performance_report(
+        analysis,
+        1,
+    )
+
+
+def test_missing_throttle_evidence_has_no_fabricated_peak_timing():
+    """Battery evidence can stand alone without manufacturing throttle timing."""
+    flight_log = _flight_log(
+        ctun=((TARGET_US, 0.0, 0.0, 0.0, 0.0, 10.0, 1, math.nan),),
+        bat=((3_500_000, 0, 25.0),),
+        parameter_history=_history({"AIRSPEED_MIN": 10.0}),
+    )
+
+    analysis = _analyse(flight_log)
+
+    assert analysis is not None
+    response = analysis.propulsion_to_configured_minimum_airspeed
+    assert response is not None
+    assert response.maximum_throttle_command_pct is None
+    assert response.time_to_maximum_throttle_s is None
+    assert response.continuous_peak_throttle_duration_s is None
+    report = format_takeoff_performance_report(analysis, 1)
+    assert any(
+        line.strip().startswith("Peak throttle") and line.endswith("Unavailable")
+        for line in report.splitlines()
+    )
+    assert any(
+        line.strip().startswith("Time to peak throttle")
+        and line.endswith("unavailable")
+        for line in report.splitlines()
+    )
+    assert "Peak battery current                   25.0 A" in report
+
+
 def test_minimum_airspeed_observation_excludes_endpoint_and_labels_not_observed():
     """A qualifying endpoint row is unowned and statuses retain censoring."""
     history = _history({"AIRSPEED_MIN": 10.0})
@@ -985,7 +1188,11 @@ def test_report_uses_relative_timing_and_preserves_internal_timeus():
     assert "Throttle unsuppressed" in report
     assert "+1.000 s" in report
     assert "Airspeed source                    Sensor" in report
-    assert "First observed ≥ AIRSPEED_MIN" in report
+    assert "Airspeed vs AIRSPEED_MIN           -3.00 m/s" in report
+    assert "Delta to AIRSPEED_MIN" not in report
+    assert "Time to AIRSPEED_MIN" in report
+    assert "Airspeed at AIRSPEED_MIN" in report
+    assert "First observed ≥ AIRSPEED_MIN" not in report
     assert "+0.500 s" in report
     assert str(TRIGGER_US) not in report
     assert str(UNSUPPRESSED_US) not in report
@@ -1012,7 +1219,7 @@ def test_report_labels_synthetic_airspeed_without_calling_it_measured():
     assert analysis.airspeed_estimate_types == (2, 3)
     assert "Airspeed source                    Synthetic estimate" in report
     assert "Airspeed" in report
-    assert "Airspeed at observation" in report
+    assert "Airspeed at AIRSPEED_MIN" in report
     assert "measured airspeed" not in report.lower()
 
 
@@ -1062,6 +1269,7 @@ def test_unavailable_airspeed_omits_performance_but_keeps_configuration():
     assert "AIRSPEED_CRUISE" in report
     assert "13.0 m/s" in report
     assert "Airspeed build" not in report
+    assert "Propulsion to AIRSPEED_MIN" not in report
     assert "Delta to AIRSPEED_MIN" not in report
     assert "First observed ≥ AIRSPEED_MIN" not in report
     assert "Airspeed at observation" not in report
@@ -1093,7 +1301,7 @@ def test_comparative_report_starts_with_summary_and_consolidates_configuration()
     assert "2 non-trigger executions omitted" in report
     summary = report.split("\n\nTAKEOFF 1", maxsplit=1)[0]
     assert "1    Completed" in summary
-    assert "2    Censored — mode exit" in summary
+    assert "2    Mode exit before completion" in summary
     assert "3    Completed" in summary
     assert "Pitch tracking error" in summary
     assert "pitch residual" not in report.lower()
@@ -1132,7 +1340,7 @@ def test_single_takeoff_report_omits_comparative_table_and_places_config_last():
     assert "1 triggered takeoff analysed" in report
     assert "0 non-trigger executions omitted" in report
     assert "Summary" not in report
-    assert "First ≥ AIRSPEED_MIN" not in report
+    assert "Time to AIRSPEED_MIN" not in report
     assert report.index("TAKEOFF 1\n") < report.index("TAKEOFF CONFIGURATION")
     assert "Applies to TAKEOFF" not in report
 
@@ -1146,7 +1354,7 @@ def test_summary_uses_dash_for_unavailable_airspeed_without_fabricating_zero():
     assert second is not None
     report = format_takeoff_performance_reports((first, second))
     summary = report.split("\n\nTAKEOFF 1", maxsplit=1)[0]
-    assert "First ≥ AIRSPEED_MIN" in summary
+    assert "Time to AIRSPEED_MIN" in summary
     assert "—" in summary
     assert "0.000 s" not in summary
     assert report.count("Airspeed source                    Unavailable") == 2
@@ -1236,20 +1444,21 @@ def test_report_exposes_existing_status_trigger_and_control_evidence():
     completed_report = format_takeoff_performance_report(completed, 1)
     censored_report = format_takeoff_performance_report(censored, 2)
     assert "Status                               Completed" in completed_report
-    assert (
-        "Status                               Censored — mode exit" in censored_report
+    assert "Status                               Mode exit before completion" in (
+        censored_report
     )
     assert "Groundspeed                        2.50 m/s" in completed_report
     assert "Pitch demand / achieved            6.00° / 4.00°" in completed_report
     assert "Roll demand / achieved             2.00° / 1.00°" in completed_report
-    assert "Throttle command                   10.00%" in completed_report
-    assert "Envelope                           9.00–15.00 m/s" in completed_report
+    assert "Throttle command                   10.00%" not in completed_report
+    assert "Airspeed range                     9.00–15.00 m/s" in completed_report
     assert "Largest pitch tracking error       +9.00°" in completed_report
     assert "pitch residual" not in completed_report.lower()
     assert "Maximum absolute roll              7.00°" in completed_report
     assert "Minimum altitude delta             -0.50 m" in completed_report
     assert "Altitude gain at completion        +10.00 m" in completed_report
     assert "Altitude delta at mode exit" in censored_report
+    assert "Censored — mode exit" not in censored_report
     assert str(TRIGGER_US) not in completed_report
     assert str(COMPLETION_US) not in completed_report
 
