@@ -1,22 +1,32 @@
-"""Firmware-owned AUTO takeoff execution models."""
+"""Firmware-owned ArduPlane takeoff execution models."""
 
 from dataclasses import dataclass
 from enum import Enum
 
 
+class TakeoffEntryContext(Enum):
+    """Firmware context that owns one takeoff execution."""
+
+    TAKEOFF_MODE = "takeoff_mode"
+    AUTO_MISSION = "auto_mission"
+
+
 class TakeoffExecutionEventType(Enum):
-    """Directly observed events owned by an AUTO takeoff execution."""
+    """Logged firmware observations owned by a takeoff execution."""
 
     ARMED_AUTO = "armed_auto"
     PRETRIGGER_TIMEOUT = "pretrigger_timeout"
     BAD_LAUNCH = "bad_launch"
     TRIGGERED_AUTO = "triggered_auto"
+    TARGET_COURSE_FINALIZED = "target_course_finalized"
+    THROTTLE_UNSUPPRESSED = "throttle_unsuppressed"
+    TAKEOFF_CONTROL_COMPLETED = "takeoff_control_completed"
     TAKEOFF_TIMEOUT = "takeoff_timeout"
     TAKEOFF_COMPLETE = "takeoff_complete"
 
 
 class TakeoffTerminationReason(Enum):
-    """Authoritative reasons an AUTO takeoff execution ended."""
+    """Authoritative reasons a takeoff execution ended."""
 
     COMPLETED = "completed"
     MODE_EXIT = "mode_exit"
@@ -30,7 +40,7 @@ class TakeoffTerminationReason(Enum):
 
 @dataclass(frozen=True, slots=True)
 class TakeoffExecutionEvent:
-    """One directly logged firmware observation."""
+    """One logged firmware observation or observed state boundary."""
 
     time_us: int
     event_type: TakeoffExecutionEventType
@@ -39,14 +49,15 @@ class TakeoffExecutionEvent:
 
 @dataclass(frozen=True, slots=True)
 class TakeoffExecution:
-    """One immutable firmware-owned AUTO ``NAV_TAKEOFF`` execution."""
+    """One immutable firmware-owned Plane takeoff execution."""
 
     start_us: int
     end_us: int
-    mission_item_number: int
-    command_id: int
+    mission_item_number: int | None
+    command_id: int | None
     termination_reason: TakeoffTerminationReason
     events: tuple[TakeoffExecutionEvent, ...] = ()
+    entry_context: TakeoffEntryContext = TakeoffEntryContext.AUTO_MISSION
 
     @property
     def launch_trigger(self) -> TakeoffExecutionEvent | None:
@@ -55,8 +66,25 @@ class TakeoffExecution:
 
     @property
     def completion(self) -> TakeoffExecutionEvent | None:
-        """Return the observed firmware completion, when logged."""
+        """Return AUTO mission completion, when directly logged."""
+        if self.entry_context is not TakeoffEntryContext.AUTO_MISSION:
+            return None
         return self._first_event(TakeoffExecutionEventType.TAKEOFF_COMPLETE)
+
+    @property
+    def target_course_finalization(self) -> TakeoffExecutionEvent | None:
+        """Return the observed TAKEOFF-mode target/course finalization."""
+        return self._first_event(TakeoffExecutionEventType.TARGET_COURSE_FINALIZED)
+
+    @property
+    def throttle_unsuppressed(self) -> TakeoffExecutionEvent | None:
+        """Return the first retained STAT observation with suppression off."""
+        return self._first_event(TakeoffExecutionEventType.THROTTLE_UNSUPPRESSED)
+
+    @property
+    def takeoff_control_completion(self) -> TakeoffExecutionEvent | None:
+        """Return observed TAKEOFF-stage completion inside Mode 13."""
+        return self._first_event(TakeoffExecutionEventType.TAKEOFF_CONTROL_COMPLETED)
 
     @property
     def pretrigger_events(self) -> tuple[TakeoffExecutionEvent, ...]:

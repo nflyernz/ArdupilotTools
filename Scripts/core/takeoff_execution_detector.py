@@ -1,4 +1,4 @@
-"""Detect firmware-owned ArduPlane AUTO takeoff executions."""
+"""Detect firmware-owned ArduPlane takeoff executions."""
 
 import math
 from dataclasses import dataclass
@@ -9,6 +9,7 @@ from pymavlink import mavutil
 
 from .flight_data import FlightLog
 from .takeoff_execution import (
+    TakeoffEntryContext,
     TakeoffExecution,
     TakeoffExecutionEvent,
     TakeoffExecutionEventType,
@@ -17,11 +18,23 @@ from .takeoff_execution import (
 
 
 @dataclass(frozen=True, slots=True)
-class _CommandStart:
-    """Usable runtime ``MISE`` evidence for one takeoff command start."""
+class _ExecutionStart:
+    """Direct evidence establishing one takeoff ownership context."""
 
     time_us: int
-    mission_item_number: int
+    entry_context: TakeoffEntryContext
+    mission_item_number: int | None = None
+    command_id: int | None = None
+    mode_sequence: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ModeObservation:
+    """One usable MODE observation in retained same-stream order."""
+
+    time_us: int
+    mode_number: int | None
+    sequence: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,9 +47,12 @@ class _Termination:
 
 
 class TakeoffExecutionDetector:
-    """Identify AUTO ``NAV_TAKEOFF`` ownership from logged firmware events."""
+    """Identify TAKEOFF-mode and AUTO-mission takeoff ownership."""
 
     AUTO_MODE = 10
+    TAKEOFF_MODE = 13
+    TAKEOFF_STAGE = 1
+    NORMAL_STAGE = 3
     NAV_TAKEOFF_COMMAND = mavutil.mavlink.MAV_CMD_NAV_TAKEOFF
 
     _MESSAGE_EVENTS = (
@@ -55,6 +71,10 @@ class TakeoffExecutionDetector:
         (
             "Triggered AUTO",
             TakeoffExecutionEventType.TRIGGERED_AUTO,
+        ),
+        (
+            "Takeoff to ",
+            TakeoffExecutionEventType.TARGET_COURSE_FINALIZED,
         ),
         (
             "Takeoff timeout",
@@ -78,8 +98,11 @@ class TakeoffExecutionDetector:
     }
 
     def detect(self, flight_log: FlightLog) -> list[TakeoffExecution]:
-        """Return causally bounded AUTO mission takeoff executions."""
-        starts = self._command_starts(flight_log)
+        """Return causally bounded Plane takeoff executions."""
+        mode_observations = self._mode_observations(flight_log)
+        starts = self._takeoff_mode_starts(mode_observations)
+        starts.extend(self._command_starts(flight_log, mode_observations))
+        starts.sort(key=lambda start: start.time_us)
         if not starts:
             return []
 
@@ -93,54 +116,108 @@ class TakeoffExecutionDetector:
                 start,
                 message_events,
                 log_end_us,
+                mode_observations,
             )
             end_inclusive = termination.reason is TakeoffTerminationReason.LOG_END
+            start_inclusive = start.entry_context is TakeoffEntryContext.AUTO_MISSION
             events = tuple(
                 event
                 for event in message_events
-                if start.time_us <= event.time_us
+                if (
+                    event.time_us > start.time_us
+                    or (start_inclusive and event.time_us == start.time_us)
+                )
                 and (
                     event.time_us < termination.time_us
                     or (end_inclusive and event.time_us == termination.time_us)
                 )
+                and self._event_belongs_to_context(
+                    event,
+                    start.entry_context,
+                )
             )
             if termination.event is not None:
                 events += (termination.event,)
+            events += self._status_events(
+                flight_log,
+                start,
+                termination,
+                message_events,
+            )
 
             executions.append(
                 TakeoffExecution(
                     start_us=start.time_us,
                     end_us=termination.time_us,
                     mission_item_number=start.mission_item_number,
-                    command_id=self.NAV_TAKEOFF_COMMAND,
+                    command_id=start.command_id,
                     termination_reason=termination.reason,
                     events=tuple(sorted(events, key=lambda event: event.time_us)),
+                    entry_context=start.entry_context,
                 )
             )
 
         return executions
 
-    def _command_starts(self, flight_log: FlightLog) -> list[_CommandStart]:
-        mise = flight_log.get("MISE")
+    def _mode_observations(
+        self,
+        flight_log: FlightLog,
+    ) -> list[_ModeObservation]:
         mode = flight_log.get("MODE")
-        required = {"TimeUS", "CNum", "CId"}
-
-        if (
-            mise.empty
-            or mode.empty
-            or not required.issubset(mise.columns)
-            or "TimeUS" not in mode.columns
-            or "ModeNum" not in mode.columns
-        ):
+        if mode.empty or "TimeUS" not in mode.columns or "ModeNum" not in mode.columns:
             return []
 
-        mode_rows = []
-        for _, row in mode.iterrows():
+        rows = []
+        for source_order, (_, row) in enumerate(mode.iterrows()):
             time_us = self._integer(row["TimeUS"])
-            mode_number = self._integer(row["ModeNum"])
-            if time_us is not None:
-                mode_rows.append((time_us, mode_number))
-        mode_rows.sort(key=lambda item: item[0])
+            if time_us is None:
+                continue
+            rows.append(
+                (
+                    time_us,
+                    source_order,
+                    self._integer(row["ModeNum"]),
+                )
+            )
+        rows.sort(key=lambda item: item[:2])
+        return [
+            _ModeObservation(time_us, mode_number, sequence)
+            for sequence, (time_us, _, mode_number) in enumerate(rows)
+        ]
+
+    def _takeoff_mode_starts(
+        self,
+        mode_observations: list[_ModeObservation],
+    ) -> list[_ExecutionStart]:
+        starts = []
+        previous_mode = None
+        for observation in mode_observations:
+            if observation.mode_number is None:
+                continue
+            if (
+                observation.mode_number == self.TAKEOFF_MODE
+                and previous_mode != self.TAKEOFF_MODE
+            ):
+                starts.append(
+                    _ExecutionStart(
+                        observation.time_us,
+                        TakeoffEntryContext.TAKEOFF_MODE,
+                        mode_sequence=observation.sequence,
+                    )
+                )
+            previous_mode = observation.mode_number
+        return starts
+
+    def _command_starts(
+        self,
+        flight_log: FlightLog,
+        mode_observations: list[_ModeObservation],
+    ) -> list[_ExecutionStart]:
+        mise = flight_log.get("MISE")
+        required = {"TimeUS", "CNum", "CId"}
+
+        if mise.empty or not required.issubset(mise.columns):
+            return []
 
         starts = []
         for _, row in mise.iterrows():
@@ -151,10 +228,17 @@ class TakeoffExecutionDetector:
                 time_us is None
                 or command_id != self.NAV_TAKEOFF_COMMAND
                 or mission_item_number is None
-                or not self._auto_owned_before(mode_rows, time_us)
+                or not self._auto_owned_before(mode_observations, time_us)
             ):
                 continue
-            starts.append(_CommandStart(time_us, mission_item_number))
+            starts.append(
+                _ExecutionStart(
+                    time_us,
+                    TakeoffEntryContext.AUTO_MISSION,
+                    mission_item_number=mission_item_number,
+                    command_id=self.NAV_TAKEOFF_COMMAND,
+                )
+            )
 
         return sorted(starts, key=lambda start: start.time_us)
 
@@ -181,15 +265,221 @@ class TakeoffExecutionDetector:
         # same-stream order without assigning an event-type precedence.
         return sorted(events, key=lambda event: event.time_us)
 
+    @staticmethod
+    def _event_belongs_to_context(
+        event: TakeoffExecutionEvent,
+        entry_context: TakeoffEntryContext,
+    ) -> bool:
+        if entry_context is TakeoffEntryContext.TAKEOFF_MODE:
+            return event.event_type is not (TakeoffExecutionEventType.TAKEOFF_COMPLETE)
+        return event.event_type is not (
+            TakeoffExecutionEventType.TARGET_COURSE_FINALIZED
+        )
+
+    def _status_events(
+        self,
+        flight_log: FlightLog,
+        start: _ExecutionStart,
+        termination: _Termination,
+        message_events: list[TakeoffExecutionEvent],
+    ) -> tuple[TakeoffExecutionEvent, ...]:
+        status = flight_log.get("STAT")
+        if status.empty or "TimeUS" not in status.columns:
+            return ()
+
+        rows = []
+        for source_order, (_, row) in enumerate(status.iterrows()):
+            time_us = self._integer(row["TimeUS"])
+            if time_us is None or not self._time_is_owned(
+                start,
+                termination,
+                time_us,
+            ):
+                continue
+            stage = self._integer(row["Stage"]) if "Stage" in status.columns else None
+            suppressed = self._boolean(row["Sup"]) if "Sup" in status.columns else None
+            rows.append((time_us, source_order, stage, suppressed))
+        rows.sort(key=lambda item: item[:2])
+
+        events = []
+        unsuppressed = self._throttle_unsuppressed_event(
+            rows,
+            start.entry_context,
+            [
+                event
+                for event in message_events
+                if self._time_is_owned(
+                    start,
+                    termination,
+                    event.time_us,
+                )
+            ],
+        )
+        if unsuppressed is not None:
+            events.append(unsuppressed)
+
+        if start.entry_context is TakeoffEntryContext.TAKEOFF_MODE:
+            completion = self._takeoff_control_completion(
+                rows,
+                termination,
+                [
+                    event
+                    for event in message_events
+                    if self._time_is_owned(
+                        start,
+                        termination,
+                        event.time_us,
+                    )
+                ],
+            )
+            if completion is not None:
+                events.append(completion)
+        return tuple(events)
+
+    @staticmethod
+    def _throttle_unsuppressed_event(
+        status_rows: list[tuple[int, int, int | None, bool | None]],
+        entry_context: TakeoffEntryContext,
+        message_events: list[TakeoffExecutionEvent],
+    ) -> TakeoffExecutionEvent | None:
+        """Return a causally owned suppression-clear observation."""
+        if entry_context is not TakeoffEntryContext.TAKEOFF_MODE:
+            first_unsuppressed = next(
+                (row for row in status_rows if row[3] is False),
+                None,
+            )
+            if first_unsuppressed is None:
+                return None
+            return TakeoffExecutionEvent(
+                first_unsuppressed[0],
+                TakeoffExecutionEventType.THROTTLE_UNSUPPRESSED,
+                "STAT.Sup=0",
+            )
+
+        trigger_times = [
+            event.time_us
+            for event in message_events
+            if event.event_type is TakeoffExecutionEventType.TRIGGERED_AUTO
+        ]
+        saw_suppressed = False
+        candidate_time_us = None
+
+        for time_us, _, _, suppressed in status_rows:
+            if suppressed is True:
+                saw_suppressed = True
+                candidate_time_us = None
+                continue
+            if suppressed is not False:
+                continue
+
+            if any(trigger_time < time_us for trigger_time in trigger_times):
+                candidate_time_us = time_us
+                break
+            if candidate_time_us is not None:
+                break
+            if saw_suppressed:
+                candidate_time_us = time_us
+
+        if candidate_time_us is None:
+            return None
+        if not any(
+            trigger_time < candidate_time_us for trigger_time in trigger_times
+        ) and not any(
+            time_us > candidate_time_us and suppressed is False
+            for time_us, _, _, suppressed in status_rows
+        ):
+            return None
+        return TakeoffExecutionEvent(
+            candidate_time_us,
+            TakeoffExecutionEventType.THROTTLE_UNSUPPRESSED,
+            "STAT.Sup=0",
+        )
+
+    def _takeoff_control_completion(
+        self,
+        status_rows: list[tuple[int, int, int | None, bool | None]],
+        termination: _Termination,
+        message_events: list[TakeoffExecutionEvent],
+    ) -> TakeoffExecutionEvent | None:
+        """Return a causally defensible observed TAKEOFF-to-NORMAL boundary."""
+        trigger_times = [
+            event.time_us
+            for event in message_events
+            if event.event_type is TakeoffExecutionEventType.TRIGGERED_AUTO
+        ]
+        response_established = False
+        previous_stage = None
+        candidate = None
+
+        for time_us, _, stage, suppressed in status_rows:
+            if suppressed is False or any(
+                trigger_time < time_us for trigger_time in trigger_times
+            ):
+                response_established = True
+            if not response_established or stage is None:
+                continue
+
+            if stage == self.TAKEOFF_STAGE:
+                previous_stage = stage
+                candidate = None
+                continue
+
+            if stage == self.NORMAL_STAGE:
+                if previous_stage == self.TAKEOFF_STAGE:
+                    candidate = TakeoffExecutionEvent(
+                        time_us,
+                        TakeoffExecutionEventType.TAKEOFF_CONTROL_COMPLETED,
+                        "STAT.Stage TAKEOFF(1) -> NORMAL(3)",
+                    )
+                    previous_stage = stage
+                    if termination.reason is TakeoffTerminationReason.LOG_END:
+                        return candidate
+                    continue
+                if candidate is not None:
+                    # A second retained NORMAL observation before MODE exit
+                    # proves that the first was not the Stage change performed
+                    # inside new-mode entry immediately before MODE is logged.
+                    return candidate
+                previous_stage = stage
+                continue
+
+            previous_stage = stage
+            candidate = None
+        return None
+
+    @staticmethod
+    def _time_is_owned(
+        start: _ExecutionStart,
+        termination: _Termination,
+        time_us: int,
+    ) -> bool:
+        start_owned = time_us > start.time_us or (
+            start.entry_context is TakeoffEntryContext.AUTO_MISSION
+            and time_us == start.time_us
+        )
+        end_owned = time_us < termination.time_us or (
+            termination.reason is TakeoffTerminationReason.LOG_END
+            and time_us == termination.time_us
+        )
+        return start_owned and end_owned
+
     def _first_termination(
         self,
         flight_log: FlightLog,
-        start: _CommandStart,
+        start: _ExecutionStart,
         message_events: list[TakeoffExecutionEvent],
         log_end_us: int,
+        mode_observations: list[_ModeObservation],
     ) -> _Termination:
+        if start.entry_context is TakeoffEntryContext.TAKEOFF_MODE:
+            return self._takeoff_mode_termination(
+                start,
+                mode_observations,
+                log_end_us,
+            )
+
         candidates = self._message_terminations(message_events, start.time_us)
-        candidates.extend(self._mode_exit(flight_log, start.time_us))
+        candidates.extend(self._auto_mode_exit(mode_observations, start.time_us))
         candidates.extend(self._disarm(flight_log, start.time_us))
         candidates.extend(self._mission_change(flight_log, start.time_us))
 
@@ -239,6 +529,26 @@ class TakeoffExecutionDetector:
             TakeoffTerminationReason.AMBIGUOUS,
         )
 
+    def _takeoff_mode_termination(
+        self,
+        start: _ExecutionStart,
+        mode_observations: list[_ModeObservation],
+        log_end_us: int,
+    ) -> _Termination:
+        """End Mode-13 ownership only on its next observed mode exit."""
+        if start.mode_sequence is not None:
+            for observation in mode_observations:
+                if (
+                    observation.sequence > start.mode_sequence
+                    and observation.mode_number is not None
+                    and observation.mode_number != self.TAKEOFF_MODE
+                ):
+                    return _Termination(
+                        observation.time_us,
+                        TakeoffTerminationReason.MODE_EXIT,
+                    )
+        return _Termination(log_end_us, TakeoffTerminationReason.LOG_END)
+
     def _message_terminations(
         self,
         events: list[TakeoffExecutionEvent],
@@ -251,26 +561,24 @@ class TakeoffExecutionDetector:
             and (reason := self._TERMINATION_REASONS.get(event.event_type)) is not None
         ]
 
-    def _mode_exit(
+    def _auto_mode_exit(
         self,
-        flight_log: FlightLog,
+        mode_observations: list[_ModeObservation],
         start_us: int,
     ) -> list[_Termination]:
-        mode = flight_log.get("MODE")
-        if mode.empty or "TimeUS" not in mode.columns or "ModeNum" not in mode.columns:
-            return []
-
         exits = []
-        for _, row in mode.iterrows():
-            time_us = self._integer(row["TimeUS"])
-            mode_number = self._integer(row["ModeNum"])
+        for observation in mode_observations:
             if (
-                time_us is not None
-                and time_us > start_us
-                and mode_number is not None
-                and mode_number != self.AUTO_MODE
+                observation.time_us > start_us
+                and observation.mode_number is not None
+                and observation.mode_number != self.AUTO_MODE
             ):
-                exits.append(_Termination(time_us, TakeoffTerminationReason.MODE_EXIT))
+                exits.append(
+                    _Termination(
+                        observation.time_us,
+                        TakeoffTerminationReason.MODE_EXIT,
+                    )
+                )
         return exits
 
     def _disarm(
@@ -332,19 +640,19 @@ class TakeoffExecutionDetector:
 
     @staticmethod
     def _auto_owned_before(
-        mode_rows: list[tuple[int, int | None]],
+        mode_observations: list[_ModeObservation],
         time_us: int,
     ) -> bool:
         """Require uncontradicted AUTO ownership established before MISE."""
         prior_mode = None
         same_time_modes = []
-        for mode_time_us, mode_number in mode_rows:
-            if mode_time_us > time_us:
+        for observation in mode_observations:
+            if observation.time_us > time_us:
                 break
-            if mode_time_us < time_us:
-                prior_mode = mode_number
+            if observation.time_us < time_us:
+                prior_mode = observation.mode_number
             else:
-                same_time_modes.append(mode_number)
+                same_time_modes.append(observation.mode_number)
         return prior_mode == TakeoffExecutionDetector.AUTO_MODE and all(
             mode_number == TakeoffExecutionDetector.AUTO_MODE
             for mode_number in same_time_modes
@@ -382,3 +690,20 @@ class TakeoffExecutionDetector:
         if not math.isfinite(number) or not number.is_integer():
             return None
         return int(number)
+
+    @classmethod
+    def _boolean(cls, value) -> bool | None:
+        """Return a logged boolean only when encoded exactly as zero or one."""
+        if isinstance(value, bool):
+            return value
+        integer = cls._integer(value)
+        if integer in (0, 1):
+            return bool(integer)
+        try:
+            if value == 0:
+                return False
+            if value == 1:
+                return True
+        except (TypeError, ValueError):
+            pass
+        return None
