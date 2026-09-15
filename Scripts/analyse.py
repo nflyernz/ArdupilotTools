@@ -28,7 +28,6 @@ def log_summary():
 def menu():
 
     while True:
-
         print("\nFlight Analysis")
         print("================")
         print("1. Landing Analysis")
@@ -38,6 +37,7 @@ def menu():
         print("5. Autotune Review")
         print("6. Sensor Diagnostics")
         print("7. Log Summary")
+        print("8. Takeoff Analysis")
         print("0. Exit")
 
         choice = input("\nSelection: ").strip()
@@ -58,6 +58,7 @@ def menu():
 
         elif choice == "3":
             from analyses.battery import BatteryAnalysisPresentation
+
             analysis = BatteryAnalysisPresentation()
             analysis.run()
             input("\nPress Enter to return to the menu...")
@@ -73,6 +74,13 @@ def menu():
 
         elif choice == "7":
             log_summary()
+
+        elif choice == "8":
+            from analyses.takeoff import TakeoffAnalysisPresentation
+
+            analysis = TakeoffAnalysisPresentation()
+            analysis.run()
+            input("\nPress Enter to return to the menu...")
 
         elif choice == "0":
             break

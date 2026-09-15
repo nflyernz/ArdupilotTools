@@ -1095,6 +1095,8 @@ def test_comparative_report_starts_with_summary_and_consolidates_configuration()
     assert "1    Completed" in summary
     assert "2    Censored — mode exit" in summary
     assert "3    Completed" in summary
+    assert "Pitch tracking error" in summary
+    assert "pitch residual" not in report.lower()
     assert report.index("Summary") < report.index("TAKEOFF 1")
     assert report.index("TAKEOFF 1") < report.index("TAKEOFF 2")
     assert report.index("TAKEOFF 2") < report.index("TAKEOFF 3")
@@ -1242,9 +1244,8 @@ def test_report_exposes_existing_status_trigger_and_control_evidence():
     assert "Roll demand / achieved             2.00° / 1.00°" in completed_report
     assert "Throttle command                   10.00%" in completed_report
     assert "Envelope                           9.00–15.00 m/s" in completed_report
-    assert (
-        "Largest |pitch residual|           9.00° (signed +9.00°)" in completed_report
-    )
+    assert "Largest pitch tracking error       +9.00°" in completed_report
+    assert "pitch residual" not in completed_report.lower()
     assert "Maximum absolute roll              7.00°" in completed_report
     assert "Minimum altitude delta             -0.50 m" in completed_report
     assert "Altitude gain at completion        +10.00 m" in completed_report

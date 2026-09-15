@@ -1286,8 +1286,8 @@ def format_takeoff_performance_report(
     residual = analysis.pitch_tracking_residual
     if residual is not None:
         lines.append(
-            f"  {'Largest |pitch residual|':<34} {residual.magnitude_deg:.2f}° "
-            f"(signed {residual.signed_residual_deg:+.2f}°)"
+            f"  {'Largest pitch tracking error':<34} "
+            f"{_format_signed_decimal(residual.signed_residual_deg)}°"
         )
     roll = analysis.launch_response_roll
     if roll is not None:
@@ -1471,7 +1471,7 @@ def _format_comparison_table(
         "No.",
         "Status",
         "First ≥ AIRSPEED_MIN",
-        "Largest |pitch residual|",
+        "Pitch tracking error",
         "Max |roll|",
         "Min altitude Δ",
         "Endpoint altitude Δ",
@@ -1491,7 +1491,11 @@ def _format_comparison_table(
                     if first.status is ConfiguredMinimumAirspeedStatus.OBSERVED
                     else "—"
                 ),
-                f"{residual.magnitude_deg:.2f}°" if residual is not None else "—",
+                (
+                    f"{_format_signed_decimal(residual.signed_residual_deg)}°"
+                    if residual is not None
+                    else "—"
+                ),
                 f"{roll.magnitude_deg:.2f}°" if roll is not None else "—",
                 (
                     f"{_format_signed_decimal(altitude.minimum_delta_m)} m"
