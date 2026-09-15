@@ -534,25 +534,70 @@ therefore report the latest CTUN rows 18,810 us and 39,426 us before their
 firmware trigger messages. Both rows contain `NavPitch=45 deg`; they are not
 measurements taken exactly at the message timestamp.
 
-Before launch acceptance, throttle remains suppressed. Plane continues the
-50 Hz TECS state update needed for launch detection, but
-`update_pitch_throttle()` is gated off while suppression is active.
-`takeoff_calc_pitch()` consequently reads the retained TECS pitch demand, and
-`calc_nav_pitch()` clamps it to `PTCH_LIM_MAX_DEG=45`. This explains the exact
-45-degree value. It is the navigation demand actually presented to the normal
-fixed-wing pitch controller during that pre-trigger loop, but it is not a
-fresh post-trigger TECS solution, not `TKOFF_GND_PITCH`, and not evidence of a
-physical rotation. Once suppression clears, TECS updates again and its demand
-transitions under the TAKEOFF constraints and its pitch-rate limiting.
-Execution 1's retained state instead yields the observed 17.77-degree
-pre-trigger navigation demand.
+Those pre-trigger rows still contain retained TECS state because throttle
+suppression gates off `update_pitch_throttle()`. That fact does not, however,
+explain the fresh post-trigger 45-degree demands. A second Plane-4.7.0 state
+lifecycle is decisive:
+
+1. At `740784189 us`, execution 1 emits `Takeoff level-off starting at 10m`
+   and assigns its current remaining height to
+   `auto_state.height_below_takeoff_to_level_off_cm`.
+2. The nearest logged `POS.RelHomeAlt` and `TECS.h` are 19.104 m for a
+   30 m TAKEOFF target. They provide an approximately 10.896 m proxy for the
+   stored value; the integer firmware message itself establishes only that
+   the remaining height was at least 10 m and less than 11 m.
+3. `ModeTakeoff::_enter()`, its normal setup, mode exit, disarm and re-arm do
+   not clear that `auto_state` field. Disarm clears the separately owned
+   `takeoff_state`, including `level_off_start_time_ms`, but not the retained
+   height. The later Mode-13 executions can therefore reuse execution 1's
+   reference.
+4. The lowest observed `POS.RelHomeAlt` values before the later triggers are
+   -0.03 m and -0.04 m, giving approximate remaining heights of 30.03 m and
+   30.04 m. With the logged-altitude proxy above, the source formula
+   `18 deg * remaining_height / retained_height` gives 49.61 deg and
+   49.63 deg. Their first fresh TECS records report `pmin=pmax=49.53 deg`
+   and `49.51 deg`, respectively. The small difference is consistent with
+   the logged fields being sampled proxies for the internal values, not a
+   reason to tune the retained reference to force exact agreement.
+
+Before the first post-trigger TECS solution, repeated `takeoff_calc_pitch()`
+calls can also accumulate the largest external TECS minimum through
+`set_pitch_min()`. TECS consumes and resets that external limit when
+`update_pitch_throttle()` next runs. This accounts for the first fresh limit
+reflecting the near-ground remaining height rather than only the altitude at
+the TECS record.
+
+The TECS ordering permits `pmax` to exceed `TECS_PITCH_MAX=20 deg`. TECS first
+selects the configured maximum, replaces its minimum with the TAKEOFF minimum,
+applies accumulated external limits, converts the limits to radians, and then
+forces `pmax = max(pmax, pmin)`. Its rate-limited `ph` can initially remain far
+below those newly raised limits. On the next Plane control iteration,
+`calc_nav_pitch()` clamps `ph` to `PTCH_LIM_MAX_DEG=45`, after which
+`takeoff_calc_pitch()` again enforces the TAKEOFF minimum and may then reduce
+the result for roll error. `CTUN.NavPitch=45 deg` is consequently a
+combination of the retained TAKEOFF minimum, TECS limit ordering, Plane's
+global navigation-pitch clamp and per-sample stall-prevention adjustment. It
+is not simply the raw TECS `ph`, not `TKOFF_GND_PITCH`, and not evidence of a
+physical rotation.
+
+The same Mode-13 reset gap is present in Plane 4.7.1 and current master as
+audited at `de411b3818bd9ccabab90151c22f4bb3bb367353`. AUTO mission
+`NAV_TAKEOFF` does not have this gap: `do_takeoff()` explicitly resets
+`height_below_takeoff_to_level_off_cm` when starting each mission item.
 
 The source basis is Plane-4.7.0
 [`ModeTakeoff::update()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/mode_takeoff.cpp),
 [`takeoff_calc_pitch()` and `get_takeoff_pitch_min_cd()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/takeoff.cpp),
 [`calc_nav_pitch()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/Attitude.cpp),
+[`update_speed_height()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/Plane.cpp),
+[`do_takeoff()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/commands_logic.cpp),
 and
-[`update_speed_height()`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/Plane.cpp).
+[`AP_TECS` pitch-limit handling](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/libraries/AP_TECS/AP_TECS.cpp).
+The lifecycle comparison used the corresponding
+[Plane-4.7.1](https://github.com/ArduPilot/ardupilot/tree/Plane-4.7.1/ArduPlane)
+and
+[current-master](https://github.com/ArduPilot/ardupilot/tree/de411b3818bd9ccabab90151c22f4bb3bb367353/ArduPlane)
+sources.
 
 ### 16.3 Exact pitch-tracking qualification
 
@@ -811,29 +856,34 @@ not cause or prove a TECS pitch refresh.
 | 2 | 1557443368 | 1557484228 | 1557503896 | 1557544402 | 1557585341 | 1557703252 |
 | 3 | 2356143377 | 2356184172 | 2356185378 | 2356224438 | 2356185535 | 2356483405 |
 
-The currently implemented maximum-residual samples are:
+Normal `FlightReader` now retains `TECS`, and the production residual applies
+the conservative propagation boundary above. The resulting maxima are:
 
-| Execution | Current residual | Source `TimeUS` | Freshness finding |
-|---:|---:|---:|---|
-| 1 | +19.63 deg | 736343978 | Before the first TECS refresh; retained demand |
-| 2 | +55.30 deg | 1557503896 | First CTUN after refresh; same-loop ambiguity remains |
-| 3 | +42.42 deg | 2356144970 | Before the first TECS refresh; retained demand |
+| Execution | Residual | `NavPitch` | `Pitch` | Source `TimeUS` | Interval status |
+|---:|---:|---:|---:|---:|---|
+| 1 | +12.54 deg | 17.62 deg | 5.08 deg | 736424689 | censored by mode exit |
+| 2 | +54.41 deg | 45.00 deg | -9.41 deg | 1557544402 | completed |
+| 3 | +41.92 deg | 45.00 deg | 3.08 deg | 2356224438 | censored by mode exit |
 
-None of those three maxima satisfies the conservative freshness rule. For
-audit context only, restricting the same residual calculation to the first
-provably propagated CTUN row and later owned rows produces maxima of
-12.54 degrees at 736424689, 54.41 degrees at 1557544402, and 41.92 degrees at
-2356224438. These observations do not establish tuning thresholds or expected
-performance values.
+Raw messages not currently retained by normal APT reading add useful context.
+At the execution-2 and execution-3 maxima, `PIDP` has its output-limit flag
+set, `AETR.Elev` is at its positive scaled endpoint of 4500, and the configured
+elevator channel is at its 1900 us maximum. This establishes software command
+saturation at those observations. It does not establish actual surface
+position under aerodynamic load, mechanical binding, insufficient physical
+pitch authority, or a tuning defect; the log has no actuator-position
+feedback. Execution 1 also has the PID limit flag at its maximum residual, but
+its achieved pitch rate already exceeds its desired rate and the logical
+elevator command is negative rather than at the positive endpoint.
 
-The current production implementation starts residual evaluation immediately
-after `Triggered AUTO` and normal `FlightReader` does not retain `TECS`.
-Therefore its pitch-residual result is not yet defensible and must not be
-accepted as takeoff tracking performance. The smallest production correction
-is to retain normal TECS rows, require the freshness sequence above, and start
-eligible CTUN residual samples at the second CTUN row strictly after the first
-valid post-trigger TECS row. Until that evidence is exposed, the metric should
-return unavailable. No change to execution/state detection is required.
+The maximum absolute residual is therefore an evidence locator, not a
+standalone takeoff-quality score. In this log each maximum occurs near the
+initial attitude step, at about 3.5--3.7 m/s airspeed and essentially zero
+altitude gain, while throttle is still slewing and the attitude controller is
+rate-limiting its response. Interpreting it requires the TAKEOFF-minimum and
+TECS-limit provenance, response trajectory, roll interaction and available
+controller/output-limit evidence. These observations do not establish tuning
+thresholds, expected performance values or safety scores.
 
 ### 17.3 Configuration-header contract
 
