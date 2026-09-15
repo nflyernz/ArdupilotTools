@@ -917,9 +917,11 @@ def test_propulsion_response_uses_owned_inclusive_interval_and_primary_battery()
         for line in report.splitlines()
     )
     assert any(
-        line.strip().startswith("Time to peak throttle") and line.endswith("+0.500 s")
+        line.strip().startswith("Throttle ramp to peak") and line.endswith("0.500 s")
         for line in report.splitlines()
     )
+    assert "Time to peak throttle" not in report
+    assert "Throttle ramp to peak                   +0.500 s" not in report
     assert any(
         line.strip().startswith("Time at peak throttle") and line.endswith("0.500 s")
         for line in report.splitlines()
@@ -959,7 +961,7 @@ def test_propulsion_response_does_not_borrow_invalid_qualifying_throttle():
         for line in report.splitlines()
     )
     assert any(
-        line.strip().startswith("Time to peak throttle") and line.endswith("+0.500 s")
+        line.strip().startswith("Throttle ramp to peak") and line.endswith("0.500 s")
         for line in report.splitlines()
     )
     assert "Throttle at AIRSPEED_MIN               Unavailable" in report
@@ -1058,7 +1060,7 @@ def test_missing_throttle_evidence_has_no_fabricated_peak_timing():
         for line in report.splitlines()
     )
     assert any(
-        line.strip().startswith("Time to peak throttle")
+        line.strip().startswith("Throttle ramp to peak")
         and line.endswith("unavailable")
         for line in report.splitlines()
     )
@@ -1303,7 +1305,8 @@ def test_comparative_report_starts_with_summary_and_consolidates_configuration()
     assert "1    Completed" in summary
     assert "2    Mode exit before completion" in summary
     assert "3    Completed" in summary
-    assert "Pitch tracking error" in summary
+    assert "Peak current" in summary
+    assert "Pitch tracking error" not in summary
     assert "pitch residual" not in report.lower()
     assert report.index("Summary") < report.index("TAKEOFF 1")
     assert report.index("TAKEOFF 1") < report.index("TAKEOFF 2")
@@ -1359,6 +1362,32 @@ def test_summary_uses_dash_for_unavailable_airspeed_without_fabricating_zero():
     assert "0.000 s" not in summary
     assert report.count("Airspeed source                    Unavailable") == 2
     assert "Airspeed build" not in report
+
+
+def test_summary_uses_peak_current_and_dash_when_it_is_unavailable():
+    """The comparison uses existing current evidence without fabricating zero."""
+    ctun = (
+        (UNSUPPRESSED_US, 0.0, 0.0, 0.0, 0.0, 9.0, 1, 20.0),
+        (TARGET_US, 0.0, 0.0, 0.0, 0.0, 10.0, 1, 90.0),
+    )
+    history = _history({"AIRSPEED_MIN": 10.0})
+    with_current = _analyse(
+        _flight_log(
+            ctun=ctun,
+            bat=((3_500_000, 0, 25.0),),
+            parameter_history=history,
+        )
+    )
+    without_current = _analyse(_flight_log(ctun=ctun, parameter_history=history))
+
+    assert with_current is not None
+    assert without_current is not None
+    report = format_takeoff_performance_reports((with_current, without_current))
+    summary = report.split("\n\nTAKEOFF 1", maxsplit=1)[0]
+    assert "Peak current" in summary
+    assert "25.0 A" in summary
+    assert "—" in summary
+    assert "Pitch tracking error" not in summary
 
 
 def test_report_delta_format_distinguishes_positive_negative_and_zero():
@@ -1452,6 +1481,16 @@ def test_report_exposes_existing_status_trigger_and_control_evidence():
     assert "Roll demand / achieved             2.00° / 1.00°" in completed_report
     assert "Throttle command                   10.00%" not in completed_report
     assert "Airspeed range                     9.00–15.00 m/s" in completed_report
+    airspeed_build = completed_report.split("Airspeed build", maxsplit=1)[1].split(
+        "Takeoff control", maxsplit=1
+    )[0]
+    assert "Airspeed range" not in airspeed_build
+    assert completed_report.index("Takeoff control") < completed_report.index(
+        "Airspeed range"
+    )
+    assert completed_report.index("Airspeed range") < completed_report.index(
+        "Largest pitch tracking error"
+    )
     assert "Largest pitch tracking error       +9.00°" in completed_report
     assert "pitch residual" not in completed_report.lower()
     assert "Maximum absolute roll              7.00°" in completed_report

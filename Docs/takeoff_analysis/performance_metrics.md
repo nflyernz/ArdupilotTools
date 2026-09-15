@@ -727,8 +727,8 @@ execution and must not extend beyond the first qualifying airspeed row.
 
 Within that interval, report the maximum finite observed `CTUN.ThO` as
 **peak throttle**. If the maximum occurs more than once, its source timestamp
-is the earliest matching CTUN sample. **Time to peak throttle** is the elapsed
-time from observed suppression release to that first maximum sample. It is an
+is the earliest matching CTUN sample. **Throttle ramp to peak** is the elapsed
+duration from observed suppression release to that first maximum sample. It is an
 observed sample-to-sample duration with no interpolation, not an observed slew
 rate and not a comparison with an idealized ramp.
 
@@ -738,7 +738,7 @@ sample equals that peak exactly, including the qualifying sample itself. It is
 the duration from the first peak timestamp to the AIRSPEED_MIN timestamp,
 without interpolation or tolerance. A valid below-peak observation breaks the
 continuous hold; separated peak periods are not summed. This duration is
-distinct from **time to peak throttle**, which starts at suppression release.
+distinct from **throttle ramp to peak**, which starts at suppression release.
 
 Report **throttle at AIRSPEED_MIN** from the `ThO` field of the same CTUN row
 that established the first qualifying airspeed; an invalid same-row value is

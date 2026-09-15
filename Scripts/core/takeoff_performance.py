@@ -1423,14 +1423,13 @@ def format_takeoff_performance_report(
                 f"  {'Time to AIRSPEED_MIN':<34} "
                 f"{_minimum_airspeed_status(first_minimum.status)}"
             )
-        envelope = analysis.airspeed_envelope
-        if envelope is not None:
-            lines.append(
-                f"  {'Airspeed range':<34} "
-                f"{envelope.minimum.value_m_s:.2f}–{envelope.maximum.value_m_s:.2f} m/s"
-            )
-
     lines.extend(("", "Takeoff control"))
+    envelope = analysis.airspeed_envelope
+    if envelope is not None:
+        lines.append(
+            f"  {'Airspeed range':<34} "
+            f"{envelope.minimum.value_m_s:.2f}–{envelope.maximum.value_m_s:.2f} m/s"
+        )
     residual = analysis.pitch_tracking_residual
     if residual is not None:
         lines.append(
@@ -1616,8 +1615,8 @@ def _format_throttle_context(analysis: TakeoffPerformanceAnalysis) -> list[str]:
             f"{_format_optional_percentage(maximum.value if maximum else None)}"
         ),
         (
-            f"  {'Time to peak throttle':<38} "
-            f"{_format_relative_seconds(time_to_maximum)}"
+            f"  {'Throttle ramp to peak':<38} "
+            f"{_format_duration_seconds(time_to_maximum)}"
         ),
         (
             f"  {'Time at peak throttle':<38} "
@@ -1667,7 +1666,7 @@ def _format_comparison_table(
         "No.",
         "Status",
         "Time to AIRSPEED_MIN",
-        "Pitch tracking error",
+        "Peak current",
         "Max |roll|",
         "Min altitude Δ",
         "Endpoint altitude Δ",
@@ -1675,7 +1674,8 @@ def _format_comparison_table(
     rows = []
     for number, analysis in enumerate(analyses, 1):
         first = analysis.first_observed_configured_minimum_airspeed
-        residual = analysis.pitch_tracking_residual
+        propulsion = analysis.propulsion_to_configured_minimum_airspeed
+        peak_current = propulsion.peak_battery_current_a if propulsion else None
         roll = analysis.launch_response_roll
         altitude = analysis.relative_altitude
         rows.append(
@@ -1687,11 +1687,7 @@ def _format_comparison_table(
                     if first.status is ConfiguredMinimumAirspeedStatus.OBSERVED
                     else "—"
                 ),
-                (
-                    f"{_format_signed_decimal(residual.signed_residual_deg)}°"
-                    if residual is not None
-                    else "—"
-                ),
+                f"{peak_current.value:.1f} A" if peak_current is not None else "—",
                 f"{roll.magnitude_deg:.2f}°" if roll is not None else "—",
                 (
                     f"{_format_signed_decimal(altitude.minimum_delta_m)} m"
