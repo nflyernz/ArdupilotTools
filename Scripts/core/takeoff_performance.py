@@ -1370,7 +1370,7 @@ def format_takeoff_performance_report(
         ("Throttle unsuppressed", timings.trigger_to_throttle_unsuppressed_s),
         ("Target/course finalized", timings.trigger_to_target_finalized_s),
         ("Takeoff control complete", timings.trigger_to_control_completed_s),
-        ("Mode exit", timings.trigger_to_mode_exit_s),
+        ("TAKEOFF mode exited", timings.trigger_to_mode_exit_s),
     ):
         if elapsed_s is not None:
             lines.append(f"  {label:<34} {_format_relative_seconds(elapsed_s)}")
@@ -1732,9 +1732,10 @@ def _format_configuration_value(value: TakeoffConfigurationValue) -> str:
     """Format one launch parameter without inventing unavailable evidence."""
     if value.display_value is None:
         return "unavailable"
+    if value.name == "TKOFF_OPTIONS":
+        return _format_takeoff_options(value.display_value)
     integer_parameters = {
         "TKOFF_ACCEL_CNT",
-        "TKOFF_OPTIONS",
         "ARSPD_USE",
         "ARSPD_PRIMARY",
     }
@@ -1749,13 +1750,32 @@ def _format_configuration_value(value: TakeoffConfigurationValue) -> str:
     return f"{rendered}{separator}{value.unit}"
 
 
+def _format_takeoff_options(value: float) -> str:
+    """Decode the Plane 4.7.x TKOFF_OPTIONS bitmask without hiding raw bits."""
+    if not math.isfinite(value) or not value.is_integer():
+        return "unavailable"
+    raw_mask = int(value)
+    mask = raw_mask & 0xFFFFFFFF
+    if mask == 0:
+        return "0 — None"
+
+    descriptions = []
+    if mask & 1:
+        descriptions.append("Allow TECS throttle range")
+    unknown_mask = mask & ~1
+    descriptions.extend(
+        f"unknown bit {bit}" for bit in range(32) if unknown_mask & (1 << bit)
+    )
+    return f"{raw_mask} — {', '.join(descriptions)}"
+
+
 def _airspeed_source_label(estimate_types: tuple[int, ...]) -> str:
     """Describe retained CTUN airspeed sources without implying uniformity."""
     sources = set(estimate_types)
     if not sources or not sources <= {1, 2, 3}:
         return "Unavailable"
     if sources == {1}:
-        return "Sensor"
+        return "Airspeed sensor"
     if 1 not in sources:
         return "Synthetic estimate"
     return "Mixed sensor / synthetic estimate"

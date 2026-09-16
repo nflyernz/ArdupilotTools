@@ -948,6 +948,11 @@ Use these groups and units:
 | Pitch/roll | `PTCH_TRIM_DEG`, `KFF_THR2PTCH`, `PTCH_LIM_MAX_DEG`, `LEVEL_ROLL_LIMIT`, and `ROLL_LIMIT_DEG`, all in degrees |
 | Airspeed | `AIRSPEED_MIN` and `AIRSPEED_CRUISE` m/s; numeric/decoded `ARSPD_USE`; zero-based `ARSPD_PRIMARY` instance |
 
+In Plane 4.7.x, `TKOFF_OPTIONS` is an `AP_Int32` bitmask with one defined
+option: bit 0 permits TECS to use the configured minimum-to-maximum throttle
+range when its firmware conditions apply. Normal output retains the numeric
+mask, decodes bit 0, and identifies every other set bit as unknown.
+
 Preserve the underlying raw values in evidence/debug models. Human labels may
 explain source-backed branches, for example `TKOFF_THR_MAX=0 (uses THR_MAX)`
 or `TKOFF_OPTIONS bit 0 unset (fixed-maximum path)`, but must not infer a
@@ -964,7 +969,7 @@ Triggered AUTO                 0.000 s
 Throttle unsuppressed         +0.142 s
 Target/course finalized       +0.260 s
 TAKEOFF control complete      +7.280 s
-Mode exit                     +8.100 s
+TAKEOFF mode exited           +8.100 s
 ```
 
 Calculate each displayed offset as

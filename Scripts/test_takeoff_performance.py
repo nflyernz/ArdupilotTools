@@ -1172,6 +1172,23 @@ def test_configuration_context_keeps_missing_value_unavailable():
     assert "unavailable" in format_takeoff_performance_report(analysis, 1)
 
 
+def test_takeoff_options_preserve_and_decode_known_and_unknown_bits():
+    """Plane 4.7.x bit zero is decoded while every other set bit stays visible."""
+    expected = {
+        0: "0 — None",
+        1: "1 — Allow TECS throttle range",
+        8: "8 — unknown bit 3",
+        9: "9 — Allow TECS throttle range, unknown bit 3",
+    }
+    for mask, rendered in expected.items():
+        analysis = _analyse(
+            _flight_log(parameter_history=_history({"TKOFF_OPTIONS": float(mask)}))
+        )
+        assert analysis is not None
+        report = format_takeoff_performance_report(analysis, 1)
+        assert f"TKOFF_OPTIONS                {rendered}" in report
+
+
 def test_report_uses_relative_timing_and_preserves_internal_timeus():
     """Normal output is relative while evidence retains exact microseconds."""
     flight_log = _flight_log(
@@ -1189,7 +1206,10 @@ def test_report_uses_relative_timing_and_preserves_internal_timeus():
     assert "0.000 s" in report
     assert "Throttle unsuppressed" in report
     assert "+1.000 s" in report
-    assert "Airspeed source                    Sensor" in report
+    assert "Airspeed source                    Airspeed sensor" in report
+    assert "Takeoff control complete" in report
+    assert "TAKEOFF mode exited" in report
+    assert "\n  Mode exit" not in report
     assert "Airspeed vs AIRSPEED_MIN           -3.00 m/s" in report
     assert "Delta to AIRSPEED_MIN" not in report
     assert "Time to AIRSPEED_MIN" in report
@@ -1523,5 +1543,5 @@ def test_airspeed_source_is_execution_evidence_not_shared_configuration():
     report = format_takeoff_performance_reports((sensor, synthetic))
     executions, configuration = report.split("\n\nTAKEOFF CONFIGURATION", maxsplit=1)
     assert "Airspeed source" not in configuration
-    assert "Airspeed source                    Sensor" in executions
+    assert "Airspeed source                    Airspeed sensor" in executions
     assert "Airspeed source                    Synthetic estimate" in executions
