@@ -1,6 +1,7 @@
 """Evidence-first performance metrics for Plane TAKEOFF-mode executions."""
 
 import math
+import re
 from dataclasses import dataclass
 from enum import Enum
 from numbers import Integral, Real
@@ -12,6 +13,7 @@ from .takeoff_execution import (
     TakeoffEntryContext,
     TakeoffExecution,
     TakeoffExecutionEvent,
+    TakeoffExecutionEventType,
     TakeoffTerminationReason,
 )
 
@@ -40,6 +42,15 @@ class ConfiguredMinimumAirspeedStatus(Enum):
     OBSERVED = "observed"
     NOT_OBSERVED_COMPLETED = "not_observed_completed"
     NOT_OBSERVED_CENSORED_MODE_EXIT = "not_observed_censored_mode_exit"
+
+
+class AccelerationGateEvidenceStatus(Enum):
+    """Observed/configured availability of the launch acceleration gate."""
+
+    OBSERVED = "observed"
+    CONFIGURED = "configured"
+    DISABLED = "disabled"
+    UNAVAILABLE = "unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +108,15 @@ class TakeoffPhaseTimings:
     trigger_to_target_finalized_s: float | None
     trigger_to_control_completed_s: float | None
     trigger_to_mode_exit_s: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class TakeoffPhaseEvidence:
+    """Firmware-owned launch-gate values retained for phase presentation."""
+
+    acceleration_gate_status: AccelerationGateEvidenceStatus
+    observed_xaccel_m_s2: float | None
+    trigger_gps_speed_m_s: float | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,6 +285,7 @@ class TakeoffPerformanceAnalysis:
 
     execution: TakeoffExecution
     phase_timings: TakeoffPhaseTimings
+    phase_evidence: TakeoffPhaseEvidence
     trigger_context: TakeoffTriggerContext
     control_interval: TakeoffControlInterval | None
     launch_response_roll: RollExtremum | None
@@ -280,6 +301,9 @@ class TakeoffPerformanceAnalysis:
     )
     fixed_throttle_target_rise: FixedThrottleTargetRise
     first_observed_configured_minimum_airspeed: FirstObservedConfiguredMinimumAirspeed
+    altitude_at_configured_minimum_airspeed: EventTelemetryValue | None
+    altitude_delta_at_configured_minimum_airspeed_m: float | None
+    throttle_to_configured_minimum_airspeed_s: float | None
     propulsion_to_configured_minimum_airspeed: (
         PropulsionToConfiguredMinimumAirspeed | None
     )
@@ -411,6 +435,18 @@ class TakeoffPerformanceProcessor:
             trigger,
             control_interval,
         )
+        relative_altitude = self._relative_altitude(
+            trigger,
+            control_interval,
+        )
+        (
+            altitude_at_minimum_airspeed,
+            altitude_delta_at_minimum_airspeed_m,
+        ) = self._altitude_at_configured_minimum_airspeed(
+            trigger,
+            first_minimum_airspeed,
+            relative_altitude,
+        )
 
         phase_timings = TakeoffPhaseTimings(
             trigger_time_us=trigger.time_us,
@@ -431,10 +467,12 @@ class TakeoffPerformanceProcessor:
                 else None
             ),
         )
+        phase_evidence = self._phase_evidence(trigger)
 
         return TakeoffPerformanceAnalysis(
             execution=self.execution,
             phase_timings=phase_timings,
+            phase_evidence=phase_evidence,
             trigger_context=trigger_context,
             control_interval=control_interval,
             launch_response_roll=self._roll_extremum(launch_response),
@@ -453,10 +491,7 @@ class TakeoffPerformanceProcessor:
                 launch_response_max_time_us=maximum_throttle_time_us,
             ),
             airspeed_envelope=self._airspeed_envelope(control_interval),
-            relative_altitude=self._relative_altitude(
-                trigger,
-                control_interval,
-            ),
+            relative_altitude=relative_altitude,
             pitch_tracking_residual=self._pitch_tracking_residual(control_interval),
             trigger_configured_minimum_airspeed_delta=(
                 self._trigger_configured_minimum_airspeed_delta(trigger)
@@ -469,6 +504,16 @@ class TakeoffPerformanceProcessor:
                 control_interval,
             ),
             first_observed_configured_minimum_airspeed=first_minimum_airspeed,
+            altitude_at_configured_minimum_airspeed=altitude_at_minimum_airspeed,
+            altitude_delta_at_configured_minimum_airspeed_m=(
+                altitude_delta_at_minimum_airspeed_m
+            ),
+            throttle_to_configured_minimum_airspeed_s=(
+                self._throttle_to_configured_minimum_airspeed(
+                    unsuppressed,
+                    first_minimum_airspeed,
+                )
+            ),
             propulsion_to_configured_minimum_airspeed=(
                 self._propulsion_to_configured_minimum_airspeed(
                     unsuppressed,
@@ -480,6 +525,52 @@ class TakeoffPerformanceProcessor:
             airspeed_estimate_types=self._airspeed_estimate_types(
                 trigger_context,
                 control_interval,
+            ),
+        )
+
+    def _phase_evidence(
+        self,
+        trigger: TakeoffExecutionEvent,
+    ) -> TakeoffPhaseEvidence:
+        """Build event-time gate evidence from owned firmware messages."""
+        armed_event = next(
+            (
+                event
+                for event in reversed(self.execution.pretrigger_events)
+                if event.event_type is TakeoffExecutionEventType.ARMED_AUTO
+                and event.time_us <= trigger.time_us
+            ),
+            None,
+        )
+        parameter_time_us = (
+            armed_event.time_us if armed_event is not None else trigger.time_us
+        )
+        acceleration_threshold = self._parameter_float(
+            "TKOFF_THR_MINACC",
+            parameter_time_us,
+        )
+        if acceleration_threshold is None or acceleration_threshold < 0:
+            acceleration_status = AccelerationGateEvidenceStatus.UNAVAILABLE
+        elif acceleration_threshold == 0:
+            acceleration_status = AccelerationGateEvidenceStatus.DISABLED
+        elif armed_event is None:
+            acceleration_status = AccelerationGateEvidenceStatus.CONFIGURED
+        else:
+            acceleration_status = AccelerationGateEvidenceStatus.OBSERVED
+
+        return TakeoffPhaseEvidence(
+            acceleration_gate_status=acceleration_status,
+            observed_xaccel_m_s2=(
+                _event_detail_value(
+                    armed_event,
+                    r"^Armed AUTO, xaccel = ([^ ]+) m/s/s(?:,|$)",
+                )
+                if acceleration_status is AccelerationGateEvidenceStatus.OBSERVED
+                else None
+            ),
+            trigger_gps_speed_m_s=_event_detail_value(
+                trigger,
+                r"^Triggered AUTO\. GPS speed = ([^ ]+)(?: |$)",
             ),
         )
 
@@ -839,6 +930,59 @@ class TakeoffPerformanceProcessor:
             None,
             interval.status,
         )
+
+    def _altitude_at_configured_minimum_airspeed(
+        self,
+        trigger: TakeoffExecutionEvent,
+        first_minimum: FirstObservedConfiguredMinimumAirspeed,
+        relative_altitude: RelativeAltitudeMetrics | None,
+    ) -> tuple[EventTelemetryValue | None, float | None]:
+        """Return causal POS altitude and trigger-baseline delta at Vmin."""
+        observation_time_us = first_minimum.observation_time_us
+        if (
+            first_minimum.status is not ConfiguredMinimumAirspeedStatus.OBSERVED
+            or observation_time_us is None
+            or relative_altitude is None
+            or not self.execution.start_us
+            <= observation_time_us
+            <= self.execution.end_us
+        ):
+            return None, None
+
+        altitude = self._event_value_after(
+            "POS",
+            "RelHomeAlt",
+            trigger.time_us,
+            observation_time_us,
+        )
+        if altitude is None:
+            return None, None
+        return (
+            altitude,
+            altitude.value - relative_altitude.trigger_altitude_m.value,
+        )
+
+    def _throttle_to_configured_minimum_airspeed(
+        self,
+        unsuppressed: TakeoffExecutionEvent | None,
+        first_minimum: FirstObservedConfiguredMinimumAirspeed,
+    ) -> float | None:
+        """Return observed suppression-release to Vmin duration."""
+        observation_time_us = first_minimum.observation_time_us
+        if unsuppressed is None or not self._event_is_owned(unsuppressed):
+            return None
+        if (
+            first_minimum.status is not ConfiguredMinimumAirspeedStatus.OBSERVED
+            or observation_time_us is None
+        ):
+            return None
+        if not (
+            self.execution.start_us <= observation_time_us <= self.execution.end_us
+        ):
+            return None
+        if observation_time_us < unsuppressed.time_us:
+            return None
+        return (observation_time_us - unsuppressed.time_us) / 1_000_000
 
     def _propulsion_to_configured_minimum_airspeed(
         self,
@@ -1375,6 +1519,9 @@ def format_takeoff_performance_report(
         if elapsed_s is not None:
             lines.append(f"  {label:<34} {_format_relative_seconds(elapsed_s)}")
 
+    lines.extend(("", "Takeoff phase evidence"))
+    lines.extend(_format_takeoff_phase_evidence(analysis))
+
     airspeed_source = _airspeed_source_label(analysis.airspeed_estimate_types)
     lines.extend(("", "At trigger", f"  {'Airspeed source':<34} {airspeed_source}"))
     context = analysis.trigger_context
@@ -1403,16 +1550,28 @@ def format_takeoff_performance_report(
     if airspeed_source != "Unavailable":
         lines.extend(("", "Airspeed build"))
         first_minimum = analysis.first_observed_configured_minimum_airspeed
+        throttle_to_minimum_s = analysis.throttle_to_configured_minimum_airspeed_s
+        altitude_delta_at_minimum_m = (
+            analysis.altitude_delta_at_configured_minimum_airspeed_m
+        )
         if first_minimum.status is ConfiguredMinimumAirspeedStatus.OBSERVED:
             lines.extend(
                 (
                     (
-                        f"  {'Time to AIRSPEED_MIN':<34} "
-                        f"{_format_relative_seconds(first_minimum.elapsed_s)}"
+                        f"  {'Trigger → AIRSPEED_MIN':<34} "
+                        f"{_format_duration_seconds(first_minimum.elapsed_s)}"
+                    ),
+                    (
+                        f"  {'Throttle → AIRSPEED_MIN':<34} "
+                        f"{_format_duration_seconds(throttle_to_minimum_s)}"
                     ),
                     (
                         f"  {'Airspeed at AIRSPEED_MIN':<34} "
                         f"{first_minimum.observed_airspeed_m_s:.2f} m/s"
+                    ),
+                    (
+                        f"  {'Altitude Δ at AIRSPEED_MIN':<34} "
+                        f"{_format_optional_altitude_delta(altitude_delta_at_minimum_m)}"
                     ),
                 )
             )
@@ -1420,7 +1579,7 @@ def format_takeoff_performance_report(
             ConfiguredMinimumAirspeedStatus.UNAVAILABLE_EVIDENCE
         ):
             lines.append(
-                f"  {'Time to AIRSPEED_MIN':<34} "
+                f"  {'Trigger → AIRSPEED_MIN':<34} "
                 f"{_minimum_airspeed_status(first_minimum.status)}"
             )
     lines.extend(("", "Takeoff control"))
@@ -1464,6 +1623,42 @@ def format_takeoff_performance_report(
         lines.extend(("", "Takeoff configuration"))
         lines.extend(_format_configuration(analysis.configuration))
     return "\n".join(lines)
+
+
+def _format_takeoff_phase_evidence(
+    analysis: TakeoffPerformanceAnalysis,
+) -> list[str]:
+    """Render owned firmware phases without inferring physical launch state."""
+    execution = analysis.execution
+    trigger = execution.launch_trigger
+    phase = analysis.phase_evidence
+    acceleration_status = {
+        AccelerationGateEvidenceStatus.OBSERVED: "Observed",
+        AccelerationGateEvidenceStatus.CONFIGURED: "Configured",
+        AccelerationGateEvidenceStatus.DISABLED: "Disabled",
+        AccelerationGateEvidenceStatus.UNAVAILABLE: "Unavailable",
+    }[phase.acceleration_gate_status]
+
+    lines = [f"  {'Acceleration gate':<34} {acceleration_status}"]
+    if acceleration_status == "Observed":
+        lines.append(
+            f"  {'Observed x-accel':<34} "
+            f"{_format_observed_value(phase.observed_xaccel_m_s2, 'm/s²')}"
+        )
+
+    lines.append(f"  {'Trigger':<34} {'Observed' if trigger else 'Unavailable'}")
+    lines.append(
+        f"  {'GPS speed at trigger':<34} "
+        f"{_format_observed_value(phase.trigger_gps_speed_m_s, 'm/s')}"
+    )
+    lines.append(
+        f"  {'Throttle release':<34} "
+        f"{'Observed' if execution.throttle_unsuppressed else 'Unavailable'}"
+    )
+    lines.append(f"  {'AIRSPEED_MIN':<34} {_minimum_airspeed_phase_status(analysis)}")
+    lines.append(f"  {'Rotation complete':<34} Unavailable")
+    lines.append(f"  {'Takeoff completion':<34} {_execution_status(analysis)}")
+    return lines
 
 
 def format_takeoff_performance_reports(
@@ -1558,6 +1753,28 @@ def _rotation_control(value: TakeoffConfigurationValue) -> str:
     return "Speed-gated rotation"
 
 
+def _event_detail_value(
+    event: TakeoffExecutionEvent | None,
+    pattern: str,
+) -> float | None:
+    """Parse one finite numeric value from owned firmware-event text."""
+    if event is None:
+        return None
+    match = re.match(pattern, event.detail)
+    if match is None:
+        return None
+    try:
+        value = float(match.group(1))
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _format_observed_value(value: float | None, unit: str) -> str:
+    """Format firmware-message evidence without inventing a value."""
+    return f"{value:.1f} {unit}" if value is not None else "Unavailable"
+
+
 def _execution_status(analysis: TakeoffPerformanceAnalysis) -> str:
     """Return the plain automatic-control interval status."""
     if analysis.control_interval is None:
@@ -1565,6 +1782,14 @@ def _execution_status(analysis: TakeoffPerformanceAnalysis) -> str:
     if analysis.control_interval.status is TakeoffControlIntervalStatus.COMPLETED:
         return "Completed"
     return "Mode exit before completion"
+
+
+def _minimum_airspeed_phase_status(analysis: TakeoffPerformanceAnalysis) -> str:
+    """Describe the existing authoritative AIRSPEED_MIN observation."""
+    status = analysis.first_observed_configured_minimum_airspeed.status
+    if status is ConfiguredMinimumAirspeedStatus.OBSERVED:
+        return "Observed"
+    return _minimum_airspeed_status(status)
 
 
 def _minimum_airspeed_status(status: ConfiguredMinimumAirspeedStatus) -> str:
@@ -1658,6 +1883,11 @@ def _format_duration_seconds(duration_s: float | None) -> str:
     return f"{duration_s:.3f} s" if duration_s is not None else "unavailable"
 
 
+def _format_optional_altitude_delta(value: float | None) -> str:
+    """Format one optional signed altitude delta."""
+    return f"{_format_signed_decimal(value)} m" if value is not None else "unavailable"
+
+
 def _format_comparison_table(
     analyses: tuple[TakeoffPerformanceAnalysis, ...],
 ) -> str:
@@ -1665,7 +1895,9 @@ def _format_comparison_table(
     headers = (
         "No.",
         "Status",
-        "Time to AIRSPEED_MIN",
+        "Trigger→Vmin",
+        "Throttle→Vmin",
+        "Alt Δ @ Vmin",
         "Peak current",
         "Max |roll|",
         "Min altitude Δ",
@@ -1675,6 +1907,10 @@ def _format_comparison_table(
     for number, analysis in enumerate(analyses, 1):
         first = analysis.first_observed_configured_minimum_airspeed
         propulsion = analysis.propulsion_to_configured_minimum_airspeed
+        throttle_to_minimum_s = analysis.throttle_to_configured_minimum_airspeed_s
+        altitude_delta_at_minimum_m = (
+            analysis.altitude_delta_at_configured_minimum_airspeed_m
+        )
         peak_current = propulsion.peak_battery_current_a if propulsion else None
         roll = analysis.launch_response_roll
         altitude = analysis.relative_altitude
@@ -1683,8 +1919,18 @@ def _format_comparison_table(
                 str(number),
                 _execution_status(analysis),
                 (
-                    _format_relative_seconds(first.elapsed_s)
+                    _format_duration_seconds(first.elapsed_s)
                     if first.status is ConfiguredMinimumAirspeedStatus.OBSERVED
+                    else "—"
+                ),
+                (
+                    _format_duration_seconds(throttle_to_minimum_s)
+                    if throttle_to_minimum_s is not None
+                    else "—"
+                ),
+                (
+                    f"{_format_signed_decimal(altitude_delta_at_minimum_m)} m"
+                    if altitude_delta_at_minimum_m is not None
                     else "—"
                 ),
                 f"{peak_current.value:.1f} A" if peak_current is not None else "—",

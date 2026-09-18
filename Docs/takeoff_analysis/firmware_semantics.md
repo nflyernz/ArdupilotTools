@@ -203,6 +203,12 @@ Plane 4.7.0 has no TAKEOFF-mode enum or state identifying “wheels”, “dolly
 the same outer mode, suppression/launch detector, flight stage, and controller
 functions. Source-backed differences are parameter-driven.
 
+APT therefore prefers owned firmware events and state transitions over
+sensor-derived phase inference. An acceleration-gate message does not prove an
+external launch, and the GPS speed printed by the trigger does not prove a
+surface takeoff. Physical classification is deliberately deferred; possible
+future high-level families are **externally launched** and **surface takeoff**.
+
 ### 5.1 Rolling or surface takeoff
 
 Wheeled runway, dolly, and similar surface runs are analytically one firmware
@@ -228,6 +234,12 @@ a separate detector.
 `TKOFF_ROTATE_SPD` is an airspeed threshold inside command generation. It is
 not logged as a dedicated rotation event and does not prove physical rotation
 or liftoff. `rotation_complete` is not exposed in `STAT`.
+
+Consequently, current APT presentation reports rotation completion as
+**Unavailable**. It must not reconstruct that internal state from an airspeed
+crossing, pitch or altitude response, or `TKOFF_ROTATE_SPD` configuration.
+Tail-hold, ground-roll, rotation, liftoff, and surface-departure phases remain
+deferred pending known real surface-takeoff logs and authoritative evidence.
 
 Rolling control can additionally use:
 

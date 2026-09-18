@@ -185,6 +185,69 @@ whereas `GPS.Spd` is independently sampled receiver telemetry. They need not
 match exactly. Do not interpolate GPS to force agreement with the event text
 or with faster CTUN samples.
 
+### 6.3 Configured-minimum airspeed event metrics
+
+The authoritative `AIRSPEED_MIN` event is the existing first owned CTUN
+observation whose usable controller airspeed satisfies the `AIRSPEED_MIN`
+value effective at that CTUN row. Its `TimeUS`, `As`, `AsT`, and event-time
+parameter value are shared by every metric below; do not run a second crossing
+detector or substitute a nearby row.
+
+**Trigger → AIRSPEED_MIN** is the duration from the firmware launch trigger to
+that qualifying CTUN observation. This is the existing time-to-minimum metric
+under a more explicit human-facing label; its analytical semantics do not
+change.
+
+**Altitude Δ at AIRSPEED_MIN** uses `POS.RelHomeAlt` and the same trigger
+baseline as the other altitude-delta metrics. Select the latest finite POS
+sample at or after the trigger and at or before the qualifying CTUN timestamp,
+then subtract the latest valid owned POS baseline at or before the trigger.
+The signed result is metres, and a negative result is valid evidence. If the
+trigger baseline or the causal event-time POS sample is unavailable, the metric
+is unavailable. Do not interpolate POS, substitute another altitude family,
+or use a post-event sample.
+
+**Throttle → AIRSPEED_MIN** is the qualifying CTUN `TimeUS` minus the observed
+throttle-unsuppression event `TimeUS`, expressed in seconds. Both observations
+must belong to the same TAKEOFF execution, and the qualifying airspeed
+observation must be at or after unsuppression. Missing evidence or reversed
+time order makes the metric unavailable; do not clamp a negative duration to
+zero or interpolate either boundary.
+
+Normal presentation renders these two event-to-event quantities as durations
+without a leading plus sign. Event offsets in the execution timeline remain
+trigger-relative and retain their existing leading-plus convention.
+
+### 6.4 Event-led phase presentation
+
+The detailed report separates firmware-owned phase evidence from configuration
+and derived performance. `Armed AUTO, xaccel = ...` is observed
+acceleration-gate evidence only when the event belongs to the execution and
+the event-time `TKOFF_THR_MINACC` value enables that gate. It is not evidence of
+a hand, bungee, catapult, rail, or other physical launch method. A configured
+gate without an owned `Armed AUTO` event remains **Configured**, not Observed;
+in that case configuration is evaluated at the trigger.
+
+`Triggered AUTO. GPS speed = ...` remains the authoritative trigger event and
+its printed speed is firmware-message evidence at that trigger. It is not a
+rotation speed and does not prove a rolling or other surface takeoff. Throttle
+release, the configured-minimum airspeed observation, and TAKEOFF-stage
+completion reuse their existing owned event/state and metric semantics; the
+phase presentation does not run parallel detectors.
+
+Plane internally tracks `rotation_complete`, but current retained APT evidence
+does not expose that state authoritatively. The report therefore shows rotation
+completion as **Unavailable** rather than inferring it from
+`TKOFF_ROTATE_SPD`, airspeed, pitch, or altitude. Tail hold, ground roll,
+rotation, liftoff, and surface departure are likewise deferred until known
+surface-takeoff logs and authoritative evidence support them.
+
+Physical launch classification is deliberately deferred. Future high-level
+families may distinguish externally launched from surface takeoff, but neither
+configuration nor sensor traces establish those families in the current
+analysis. An already-airborne TAKEOFF-mode entry is a separate execution
+context, not a launch family.
+
 ## 7. Altitude and climb/sink evidence
 
 ### 7.1 Altitude
@@ -199,6 +262,8 @@ Use differences within `POS.RelHomeAlt` only:
 - trigger baseline: the latest valid owned sample at or before the trigger;
 - minimum relative altitude: the minimum valid strictly post-trigger sample
   minus that baseline;
+- altitude at `AIRSPEED_MIN`: the latest valid sample at or after the trigger
+  and at or before the qualifying CTUN observation, minus that baseline;
 - endpoint gain: the latest valid owned sample at or before the endpoint minus
   the same baseline.
 
