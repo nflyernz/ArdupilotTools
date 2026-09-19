@@ -4,6 +4,12 @@ from core.battery import (
     BatteryLoadEventType,
     BatteryProcessor,
 )
+from core.battery_pack_store import (
+    BatteryPackStore,
+    BatteryPackStoreError,
+    LogPackState,
+    fingerprint_log,
+)
 from core.config import Config
 from core.log_reader import (
     FlightReader,
@@ -38,9 +44,10 @@ class BatteryAnalysisPresentation:
     Present battery analysis for a selected flight and battery instance.
     """
 
-    def __init__(self, pack_id=None, config=None):
+    def __init__(self, pack_id=None, config=None, pack_store=None):
         self.pack_id = pack_id
         self.config = config or Config("Config/battery.yaml")
+        self.pack_store = pack_store
 
     def run(self):
 
@@ -49,6 +56,12 @@ class BatteryAnalysisPresentation:
         if selected_logs is None:
             return
         log_path = selected_logs[0]
+
+        pack_id = self.pack_id
+        if pack_id is None:
+            continue_analysis, pack_id = self._resolve_pack_id(log_path)
+            if not continue_analysis:
+                return
 
         try:
             flight_log = FlightReader(
@@ -108,7 +121,113 @@ class BatteryAnalysisPresentation:
             log_path,
             flight_window,
             analysis,
+            pack_id,
         )
+
+    def _resolve_pack_id(self, log_path):
+        """Resolve optional Pack ID metadata for one content-identified BIN."""
+        try:
+            store = self.pack_store or BatteryPackStore()
+            fingerprint = fingerprint_log(log_path)
+            association = store.association_for(fingerprint)
+        except (BatteryPackStoreError, OSError) as exc:
+            print()
+            print(f"Battery pack tracking unavailable: {exc}")
+            print("Persistent pack data was not changed. Continuing without Pack ID.")
+            return True, None
+
+        if association.state is LogPackState.TRACKED:
+            return True, association.pack_id
+        if association.state is LogPackState.NOT_TRACKED:
+            return True, None
+        return self._select_pack_decision(store, fingerprint)
+
+    def _select_pack_decision(self, store, fingerprint):
+        """Prompt once for an unseen source-log fingerprint."""
+        while True:
+            print()
+            print("Battery Pack")
+            print("============")
+            print()
+            if store.pack_ids:
+                print("1. Select existing pack")
+                print("2. Create new pack")
+                print("3. Continue without pack tracking")
+            else:
+                print("No existing Pack IDs.")
+                print("1. Create new pack")
+                print("2. Continue without pack tracking")
+            print("0. Cancel")
+
+            choice = input("\nSelection: ").strip()
+            if choice == "0":
+                return False, None
+            if store.pack_ids and choice == "1":
+                pack_id = self._select_existing_pack(store.pack_ids)
+                if pack_id is None:
+                    continue
+                if self._save_pack_decision(
+                    lambda selected_pack_id=pack_id: store.associate(
+                        fingerprint,
+                        selected_pack_id,
+                    )
+                ):
+                    return True, pack_id
+                return True, None
+            if choice == ("2" if store.pack_ids else "1"):
+                pack_id = input("\nNew Pack ID: ").strip()
+                try:
+                    store.create_and_associate(fingerprint, pack_id)
+                except BatteryPackStoreError as exc:
+                    print(exc)
+                    continue
+                except OSError as exc:
+                    self._print_save_error(exc)
+                    return True, None
+                return True, pack_id
+            if choice == ("3" if store.pack_ids else "2"):
+                if self._save_pack_decision(
+                    lambda: store.mark_not_tracked(fingerprint)
+                ):
+                    return True, None
+                return True, None
+            print("Invalid selection.")
+
+    @staticmethod
+    def _select_existing_pack(pack_ids):
+        """Select one known physical Pack ID, or return to the decision menu."""
+        print()
+        print("Existing Battery Packs")
+        print("======================")
+        for index, pack_id in enumerate(pack_ids, start=1):
+            print(f"{index}. {pack_id}")
+        print("0. Back")
+
+        while True:
+            choice = input("\nSelection: ").strip()
+            if choice == "0":
+                return None
+            try:
+                index = int(choice)
+            except ValueError:
+                index = 0
+            if 1 <= index <= len(pack_ids):
+                return pack_ids[index - 1]
+            print("Invalid selection.")
+
+    def _save_pack_decision(self, save):
+        """Persist one optional tracking decision without blocking analysis."""
+        try:
+            save()
+        except OSError as exc:
+            self._print_save_error(exc)
+            return False
+        return True
+
+    @staticmethod
+    def _print_save_error(exc):
+        print(f"Unable to save battery pack decision: {exc}")
+        print("Continuing without Pack ID; persistent data was not changed.")
 
     def _select_flight(
         self,
@@ -214,6 +333,7 @@ class BatteryAnalysisPresentation:
         log_path,
         flight_window,
         analysis: BatteryAnalysis | None,
+        pack_id=None,
     ):
 
         print()
@@ -244,8 +364,9 @@ class BatteryAnalysisPresentation:
 
         configuration = analysis.session_configuration
 
-        if self.pack_id is not None:
-            print(f"Pack ID          : {self.pack_id}")
+        display_pack_id = pack_id if pack_id is not None else self.pack_id
+        if display_pack_id is not None:
+            print(f"Pack ID          : {display_pack_id}")
 
         if configuration is not None:
             print(
