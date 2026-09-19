@@ -16,7 +16,9 @@ from core.takeoff_performance import (
     AccelerationGateEvidenceStatus,
     ConfiguredMinimumAirspeedStatus,
     FixedThrottleTargetStatus,
+    RangefinderHeightResponseStatus,
     TakeoffControlIntervalStatus,
+    TakeoffControlProfile,
     TakeoffPerformanceProcessor,
     format_takeoff_performance_report,
     format_takeoff_performance_reports,
@@ -125,6 +127,8 @@ def _flight_log(
     pos=(),
     baro=(),
     tecs=(),
+    rfns=(),
+    rfnd=(),
     msg=(),
     stat=(),
     parameter_history=None,
@@ -150,6 +154,8 @@ def _flight_log(
             "POS": _table(pos, ("TimeUS", "RelHomeAlt")),
             "BARO": _table(baro, ("TimeUS", "Alt")),
             "TECS": _table(tecs, ("TimeUS", "ph")),
+            "RFNS": _table(rfns, ("TimeUS", "HE", "InRng")),
+            "RFND": _table(rfnd, ("TimeUS", "Instance", "Dist", "Stat", "Orient")),
             "MSG": _table(msg, ("TimeUS", "Message")),
             "STAT": _table(stat, ("TimeUS", "Stage", "Sup")),
         },
@@ -1945,3 +1951,535 @@ def test_airspeed_source_is_execution_evidence_not_shared_configuration():
     assert "Airspeed source" not in configuration
     assert "Airspeed source                    Airspeed sensor" in executions
     assert "Airspeed source                    Synthetic estimate" in executions
+
+
+def _control_profile(flight_log, execution=None):
+    """Return profile evidence even for intentionally unanalysed executions."""
+    selected_execution = execution or _execution()
+    return TakeoffPerformanceProcessor(
+        flight_log,
+        selected_execution,
+    )._control_profile(selected_execution.launch_trigger)
+
+
+def _rangefinder_analysis(
+    rfns=(),
+    *,
+    ctun=((4_000_000, 0.0, 0.0, 0.0, 0.0, 11.0, 1, 0.0),),
+    execution=None,
+    history=None,
+    rfnd=(),
+):
+    """Build one immediate-profile analysis with bounded RFNS evidence."""
+    return _analyse(
+        _flight_log(
+            ctun=ctun,
+            rfns=rfns,
+            rfnd=rfnd,
+            parameter_history=history
+            or _history(
+                {
+                    "AIRSPEED_MIN": 10.0,
+                    "TKOFF_ROTATE_SPD": 0.0,
+                    "RNGFND_LND_ORNT": 25.0,
+                }
+            ),
+        ),
+        execution,
+    )
+
+
+def test_control_profile_classification_uses_event_time_rotate_speed():
+    """Zero, positive, and later parameter values classify at the trigger."""
+    immediate = _control_profile(
+        _flight_log(parameter_history=_history({"TKOFF_ROTATE_SPD": 0.0}))
+    )
+    rotation = _control_profile(
+        _flight_log(parameter_history=_history({"TKOFF_ROTATE_SPD": 8.0}))
+    )
+    changed_after_trigger = _control_profile(
+        _flight_log(
+            parameter_history=_history(
+                {"TKOFF_ROTATE_SPD": 0.0},
+                {"TKOFF_ROTATE_SPD": (ParameterChange(TRIGGER_US + 1, 8.0),)},
+            )
+        )
+    )
+
+    assert immediate.profile is TakeoffControlProfile.IMMEDIATE_TAKEOFF_PITCH
+    assert rotation.profile is TakeoffControlProfile.ROTATION_SPEED
+    assert (
+        changed_after_trigger.profile is TakeoffControlProfile.IMMEDIATE_TAKEOFF_PITCH
+    )
+
+
+def test_control_profile_rejects_missing_nonfinite_and_negative_rotate_speed():
+    """Unusable rotation configuration remains explicitly unavailable."""
+    for value in (None, math.nan, math.inf, -math.inf, -1.0):
+        history = _history({} if value is None else {"TKOFF_ROTATE_SPD": value})
+        context = _control_profile(_flight_log(parameter_history=history))
+
+        assert context.profile is TakeoffControlProfile.UNAVAILABLE
+        assert context.rotation_speed_m_s is None
+
+
+def test_already_airborne_messages_take_profile_precedence_without_trigger():
+    """Both owned firmware paths outrank parameter profiles without inference."""
+    for event_type in (
+        TakeoffExecutionEventType.ALREADY_FLYING_ABOVE_TAKEOFF_ALT,
+        TakeoffExecutionEventType.ALREADY_FLYING_CLIMB_TO_TAKEOFF_ALT,
+    ):
+        execution = _execution(
+            trigger=False,
+            already_airborne_event_type=event_type,
+        )
+        context = _control_profile(
+            _flight_log(parameter_history=_history({"TKOFF_ROTATE_SPD": 12.0})),
+            execution,
+        )
+
+        assert execution.launch_trigger is None
+        assert context.profile is TakeoffControlProfile.ALREADY_AIRBORNE
+
+
+def test_control_profile_secondary_configuration_semantics():
+    """Secondary gates, delay, tail path, pitch, and slew preserve firmware units."""
+    context = _control_profile(
+        _flight_log(
+            parameter_history=_history(
+                {
+                    "TKOFF_ROTATE_SPD": 9.0,
+                    "TKOFF_GND_PITCH": 7.0,
+                    "TKOFF_THR_MINACC": 5.0,
+                    "TKOFF_ACCEL_CNT": 3.0,
+                    "TKOFF_THR_MINSPD": 4.0,
+                    "TKOFF_THR_DELAY": 12.0,
+                    "TKOFF_TDRAG_ELEV": -35.0,
+                    "TKOFF_TDRAG_SPD1": 2.0,
+                    "TKOFF_THR_SLEW": 25.0,
+                },
+                {
+                    "TKOFF_THR_DELAY": (ParameterChange(TRIGGER_US + 1, 99.0),),
+                    "TKOFF_THR_SLEW": (ParameterChange(TRIGGER_US + 1, -1.0),),
+                },
+            )
+        )
+    )
+
+    assert context.profile is TakeoffControlProfile.ROTATION_SPEED
+    assert context.ground_pitch_deg == 7.0
+    assert context.acceleration_gate_enabled is True
+    assert context.acceleration_threshold_m_s2 == 5.0
+    assert context.required_acceleration_events == 3
+    assert context.trigger_speed_gate_enabled is True
+    assert context.trigger_speed_threshold_m_s == 4.0
+    assert math.isclose(context.post_gate_delay_s, 1.2)
+    assert context.tail_hold_path_enabled is True
+    assert context.throttle_slew_rate_pct_s == 25.0
+    assert context.throttle_slew_uses_fallback is False
+    assert context.throttle_slew_unlimited is False
+
+    analysis = _analyse(
+        _flight_log(
+            parameter_history=_history(
+                {
+                    "TKOFF_ROTATE_SPD": 9.0,
+                    "TKOFF_GND_PITCH": 7.0,
+                    "TKOFF_THR_MINACC": 5.0,
+                    "TKOFF_ACCEL_CNT": 3.0,
+                    "TKOFF_THR_MINSPD": 4.0,
+                    "TKOFF_THR_DELAY": 12.0,
+                    "TKOFF_TDRAG_ELEV": -35.0,
+                    "TKOFF_TDRAG_SPD1": 2.0,
+                    "TKOFF_THR_SLEW": 25.0,
+                }
+            )
+        )
+    )
+    assert analysis is not None
+    report = format_takeoff_performance_report(analysis, 1)
+    assert "Pitch path                         Rotation-speed pitch path" in report
+    assert "Ground pitch                       7.0 °" in report
+    assert "Acceleration gate                  Enabled" in report
+    assert "Required acceleration events       3" in report
+    assert "Trigger speed gate                 Enabled" in report
+    assert "Post-gate delay                    1.2 s" in report
+    assert "Tail-hold path                     Enabled" in report
+    assert "Takeoff throttle slew              25 %/s" in report
+
+
+def test_control_profile_disabled_and_special_slew_semantics():
+    """Zero gates and tail values disable paths; 0/-1 slew retain distinct meaning."""
+    base = {
+        "TKOFF_ROTATE_SPD": 0.0,
+        "TKOFF_THR_MINACC": 0.0,
+        "TKOFF_ACCEL_CNT": 0.0,
+        "TKOFF_THR_MINSPD": 0.0,
+        "TKOFF_THR_DELAY": 0.0,
+        "TKOFF_TDRAG_ELEV": 0.0,
+        "TKOFF_TDRAG_SPD1": 8.0,
+    }
+    fallback = _control_profile(
+        _flight_log(parameter_history=_history({**base, "TKOFF_THR_SLEW": 0.0}))
+    )
+    unlimited = _control_profile(
+        _flight_log(parameter_history=_history({**base, "TKOFF_THR_SLEW": -1.0}))
+    )
+
+    assert fallback.acceleration_gate_enabled is False
+    assert fallback.required_acceleration_events is None
+    assert fallback.trigger_speed_gate_enabled is False
+    assert fallback.post_gate_delay_s == 0.0
+    assert fallback.tail_hold_path_enabled is False
+    assert fallback.throttle_slew_uses_fallback is True
+    assert fallback.throttle_slew_unlimited is False
+    assert unlimited.throttle_slew_uses_fallback is False
+    assert unlimited.throttle_slew_unlimited is True
+
+    fallback_analysis = _analyse(
+        _flight_log(parameter_history=_history({**base, "TKOFF_THR_SLEW": 0.0}))
+    )
+    unlimited_analysis = _analyse(
+        _flight_log(parameter_history=_history({**base, "TKOFF_THR_SLEW": -1.0}))
+    )
+    assert fallback_analysis is not None
+    assert unlimited_analysis is not None
+    assert "Takeoff throttle slew              THR_SLEWRATE fallback" in (
+        format_takeoff_performance_report(fallback_analysis, 1)
+    )
+    assert "Takeoff throttle slew              Unlimited" in (
+        format_takeoff_performance_report(unlimited_analysis, 2)
+    )
+
+
+def test_control_profile_nonfinite_secondary_values_are_unavailable():
+    """Non-finite secondary configuration never becomes numeric evidence."""
+    context = _control_profile(
+        _flight_log(
+            parameter_history=_history(
+                {
+                    "TKOFF_ROTATE_SPD": 0.0,
+                    "TKOFF_THR_MINACC": math.nan,
+                    "TKOFF_ACCEL_CNT": math.inf,
+                    "TKOFF_THR_MINSPD": -math.inf,
+                    "TKOFF_THR_DELAY": math.nan,
+                    "TKOFF_TDRAG_ELEV": math.inf,
+                    "TKOFF_TDRAG_SPD1": math.nan,
+                    "TKOFF_THR_SLEW": math.inf,
+                }
+            )
+        )
+    )
+
+    assert context.acceleration_gate_enabled is None
+    assert context.required_acceleration_events is None
+    assert context.trigger_speed_gate_enabled is None
+    assert context.post_gate_delay_s is None
+    assert context.tail_hold_path_enabled is None
+    assert context.throttle_slew_rate_pct_s is None
+    assert context.throttle_slew_uses_fallback is False
+    assert context.throttle_slew_unlimited is False
+
+
+def test_control_profile_report_uses_source_backed_neutral_language():
+    """Presentation reports control paths without physical launch inference."""
+    immediate = _rangefinder_analysis(
+        rfns=((UNSUPPRESSED_US, 2.0, 1), (4_000_000, 3.0, 1))
+    )
+    rotation = _analyse(
+        _flight_log(parameter_history=_history({"TKOFF_ROTATE_SPD": 8.0}))
+    )
+
+    assert immediate is not None
+    assert rotation is not None
+    report = format_takeoff_performance_reports((immediate, rotation)).lower()
+    for unsupported_label in (
+        "hand launch",
+        "bungee",
+        "catapult",
+        "rail",
+        "rolling",
+        "wheeled",
+        "surface launch",
+    ):
+        assert unsupported_label not in report
+
+
+def test_rangefinder_response_preserves_exact_causal_boundaries_and_values():
+    """Latest causal start and end rows bound an uninterpolated RFNS response."""
+    analysis = _rangefinder_analysis(
+        rfns=(
+            (TRIGGER_US - 1, 99.0, 1),
+            (2_900_000, 2.0, 1),
+            (UNSUPPRESSED_US, 2.5, 1),
+            (3_500_000, 1.5, 1),
+            (4_000_000, 3.5, 1),
+            (4_000_001, 88.0, 1),
+        )
+    )
+
+    assert analysis is not None
+    response = analysis.rangefinder_height_response
+    assert response.status is RangefinderHeightResponseStatus.COMPLETE
+    assert response.start_sample_time_us == UNSUPPRESSED_US
+    assert response.start_height_m == 2.5
+    assert response.start_sample_age_us == 0
+    assert response.minimum_height_m == 1.5
+    assert response.minimum_sample_time_us == 3_500_000
+    assert response.minimum_elapsed_s == 0.5
+    assert response.end_sample_time_us == 4_000_000
+    assert response.end_height_m == 3.5
+    assert response.end_sample_age_us == 0
+    assert response.net_height_change_m == 1.0
+    assert response.selected_orientation == 25
+    report = format_takeoff_performance_report(analysis, 1)
+    assert (
+        "Interval                           Throttle release → AIRSPEED_MIN" in report
+    )
+    assert "Height at release                  2.50 m" in report
+    assert "Minimum observed height            1.50 m at +0.500 s" in report
+    assert "Height at AIRSPEED_MIN             3.50 m" in report
+    assert "Net height change                  +1.00 m" in report
+    assert str(UNSUPPRESSED_US) not in report
+
+
+def test_rangefinder_response_uses_causal_prior_start_and_end_samples():
+    """Absent exact rows retain the latest prior sample without interpolation."""
+    analysis = _rangefinder_analysis(
+        rfns=(
+            (2_900_000, 2.0, 1),
+            (3_800_000, 2.5, 1),
+            (4_000_001, 99.0, 1),
+        )
+    )
+
+    assert analysis is not None
+    response = analysis.rangefinder_height_response
+    assert response.status is RangefinderHeightResponseStatus.COMPLETE
+    assert response.start_sample_time_us == 2_900_000
+    assert response.start_sample_age_us == 100_000
+    assert response.end_sample_time_us == 3_800_000
+    assert response.end_sample_age_us == 200_000
+    assert response.end_height_m == 2.5
+
+
+def test_rangefinder_response_does_not_borrow_outside_execution_or_substitute_rfnd():
+    """Rows outside the owned interval and raw RFND cannot create RFNS evidence."""
+    analysis = _rangefinder_analysis(
+        rfns=((TRIGGER_US - 1, 2.0, 1), (4_000_001, 3.0, 1)),
+        rfnd=((3_000_000, 0, 2.0, 4, 25), (4_000_000, 0, 3.0, 4, 25)),
+    )
+
+    assert analysis is not None
+    assert analysis.rangefinder_height_response.status is (
+        RangefinderHeightResponseStatus.RFNS_UNAVAILABLE
+    )
+
+
+def test_rangefinder_response_requires_both_start_and_post_release_rows():
+    """A one-sided RFNS interval cannot fabricate the missing boundary."""
+    for rows in (
+        ((3_500_000, 2.5, 1), (4_000_000, 3.0, 1)),
+        ((UNSUPPRESSED_US, 2.0, 1),),
+    ):
+        analysis = _rangefinder_analysis(rfns=rows)
+
+        assert analysis is not None
+        assert analysis.rangefinder_height_response.status is (
+            RangefinderHeightResponseStatus.RFNS_UNAVAILABLE
+        )
+
+
+def test_rangefinder_response_requires_release_and_airspeed_min_events():
+    """Either missing authoritative endpoint yields a specific unavailable state."""
+    missing_release = _rangefinder_analysis(
+        rfns=((2_900_000, 2.0, 1), (4_000_000, 3.0, 1)),
+        execution=_execution(unsuppressed=False),
+    )
+    missing_vmin = _rangefinder_analysis(
+        rfns=((UNSUPPRESSED_US, 2.0, 1), (4_000_000, 3.0, 1)),
+        ctun=((4_000_000, 0.0, 0.0, 0.0, 0.0, 9.0, 1, 0.0),),
+    )
+
+    assert missing_release is not None
+    assert missing_release.rangefinder_height_response.status is (
+        RangefinderHeightResponseStatus.THROTTLE_RELEASE_UNAVAILABLE
+    )
+    assert missing_vmin is not None
+    assert missing_vmin.rangefinder_height_response.status is (
+        RangefinderHeightResponseStatus.AIRSPEED_MIN_UNAVAILABLE
+    )
+
+
+def test_rangefinder_start_uses_latest_row_even_when_it_is_invalid():
+    """Older valid state cannot replace newer invalid state at throttle release."""
+    analysis = _rangefinder_analysis(
+        rfns=(
+            (2_800_000, 2.0, 1),
+            (2_900_000, math.nan, 0),
+            (3_500_000, 2.5, 1),
+            (4_000_000, 3.0, 1),
+        )
+    )
+
+    assert analysis is not None
+    assert analysis.rangefinder_height_response.status is (
+        RangefinderHeightResponseStatus.RANGE_INVALID
+    )
+
+
+def test_rangefinder_continuity_rejects_early_late_and_nonfinite_invalid_rows():
+    """Every retained RFNS update in the bounded interval must remain valid."""
+    for bad_row in (
+        (3_000_001, 2.1, 0),
+        (3_999_999, 2.9, 0),
+        (3_500_000, math.nan, 1),
+        (3_500_000, math.inf, 1),
+    ):
+        analysis = _rangefinder_analysis(
+            rfns=(
+                (UNSUPPRESSED_US, 2.0, 1),
+                bad_row,
+                (4_000_000, 3.0, 1),
+            )
+        )
+
+        assert analysis is not None
+        assert analysis.rangefinder_height_response.status is (
+            RangefinderHeightResponseStatus.RANGE_INVALID
+        )
+
+
+def test_rangefinder_validity_restoration_does_not_erase_interval_loss():
+    """A later valid update cannot repair an earlier loss of current range."""
+    analysis = _rangefinder_analysis(
+        rfns=(
+            (UNSUPPRESSED_US, 2.0, 1),
+            (3_400_000, 2.2, 0),
+            (3_600_000, 2.4, 1),
+            (4_000_000, 3.0, 1),
+        )
+    )
+
+    assert analysis is not None
+    assert analysis.rangefinder_height_response.status is (
+        RangefinderHeightResponseStatus.RANGE_INVALID
+    )
+
+
+def test_rangefinder_minimum_includes_start_and_uses_earliest_tie():
+    """The release state participates, and equal minima keep source order."""
+    analysis = _rangefinder_analysis(
+        rfns=(
+            (UNSUPPRESSED_US, 1.5, 1),
+            (3_500_000, 1.5, 1),
+            (4_000_000, 2.0, 1),
+        )
+    )
+
+    assert analysis is not None
+    response = analysis.rangefinder_height_response
+    assert response.status is RangefinderHeightResponseStatus.COMPLETE
+    assert response.minimum_sample_time_us == UNSUPPRESSED_US
+    assert response.minimum_elapsed_s == 0.0
+    report = format_takeoff_performance_report(analysis, 1)
+    assert "1.50 m at start" in report
+
+
+def test_rangefinder_net_change_preserves_positive_zero_and_negative_sign():
+    """Net response remains signed evidence rather than a magnitude."""
+    for end_height, expected in ((3.0, 1.0), (2.0, 0.0), (1.0, -1.0)):
+        analysis = _rangefinder_analysis(
+            rfns=(
+                (UNSUPPRESSED_US, 2.0, 1),
+                (4_000_000, end_height, 1),
+            )
+        )
+
+        assert analysis is not None
+        assert analysis.rangefinder_height_response.net_height_change_m == expected
+
+
+def test_rangefinder_report_is_profile_gated_and_unavailable_is_concise():
+    """Only the immediate path shows the response block and one concise reason."""
+    immediate = _rangefinder_analysis()
+    rotation = _analyse(
+        _flight_log(
+            ctun=((4_000_000, 0.0, 0.0, 0.0, 0.0, 11.0, 1, 0.0),),
+            rfns=((UNSUPPRESSED_US, 2.0, 1), (4_000_000, 3.0, 1)),
+            parameter_history=_history({"AIRSPEED_MIN": 10.0, "TKOFF_ROTATE_SPD": 8.0}),
+        )
+    )
+
+    assert immediate is not None
+    assert rotation is not None
+    immediate_report = format_takeoff_performance_report(immediate, 1)
+    rotation_report = format_takeoff_performance_report(rotation, 2)
+    unavailable = _analyse(_flight_log())
+    assert unavailable is not None
+    unavailable_report = format_takeoff_performance_report(unavailable, 3)
+    already_airborne = _rangefinder_analysis(
+        rfns=((UNSUPPRESSED_US, 2.0, 1), (4_000_000, 3.0, 1)),
+        execution=_execution(
+            already_airborne_event_type=(
+                TakeoffExecutionEventType.ALREADY_FLYING_ABOVE_TAKEOFF_ALT
+            )
+        ),
+    )
+    assert already_airborne is not None
+    already_airborne_report = format_takeoff_performance_report(already_airborne, 4)
+    assert immediate_report.count("Rangefinder height response") == 1
+    assert "Unavailable — RFNS unavailable" in immediate_report
+    assert "Height at release" not in immediate_report
+    assert "Rangefinder height response" not in rotation_report
+    assert "Rangefinder height response" not in unavailable_report
+    assert "Rangefinder height response" not in already_airborne_report
+
+
+def test_rangefinder_response_is_independent_of_pos_altitude_evidence():
+    """POS availability and values neither create nor alter RFNS response."""
+    rfns = ((UNSUPPRESSED_US, 2.0, 1), (4_000_000, 3.0, 1))
+    without_pos = _rangefinder_analysis(rfns=rfns)
+    with_pos = _analyse(
+        _flight_log(
+            ctun=((4_000_000, 0.0, 0.0, 0.0, 0.0, 11.0, 1, 0.0),),
+            rfns=rfns,
+            pos=((TRIGGER_US, 100.0), (4_000_000, -50.0)),
+            parameter_history=_history(
+                {
+                    "AIRSPEED_MIN": 10.0,
+                    "TKOFF_ROTATE_SPD": 0.0,
+                    "RNGFND_LND_ORNT": 25.0,
+                }
+            ),
+        )
+    )
+
+    assert without_pos is not None
+    assert with_pos is not None
+    assert (
+        without_pos.rangefinder_height_response == with_pos.rangefinder_height_response
+    )
+    assert without_pos.altitude_delta_at_configured_minimum_airspeed_m is None
+    assert with_pos.altitude_delta_at_configured_minimum_airspeed_m == -150.0
+
+
+def test_rfns_availability_does_not_change_pos_altitude_delta():
+    """The established POS metric is identical with and without RFNS rows."""
+    common = {
+        "ctun": ((4_000_000, 0.0, 0.0, 0.0, 0.0, 11.0, 1, 0.0),),
+        "pos": ((TRIGGER_US, 10.0), (4_000_000, 12.5)),
+        "parameter_history": _history({"AIRSPEED_MIN": 10.0, "TKOFF_ROTATE_SPD": 0.0}),
+    }
+    without_rfns = _analyse(_flight_log(**common))
+    with_rfns = _analyse(
+        _flight_log(
+            **common,
+            rfns=((UNSUPPRESSED_US, 2.0, 1), (4_000_000, 3.0, 1)),
+        )
+    )
+
+    assert without_rfns is not None
+    assert with_rfns is not None
+    assert without_rfns.altitude_delta_at_configured_minimum_airspeed_m == 2.5
+    assert with_rfns.altitude_delta_at_configured_minimum_airspeed_m == 2.5

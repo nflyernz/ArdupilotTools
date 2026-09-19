@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 
+from core.config import Config
 from core.log_reader import FlightReader
 from core.takeoff_execution import (
     TakeoffEntryContext,
@@ -60,7 +61,7 @@ def _record(message_type, **fields):
     )
 
 
-def _read(monkeypatch, messages):
+def _read(monkeypatch, messages, config=None):
     """Read a synthetic decoded stream through normal FlightReader flow."""
     connection = _Connection(messages)
     monkeypatch.setattr(
@@ -69,7 +70,7 @@ def _read(monkeypatch, messages):
     )
     return FlightReader(
         "synthetic_takeoff.bin",
-        config=_ReaderConfig(),
+        config=config or _ReaderConfig(),
     ).read()
 
 
@@ -158,6 +159,16 @@ def _pos_record():
         Alt=42.5,
         RelHomeAlt=12.25,
         RelOriginAlt=11.75,
+    )
+
+
+def _rfns_record():
+    """Return canonical rangefinder-state evidence."""
+    return _record(
+        "RFNS",
+        TimeUS=1_345_678,
+        HE=2.75,
+        InRng=1,
     )
 
 
@@ -343,6 +354,30 @@ def test_normal_reader_without_pos_preserves_empty_message_behavior(monkeypatch)
 
     assert flight_log.get("POS").empty
     assert not flight_log.has("POS")
+
+
+def test_landing_reader_configuration_retains_full_rfns_records(monkeypatch):
+    """The normal landing reader path exposes timestamped RFNS height state."""
+    config = Config("Config/landing.yaml")
+    assert "RFNS" in config.get("messages")
+
+    flight_log = _read(
+        monkeypatch,
+        (_firmware_record(), _rfns_record()),
+        config=config,
+    )
+    rangefinder_state = flight_log.get("RFNS")
+
+    assert len(rangefinder_state) == 1
+    assert tuple(rangefinder_state.columns) == (
+        "mavpackettype",
+        "TimeUS",
+        "HE",
+        "InRng",
+    )
+    assert int(rangefinder_state.iloc[0]["TimeUS"]) == 1_345_678
+    assert float(rangefinder_state.iloc[0]["HE"]) == 2.75
+    assert int(rangefinder_state.iloc[0]["InRng"]) == 1
 
 
 def test_reader_exposed_stat_is_consumed_by_takeoff_detector(monkeypatch):
