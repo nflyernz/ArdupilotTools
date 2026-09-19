@@ -587,6 +587,121 @@ def test_already_flying_mode_entry_exists_without_launch_messages():
     assert execution.takeoff_control_completion is None
 
 
+def test_above_takeoff_alt_message_is_owned_already_airborne_evidence():
+    """The exact above-target firmware branch is retained inside Mode 13."""
+    detail = "Above TKOFF alt - loitering"
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE), (6_000_000, FBWA_MODE)),
+        msg=((2_000_000, detail),),
+    )[0]
+
+    event = execution.already_airborne_entry
+    assert event is not None
+    assert event.event_type is (
+        TakeoffExecutionEventType.ALREADY_FLYING_ABOVE_TAKEOFF_ALT
+    )
+    assert event.time_us == 2_000_000
+    assert event.detail == detail
+    assert execution.launch_trigger is None
+
+
+def test_climb_to_takeoff_alt_message_is_owned_already_airborne_evidence():
+    """The exact below-target firmware branch remains distinct internally."""
+    detail = "Climbing to TKOFF alt then loitering"
+    execution = _detect(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE), (6_000_000, FBWA_MODE)),
+        msg=((2_000_000, detail),),
+    )[0]
+
+    event = execution.already_airborne_entry
+    assert event is not None
+    assert event.event_type is (
+        TakeoffExecutionEventType.ALREADY_FLYING_CLIMB_TO_TAKEOFF_ALT
+    )
+    assert event.time_us == 2_000_000
+    assert event.detail == detail
+    assert execution.launch_trigger is None
+
+
+def test_already_airborne_messages_respect_mode13_boundaries_and_reentry():
+    """Before, equal-boundary, between-window, and future messages are unowned."""
+    above = "Above TKOFF alt - loitering"
+    below = "Climbing to TKOFF alt then loitering"
+    executions = _detect(
+        mise=(),
+        mode=(
+            (1_000_000, TAKEOFF_MODE),
+            (3_000_000, FBWA_MODE),
+            (5_000_000, TAKEOFF_MODE),
+            (7_000_000, FBWA_MODE),
+        ),
+        msg=(
+            (900_000, above),
+            (1_000_000, above),
+            (2_000_000, above),
+            (3_000_000, below),
+            (4_000_000, below),
+            (5_000_000, below),
+            (6_000_000, below),
+            (7_000_000, above),
+            (8_000_000, above),
+        ),
+    )
+
+    assert len(executions) == 2
+    first, second = executions
+    assert first.already_airborne_entry is not None
+    assert first.already_airborne_entry.time_us == 2_000_000
+    assert first.already_airborne_entry.event_type is (
+        TakeoffExecutionEventType.ALREADY_FLYING_ABOVE_TAKEOFF_ALT
+    )
+    assert second.already_airborne_entry is not None
+    assert second.already_airborne_entry.time_us == 6_000_000
+    assert second.already_airborne_entry.event_type is (
+        TakeoffExecutionEventType.ALREADY_FLYING_CLIMB_TO_TAKEOFF_ALT
+    )
+
+
+def test_auto_mission_does_not_own_mode13_already_airborne_messages():
+    """ModeTakeoff firmware text cannot become AUTO mission entry evidence."""
+    execution = _detect(
+        msg=(
+            (2_000_000, "Above TKOFF alt - loitering"),
+            (3_000_000, "Climbing to TKOFF alt then loitering"),
+        ),
+    )[0]
+
+    assert execution.entry_context is TakeoffEntryContext.AUTO_MISSION
+    assert execution.already_airborne_entry is None
+    assert execution.events == ()
+
+
+def test_missing_trigger_and_sensor_state_do_not_imply_already_airborne():
+    """Only explicit firmware text establishes the already-flying context."""
+    flight_log = _flight_log(
+        mise=(),
+        mode=((1_000_000, TAKEOFF_MODE), (6_000_000, FBWA_MODE)),
+        msg=((2_500_000, "Unrelated TAKEOFF status"),),
+        stat=((2_000_000, 1, 0), (4_000_000, 3, 0), (4_100_000, 3, 0)),
+    )
+    flight_log.messages["CTUN"] = _table(
+        ((2_000_000, 30.0),),
+        ("TimeUS", "As"),
+    )
+    flight_log.messages["POS"] = _table(
+        ((2_000_000, 100.0),),
+        ("TimeUS", "RelHomeAlt"),
+    )
+
+    execution = TakeoffExecutionDetector().detect(flight_log)[0]
+
+    assert execution.launch_trigger is None
+    assert execution.already_airborne_entry is None
+    assert execution.takeoff_control_completion is not None
+
+
 def test_already_flying_unsuppressed_stage_transition_can_complete_control():
     """STAT.Sup=0 can qualify an observed transition without launch messages."""
     execution = _detect(

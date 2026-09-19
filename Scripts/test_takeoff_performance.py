@@ -51,6 +51,8 @@ def _execution(
     trigger_detail="",
     trigger_time_us=TRIGGER_US,
     unsuppressed_time_us=UNSUPPRESSED_US,
+    already_airborne_event_type=None,
+    already_airborne_detail="",
 ):
     """Build a representative immutable execution."""
     events = []
@@ -68,6 +70,14 @@ def _execution(
                 trigger_time_us,
                 TakeoffExecutionEventType.TRIGGERED_AUTO,
                 trigger_detail,
+            )
+        )
+    if already_airborne_event_type is not None:
+        events.append(
+            _event(
+                trigger_time_us,
+                already_airborne_event_type,
+                already_airborne_detail,
             )
         )
     if unsuppressed:
@@ -430,6 +440,26 @@ def test_no_trigger_and_auto_mission_receive_no_mode13_performance_metrics():
         )
         is None
     )
+
+
+def test_already_airborne_entry_does_not_substitute_for_launch_trigger():
+    """Explicit airborne context still cannot seed trigger-dependent metrics."""
+    execution = _execution(
+        trigger=False,
+        already_airborne_event_type=(
+            TakeoffExecutionEventType.ALREADY_FLYING_ABOVE_TAKEOFF_ALT
+        ),
+        already_airborne_detail="Above TKOFF alt - loitering",
+    )
+    flight_log = _flight_log(
+        ctun=((2_500_000, 0.0, 0.0, 0.0, 0.0, 20.0, 1, 50.0),),
+        pos=((1_500_000, 10.0), (2_500_000, 20.0)),
+        parameter_history=_history({"TKOFF_THR_MINACC": 6.0, "AIRSPEED_MIN": 11.0}),
+    )
+
+    assert execution.already_airborne_entry is not None
+    assert execution.launch_trigger is None
+    assert _analyse(flight_log, execution) is None
 
 
 def test_pitch_tracking_residual_uses_each_samples_parameter_state():
@@ -1483,9 +1513,9 @@ def test_phase_reuses_owned_throttle_airspeed_and_completion_evidence():
     completed_report = format_takeoff_performance_report(completed, 1)
     assert "Throttle release                   Observed" in completed_report
     assert "AIRSPEED_MIN                       Observed" in completed_report
-    assert "Takeoff completion                 Completed" in completed_report
+    assert "TAKEOFF control                    Completed" in completed_report
     assert censored is not None
-    assert "Takeoff completion                 Mode exit before completion" in (
+    assert "TAKEOFF control                    Mode exit before completion" in (
         format_takeoff_performance_report(censored, 2)
     )
     assert missing_release is not None
@@ -1552,7 +1582,7 @@ def test_phase_section_is_detailed_only_and_does_not_duplicate_configuration():
         "Throttle release",
         "AIRSPEED_MIN",
         "Rotation complete",
-        "Takeoff completion",
+        "TAKEOFF control",
     ):
         assert field in phase_block
     assert "TKOFF_THR_MINACC" not in phase_block
