@@ -292,37 +292,42 @@ The implemented POS-based metrics therefore retain `POS.RelHomeAlt` as their
 authoritative altitude family. Do not silently replace that evidence with a
 rangefinder result.
 
-#### 7.1.1 Deferred rangefinder AGL comparison
+#### 7.1.1 Rangefinder height response
 
-A future low-altitude takeoff metric should investigate Plane's `RFNS.HE`
-(`rangefinder_state.height_estimate`) as optional height-above-ground evidence.
-Plane 4.7.0 logs `RFNS.HE` directly, and its rangefinder update path derives
-`height_estimate` from a range measurement corrected for sensor orientation and
-aircraft attitude before any applicable terrain correction.
+Plane 4.7.0 logs `RFNS.HE` from `rangefinder_state.height_estimate`. The value
+is the selected rangefinder's distance projected through sensor orientation
+and aircraft attitude onto the positive NED-down axis. During TAKEOFF it is
+the vertical range in metres from the sensor origin to the reflecting surface;
+it is not raw slant range, vehicle-origin AGL, home-relative altitude, or POS
+altitude. Sensor mounting height, local slope, vegetation, attitude, and sensor
+footprint can therefore make it differ legitimately from `POS.RelHomeAlt`.
 
-This work is deliberately deferred and must not change the meaning of the
-existing **Altitude Δ at AIRSPEED_MIN** metric. The first implementation should
-prefer a separately named comparison such as **AGL at AIRSPEED_MIN** or
-**AGL Δ at AIRSPEED_MIN**, then validate it against `POS.RelHomeAlt` on real
-takeoffs.
+The bounded **Rangefinder height response** uses observed throttle release as
+its start and the existing authoritative `AIRSPEED_MIN` CTUN observation as
+its end. Both boundaries must be owned by the same triggered execution. The
+start height is the latest RFNS row at or before release, no earlier than the
+trigger; the end height is the latest RFNS row at or before `AIRSPEED_MIN` and
+not before release. Selection is causal, uses no interpolation, and retains
+both source timestamps and ages.
 
-Before implementation, define and test:
+Every selected and intervening RFNS row must have finite `HE` and
+`InRng == 1`. A finite `HE` can remain stale after validity is lost, so an
+invalid row makes the complete response unavailable and later validity cannot
+repair it. Raw `RFND.Dist` is not a fallback.
 
-- whether the metric is absolute `RFNS.HE` at the authoritative AIRSPEED_MIN
-  event or a delta from an owned pre/at-trigger rangefinder baseline;
-- which `RFNS.InRng` / source-validity evidence is required, especially when
-  the aircraft begins stationary close to the ground;
-- causal sample selection at or before the AIRSPEED_MIN event, with no future
-  sample and no interpolation;
-- behavior when RFNS is absent, not in range, points away from the ground, or
-  leaves range before AIRSPEED_MIN;
-- the effect of sloping/uneven terrain: RFNS describes the surface below the
-  aircraft, whereas `POS.RelHomeAlt` is home-relative vehicle position;
-- sensor mounting-height implications for an absolute AGL reading.
+The minimum is selected from the causal start observation plus every valid
+RFNS sample after release through `AIRSPEED_MIN`. If the start observation is
+the minimum it is presented as `at start`; otherwise elapsed time is measured
+from the throttle-release event to the exact minimum sample. Net height change
+is signed end `HE` minus start `HE`.
 
-Do not use raw `RFND.Dist` as a silent substitute when the Plane-owned
-attitude-corrected `RFNS.HE` evidence is available. Preserve both sources and
-their different meanings if both are later reported.
+Normal presentation is initially enabled only for the validated immediate
+takeoff-pitch/TECS profile. Calculation remains independent of physical launch
+type. Presentation for the rotation-speed profile awaits a known real example;
+the rangefinder evidence is not thereby declared invalid.
+
+This response remains separate from, and does not change, the existing
+POS-based **Altitude Δ at AIRSPEED_MIN** metric.
 
 Source basis:
 [`ArduPlane/Log.cpp`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/Log.cpp)
@@ -458,7 +463,7 @@ them incrementally, but must retain the window and censoring labels.
 | Airspeed-minus-groundspeed | Independent streams and different rates require a declared pairing/window statistic; it is also wind-sensitive and must not be described as wind by itself |
 | Demand/response summaries beyond extrema | Need an explicit time-weighted versus sample-weighted aggregation rule |
 | ARSP sensor corroboration | Useful for diagnosing controller source/health, but CTUN already states the selected estimate type for the primary metric |
-| Rangefinder AGL at/near `AIRSPEED_MIN` | Investigate optional Plane `RFNS.HE` as a separately named low-altitude AGL result; define validity/baseline semantics and validate against real takeoffs before considering any preference over `POS.RelHomeAlt` |
+| Rotation-speed-profile rangefinder presentation | The RFNS calculation is profile-neutral, but normal presentation awaits a known real `TKOFF_ROTATE_SPD > 0` example |
 
 ### 10.3 Reject for this scope
 
@@ -967,9 +972,9 @@ Current deferred work:
 - physical launch classification remains deferred; possible future high-level
   families are externally launched and surface takeoff, but current evidence
   does not justify assigning them;
-- investigate a separately named `RFNS.HE`-based low-altitude AGL result as
-  described in section 7.1.1; retain the existing POS-based altitude metric
-  until that evidence contract is validated.
+- validate rotation-speed-profile RFNS presentation against a known real
+  `TKOFF_ROTATE_SPD > 0` example; retain the existing POS-based altitude metric
+  unchanged.
 
 These are explicit deferred items, not reasons to weaken the current
 event-first evidence rules.

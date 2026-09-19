@@ -285,10 +285,46 @@ released” event exists.
 
 ### 5.5 What may be classified
 
-Later analysis may report the configured firmware behavior—for example,
-“rotation-speed path enabled” or “acceleration-gated delayed launch.” It must
-not infer a physical launcher class solely from that configuration because
-multiple physical methods can use the same values.
+APT reports three source-backed control profiles:
+
+- **Already airborne at TAKEOFF entry** requires the owned explicit firmware
+  message and takes precedence over parameter classification.
+- **Rotation-speed pitch path** requires finite event-time
+  `TKOFF_ROTATE_SPD > 0` and identifies the ground-pitch/speed-gated branch in
+  `takeoff_calc_pitch()`.
+- **Immediate takeoff-pitch/TECS path** requires event-time
+  `TKOFF_ROTATE_SPD == 0`; the pre-rotation branch is bypassed and normal
+  takeoff pitch processing begins immediately.
+
+Missing, non-finite, or negative rotate speed leaves the profile unavailable.
+These names report firmware behavior only. They do not classify a physical
+launcher, undercarriage, ground run, rotation, or liftoff.
+
+Event-time acceleration, speed, delay, tail-hold, ground-pitch, and throttle-
+slew parameters may provide compact secondary configuration context. In
+particular, the acceleration and speed gates are enabled only by positive
+`TKOFF_THR_MINACC` and `TKOFF_THR_MINSPD`; tail hold requires both nonzero
+`TKOFF_TDRAG_ELEV` and positive `TKOFF_TDRAG_SPD1`; zero
+`TKOFF_THR_SLEW` selects the normal `THR_SLEWRATE` fallback and `-1` removes
+the takeoff slew limit.
+
+### 5.6 Plane rangefinder height state
+
+`RFND` records each rangefinder backend's raw distance, status, instance, and
+orientation. `RFNS` records Plane's selected rangefinder state. Plane selects
+the first instance matching `RNGFND_LND_ORNT`, requires backend status `Good`,
+and projects its distance through sensor orientation and aircraft attitude
+onto the positive NED-down axis. During TAKEOFF, `RFNS.HE` is therefore the
+vertical range in metres from the sensor origin to the reflecting surface,
+not raw slant distance, vehicle-origin AGL, home-relative altitude, or POS
+altitude.
+
+`RFNS.InRng` is Plane's usability state after its acquisition checks. Invalid
+status, an orientation that does not point downward, or unavailable home state
+clears it. `RFNS.HE` is not cleared at the same time and can remain finite but
+stale, so finite height without `InRng == 1` is not current usable evidence.
+`RFNS.InUse` is landing-engagement state and is not required for a valid
+TAKEOFF height observation.
 
 ## 6. Throttle suppression and release
 
@@ -706,6 +742,7 @@ Primary Plane-4.7.0 sources:
 - [`AP_FixedWing.h`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/libraries/AP_Vehicle/AP_FixedWing.h): numeric flight-stage definitions.
 - [`Attitude.cpp`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/ArduPlane/Attitude.cpp): conventional ground steering behavior.
 - [`Parameters.cpp`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/ArduPlane/Parameters.cpp): launch, rotation, throttle, taildragger, roll, and timeout parameter semantics.
+- [`altitude.cpp`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/ArduPlane/altitude.cpp) and [`Log.cpp`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/ArduPlane/Log.cpp): selected rangefinder height, validity state, and RFNS logging.
 - [`commands_logic.cpp`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/ArduPlane/commands_logic.cpp) and [`mode_auto.cpp`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/ArduPlane/mode_auto.cpp): separate AUTO mission `NAV_TAKEOFF` setup, control, and verification.
 - [`ReleaseNotes.txt`](https://raw.githubusercontent.com/ArduPilot/ardupilot/Plane-4.7.0/ArduPlane/ReleaseNotes.txt): bounded beta compatibility history, including the beta2 first-takeoff throttle-slew fix.
 - [PR 32381](https://github.com/ArduPilot/ardupilot/pull/32381): scope and mechanism of the beta2 first-takeoff slew-limiter allocation fix.

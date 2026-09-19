@@ -53,6 +53,25 @@ class AccelerationGateEvidenceStatus(Enum):
     UNAVAILABLE = "unavailable"
 
 
+class TakeoffControlProfile(Enum):
+    """Source-backed Plane TAKEOFF pitch-control configuration."""
+
+    ALREADY_AIRBORNE = "already_airborne"
+    ROTATION_SPEED = "rotation_speed"
+    IMMEDIATE_TAKEOFF_PITCH = "immediate_takeoff_pitch"
+    UNAVAILABLE = "unavailable"
+
+
+class RangefinderHeightResponseStatus(Enum):
+    """Availability of the bounded RFNS height response."""
+
+    COMPLETE = "complete"
+    RFNS_UNAVAILABLE = "rfns_unavailable"
+    THROTTLE_RELEASE_UNAVAILABLE = "throttle_release_unavailable"
+    AIRSPEED_MIN_UNAVAILABLE = "airspeed_min_unavailable"
+    RANGE_INVALID = "range_invalid"
+
+
 @dataclass(frozen=True, slots=True)
 class TakeoffControlInterval:
     """Owned interval used for automatic-control aggregate evidence."""
@@ -268,6 +287,46 @@ class TakeoffConfigurationContext:
 
 
 @dataclass(frozen=True, slots=True)
+class TakeoffControlProfileContext:
+    """Event-time parameters describing the firmware TAKEOFF control path."""
+
+    profile: TakeoffControlProfile
+    evidence_time_us: int
+    rotation_speed_m_s: float | None
+    ground_pitch_deg: float | None
+    acceleration_gate_enabled: bool | None
+    acceleration_threshold_m_s2: float | None
+    required_acceleration_events: int | None
+    trigger_speed_gate_enabled: bool | None
+    trigger_speed_threshold_m_s: float | None
+    post_gate_delay_s: float | None
+    tail_hold_path_enabled: bool | None
+    throttle_slew_rate_pct_s: float | None
+    throttle_slew_uses_fallback: bool
+    throttle_slew_unlimited: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RangefinderHeightResponse:
+    """RFNS height evidence from throttle release through AIRSPEED_MIN."""
+
+    status: RangefinderHeightResponseStatus
+    interval_start_time_us: int | None = None
+    interval_end_time_us: int | None = None
+    start_height_m: float | None = None
+    start_sample_time_us: int | None = None
+    start_sample_age_us: int | None = None
+    minimum_height_m: float | None = None
+    minimum_sample_time_us: int | None = None
+    minimum_elapsed_s: float | None = None
+    end_height_m: float | None = None
+    end_sample_time_us: int | None = None
+    end_sample_age_us: int | None = None
+    net_height_change_m: float | None = None
+    selected_orientation: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RelativeAltitudeMetrics:
     """POS relative-home altitude observations sharing one trigger baseline."""
 
@@ -307,6 +366,8 @@ class TakeoffPerformanceAnalysis:
     propulsion_to_configured_minimum_airspeed: (
         PropulsionToConfiguredMinimumAirspeed | None
     )
+    control_profile: TakeoffControlProfileContext
+    rangefinder_height_response: RangefinderHeightResponse
     configuration: TakeoffConfigurationContext
     airspeed_estimate_types: tuple[int, ...]
 
@@ -439,6 +500,7 @@ class TakeoffPerformanceProcessor:
             trigger,
             control_interval,
         )
+        control_profile = self._control_profile(trigger)
         (
             altitude_at_minimum_airspeed,
             altitude_delta_at_minimum_airspeed_m,
@@ -521,12 +583,235 @@ class TakeoffPerformanceProcessor:
                     control_interval,
                 )
             ),
+            control_profile=control_profile,
+            rangefinder_height_response=self._rangefinder_height_response(
+                trigger,
+                unsuppressed,
+                first_minimum_airspeed,
+            ),
             configuration=self._configuration_context(trigger.time_us),
             airspeed_estimate_types=self._airspeed_estimate_types(
                 trigger_context,
                 control_interval,
             ),
         )
+
+    def _control_profile(
+        self,
+        trigger: TakeoffExecutionEvent | None,
+    ) -> TakeoffControlProfileContext:
+        """Build source-backed control-path context at the trigger."""
+        already_airborne = self.execution.already_airborne_entry
+        if already_airborne is not None and self._event_is_owned(already_airborne):
+            return TakeoffControlProfileContext(
+                profile=TakeoffControlProfile.ALREADY_AIRBORNE,
+                evidence_time_us=already_airborne.time_us,
+                rotation_speed_m_s=None,
+                ground_pitch_deg=None,
+                acceleration_gate_enabled=None,
+                acceleration_threshold_m_s2=None,
+                required_acceleration_events=None,
+                trigger_speed_gate_enabled=None,
+                trigger_speed_threshold_m_s=None,
+                post_gate_delay_s=None,
+                tail_hold_path_enabled=None,
+                throttle_slew_rate_pct_s=None,
+                throttle_slew_uses_fallback=False,
+                throttle_slew_unlimited=False,
+            )
+        if trigger is None or not self._event_is_owned(trigger):
+            return TakeoffControlProfileContext(
+                profile=TakeoffControlProfile.UNAVAILABLE,
+                evidence_time_us=self.execution.start_us,
+                rotation_speed_m_s=None,
+                ground_pitch_deg=None,
+                acceleration_gate_enabled=None,
+                acceleration_threshold_m_s2=None,
+                required_acceleration_events=None,
+                trigger_speed_gate_enabled=None,
+                trigger_speed_threshold_m_s=None,
+                post_gate_delay_s=None,
+                tail_hold_path_enabled=None,
+                throttle_slew_rate_pct_s=None,
+                throttle_slew_uses_fallback=False,
+                throttle_slew_unlimited=False,
+            )
+        time_us = trigger.time_us
+        rotation_speed = self._parameter_float("TKOFF_ROTATE_SPD", time_us)
+        if rotation_speed is None or rotation_speed < 0:
+            profile = TakeoffControlProfile.UNAVAILABLE
+        elif rotation_speed == 0:
+            profile = TakeoffControlProfile.IMMEDIATE_TAKEOFF_PITCH
+        else:
+            profile = TakeoffControlProfile.ROTATION_SPEED
+
+        acceleration_threshold = self._nonnegative_parameter(
+            "TKOFF_THR_MINACC", time_us
+        )
+        speed_threshold = self._nonnegative_parameter("TKOFF_THR_MINSPD", time_us)
+        delay_deciseconds = self._nonnegative_parameter("TKOFF_THR_DELAY", time_us)
+        tail_elevator = self._parameter_float("TKOFF_TDRAG_ELEV", time_us)
+        tail_speed = self._nonnegative_parameter("TKOFF_TDRAG_SPD1", time_us)
+        slew_rate = self._parameter_float("TKOFF_THR_SLEW", time_us)
+        slew_valid = slew_rate is not None and slew_rate >= -1
+
+        return TakeoffControlProfileContext(
+            profile=profile,
+            evidence_time_us=time_us,
+            rotation_speed_m_s=rotation_speed
+            if rotation_speed is not None and rotation_speed >= 0
+            else None,
+            ground_pitch_deg=(
+                self._parameter_float("TKOFF_GND_PITCH", time_us)
+                if profile is TakeoffControlProfile.ROTATION_SPEED
+                else None
+            ),
+            acceleration_gate_enabled=(
+                acceleration_threshold > 0
+                if acceleration_threshold is not None
+                else None
+            ),
+            acceleration_threshold_m_s2=acceleration_threshold,
+            required_acceleration_events=self._positive_parameter_integer(
+                "TKOFF_ACCEL_CNT", time_us
+            ),
+            trigger_speed_gate_enabled=(
+                speed_threshold > 0 if speed_threshold is not None else None
+            ),
+            trigger_speed_threshold_m_s=speed_threshold,
+            post_gate_delay_s=(
+                delay_deciseconds * 0.1 if delay_deciseconds is not None else None
+            ),
+            tail_hold_path_enabled=(
+                tail_elevator != 0 and tail_speed > 0
+                if tail_elevator is not None and tail_speed is not None
+                else None
+            ),
+            throttle_slew_rate_pct_s=slew_rate if slew_valid else None,
+            throttle_slew_uses_fallback=slew_valid and slew_rate == 0,
+            throttle_slew_unlimited=slew_valid and slew_rate == -1,
+        )
+
+    def _rangefinder_height_response(
+        self,
+        trigger: TakeoffExecutionEvent,
+        unsuppressed: TakeoffExecutionEvent | None,
+        first_minimum: FirstObservedConfiguredMinimumAirspeed,
+    ) -> RangefinderHeightResponse:
+        """Build a causal RFNS response without using stale height state."""
+        if unsuppressed is None or not self._event_is_owned(unsuppressed):
+            return RangefinderHeightResponse(
+                RangefinderHeightResponseStatus.THROTTLE_RELEASE_UNAVAILABLE
+            )
+
+        end_us = first_minimum.observation_time_us
+        if (
+            first_minimum.status is not ConfiguredMinimumAirspeedStatus.OBSERVED
+            or end_us is None
+            or not self.execution.start_us <= end_us <= self.execution.end_us
+            or end_us < unsuppressed.time_us
+        ):
+            return RangefinderHeightResponse(
+                RangefinderHeightResponseStatus.AIRSPEED_MIN_UNAVAILABLE,
+                interval_start_time_us=unsuppressed.time_us,
+            )
+
+        rows = self._rows("RFNS")
+        if not rows:
+            return RangefinderHeightResponse(
+                RangefinderHeightResponseStatus.RFNS_UNAVAILABLE,
+                interval_start_time_us=unsuppressed.time_us,
+                interval_end_time_us=end_us,
+            )
+
+        start_candidates = [
+            row
+            for row in rows
+            if trigger.time_us <= row.time_us <= unsuppressed.time_us
+        ]
+        interval_rows = [
+            row for row in rows if unsuppressed.time_us < row.time_us <= end_us
+        ]
+        if not start_candidates or not interval_rows:
+            return RangefinderHeightResponse(
+                RangefinderHeightResponseStatus.RFNS_UNAVAILABLE,
+                interval_start_time_us=unsuppressed.time_us,
+                interval_end_time_us=end_us,
+            )
+
+        start_row = start_candidates[-1]
+        end_row = interval_rows[-1]
+        bounded_rows = [start_row, *interval_rows]
+        if any(not self._usable_rfns(row) for row in bounded_rows):
+            return RangefinderHeightResponse(
+                RangefinderHeightResponseStatus.RANGE_INVALID,
+                interval_start_time_us=unsuppressed.time_us,
+                interval_end_time_us=end_us,
+                selected_orientation=self._selected_rangefinder_orientation(
+                    trigger.time_us
+                ),
+            )
+
+        heights: list[tuple[_TelemetryRow, float]] = []
+        for row in bounded_rows:
+            height = self._finite_float(row.row.get("HE"))
+            if height is None:
+                return RangefinderHeightResponse(
+                    RangefinderHeightResponseStatus.RFNS_UNAVAILABLE,
+                    interval_start_time_us=unsuppressed.time_us,
+                    interval_end_time_us=end_us,
+                )
+            heights.append((row, height))
+        minimum_row, minimum_height = min(
+            heights,
+            key=lambda item: item[1],
+        )
+        start_height = heights[0][1]
+        end_height = heights[-1][1]
+
+        return RangefinderHeightResponse(
+            status=RangefinderHeightResponseStatus.COMPLETE,
+            interval_start_time_us=unsuppressed.time_us,
+            interval_end_time_us=end_us,
+            start_height_m=start_height,
+            start_sample_time_us=start_row.time_us,
+            start_sample_age_us=unsuppressed.time_us - start_row.time_us,
+            minimum_height_m=minimum_height,
+            minimum_sample_time_us=minimum_row.time_us,
+            minimum_elapsed_s=(
+                0.0
+                if minimum_row is start_row
+                else (minimum_row.time_us - unsuppressed.time_us) / 1_000_000
+            ),
+            end_height_m=end_height,
+            end_sample_time_us=end_row.time_us,
+            end_sample_age_us=end_us - end_row.time_us,
+            net_height_change_m=end_height - start_height,
+            selected_orientation=self._selected_rangefinder_orientation(
+                trigger.time_us
+            ),
+        )
+
+    def _usable_rfns(self, telemetry: _TelemetryRow) -> bool:
+        """Return whether one RFNS row contains current firmware-valid height."""
+        in_range = self._integer(telemetry.row.get("InRng"))
+        height = self._finite_float(telemetry.row.get("HE"))
+        return in_range == 1 and height is not None
+
+    def _selected_rangefinder_orientation(self, time_us: int) -> int | None:
+        """Return Plane's configured rangefinder orientation when valid."""
+        orientation = self._parameter_integer("RNGFND_LND_ORNT", time_us)
+        return orientation if orientation is not None and orientation >= 0 else None
+
+    def _nonnegative_parameter(self, name: str, time_us: int) -> float | None:
+        """Return one finite nonnegative event-time parameter."""
+        value = self._parameter_float(name, time_us)
+        return value if value is not None and value >= 0 else None
+
+    def _positive_parameter_integer(self, name: str, time_us: int) -> int | None:
+        """Return one positive integral event-time parameter."""
+        value = self._parameter_integer(name, time_us)
+        return value if value is not None and value > 0 else None
 
     def _phase_evidence(
         self,
@@ -1521,6 +1806,8 @@ def format_takeoff_performance_report(
 
     lines.extend(("", "Takeoff phase evidence"))
     lines.extend(_format_takeoff_phase_evidence(analysis))
+    lines.extend(("", "TAKEOFF control profile"))
+    lines.extend(_format_control_profile(analysis.control_profile))
 
     airspeed_source = _airspeed_source_label(analysis.airspeed_estimate_types)
     lines.extend(("", "At trigger", f"  {'Airspeed source':<34} {airspeed_source}"))
@@ -1582,6 +1869,11 @@ def format_takeoff_performance_report(
                 f"  {'Trigger → AIRSPEED_MIN':<34} "
                 f"{_minimum_airspeed_status(first_minimum.status)}"
             )
+    if (
+        analysis.control_profile.profile
+        is TakeoffControlProfile.IMMEDIATE_TAKEOFF_PITCH
+    ):
+        lines.extend(_format_rangefinder_height_response(analysis))
     lines.extend(("", "Takeoff control"))
     envelope = analysis.airspeed_envelope
     if envelope is not None:
@@ -1659,6 +1951,139 @@ def _format_takeoff_phase_evidence(
     lines.append(f"  {'Rotation complete':<34} Unavailable")
     lines.append(f"  {'TAKEOFF control':<34} {_execution_status(analysis)}")
     return lines
+
+
+def _format_control_profile(
+    context: TakeoffControlProfileContext,
+) -> list[str]:
+    """Render compact event-time configuration without launch inference."""
+    profile_labels = {
+        TakeoffControlProfile.ALREADY_AIRBORNE: ("Already airborne at TAKEOFF entry"),
+        TakeoffControlProfile.ROTATION_SPEED: "Rotation-speed pitch path",
+        TakeoffControlProfile.IMMEDIATE_TAKEOFF_PITCH: (
+            "Immediate takeoff-pitch/TECS path"
+        ),
+        TakeoffControlProfile.UNAVAILABLE: "Unavailable",
+    }
+    lines = [f"  {'Pitch path':<34} {profile_labels[context.profile]}"]
+
+    if context.profile is TakeoffControlProfile.ROTATION_SPEED:
+        lines.append(
+            f"  {'Rotation speed':<34} "
+            f"{_format_optional_value(context.rotation_speed_m_s, 'm/s')}"
+        )
+        lines.append(
+            f"  {'Ground pitch':<34} "
+            f"{_format_optional_value(context.ground_pitch_deg, '°')}"
+        )
+    elif context.profile is TakeoffControlProfile.IMMEDIATE_TAKEOFF_PITCH:
+        lines.append(f"  {'Rotation-speed path':<34} Disabled")
+
+    lines.append(
+        f"  {'Acceleration gate':<34} "
+        f"{_format_enabled(context.acceleration_gate_enabled)}"
+    )
+    if context.acceleration_gate_enabled:
+        lines.append(
+            f"  {'Acceleration threshold':<34} "
+            f"{_format_optional_value(context.acceleration_threshold_m_s2, 'm/s²')}"
+        )
+        lines.append(
+            f"  {'Required acceleration events':<34} "
+            f"{context.required_acceleration_events if context.required_acceleration_events is not None else 'Unavailable'}"
+        )
+
+    lines.append(
+        f"  {'Trigger speed gate':<34} "
+        f"{_format_enabled(context.trigger_speed_gate_enabled)}"
+    )
+    if context.trigger_speed_gate_enabled:
+        lines.append(
+            f"  {'Trigger speed threshold':<34} "
+            f"{_format_optional_value(context.trigger_speed_threshold_m_s, 'm/s')}"
+        )
+    lines.append(
+        f"  {'Post-gate delay':<34} "
+        f"{_format_optional_value(context.post_gate_delay_s, 's')}"
+    )
+    lines.append(
+        f"  {'Tail-hold path':<34} {_format_enabled(context.tail_hold_path_enabled)}"
+    )
+    lines.append(f"  {'Takeoff throttle slew':<34} {_format_throttle_slew(context)}")
+    return lines
+
+
+def _format_rangefinder_height_response(
+    analysis: TakeoffPerformanceAnalysis,
+) -> list[str]:
+    """Render the profile-gated bounded RFNS response."""
+    response = analysis.rangefinder_height_response
+    if response.status is not RangefinderHeightResponseStatus.COMPLETE:
+        reason = {
+            RangefinderHeightResponseStatus.RFNS_UNAVAILABLE: "RFNS unavailable",
+            RangefinderHeightResponseStatus.THROTTLE_RELEASE_UNAVAILABLE: (
+                "throttle release unavailable"
+            ),
+            RangefinderHeightResponseStatus.AIRSPEED_MIN_UNAVAILABLE: (
+                "AIRSPEED_MIN unavailable"
+            ),
+            RangefinderHeightResponseStatus.RANGE_INVALID: (
+                "range invalid before AIRSPEED_MIN"
+            ),
+        }[response.status]
+        return [
+            "",
+            f"{'Rangefinder height response':<36} Unavailable — {reason}",
+        ]
+
+    assert response.start_height_m is not None
+    assert response.minimum_height_m is not None
+    assert response.minimum_elapsed_s is not None
+    assert response.end_height_m is not None
+    assert response.net_height_change_m is not None
+    minimum_when = (
+        "at start"
+        if response.minimum_elapsed_s == 0
+        else f"at +{response.minimum_elapsed_s:.3f} s"
+    )
+    return [
+        "",
+        "Rangefinder height response",
+        f"  {'Interval':<34} Throttle release → AIRSPEED_MIN",
+        f"  {'Height at release':<34} {response.start_height_m:.2f} m",
+        (
+            f"  {'Minimum observed height':<34} "
+            f"{response.minimum_height_m:.2f} m {minimum_when}"
+        ),
+        f"  {'Height at AIRSPEED_MIN':<34} {response.end_height_m:.2f} m",
+        (
+            f"  {'Net height change':<34} "
+            f"{_format_signed_decimal(response.net_height_change_m)} m"
+        ),
+    ]
+
+
+def _format_enabled(value: bool | None) -> str:
+    """Render one optional configured enable state."""
+    if value is None:
+        return "Unavailable"
+    return "Enabled" if value else "Disabled"
+
+
+def _format_optional_value(value: float | None, unit: str) -> str:
+    """Render compact optional profile configuration."""
+    return f"{value:.1f} {unit}" if value is not None else "Unavailable"
+
+
+def _format_throttle_slew(context: TakeoffControlProfileContext) -> str:
+    """Render Plane's special TKOFF_THR_SLEW values."""
+    if context.throttle_slew_rate_pct_s is None:
+        return "Unavailable"
+    if context.throttle_slew_unlimited:
+        return "Unlimited"
+    if context.throttle_slew_uses_fallback:
+        return "THR_SLEWRATE fallback"
+    return f"{context.throttle_slew_rate_pct_s:.0f} %/s"
 
 
 def format_takeoff_performance_reports(
