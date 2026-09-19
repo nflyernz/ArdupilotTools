@@ -6,8 +6,8 @@ User-facing presentation for the landing-analysis pipeline.
 
 from pathlib import Path
 
+from analyses.log_selector import select_log_input
 from analyses.result import AnalysisResult
-
 from core.config import Config
 from core.landing_attempt_extractor import (
     LandingAttemptExtractor,
@@ -439,7 +439,7 @@ class LandingAnalysis:
         Run landing analysis from the CLI menu.
         """
 
-        logs = self.select_logs()
+        logs = select_log_input(allow_directory=True)
 
         if not logs:
             return []
@@ -551,61 +551,6 @@ class LandingAnalysis:
         )
 
         return results
-
-    def select_logs(self):
-        """
-        Select one BIN log or all BIN logs in a directory.
-        """
-
-        entry = input(
-            "\nLog file or directory: "
-        ).strip()
-
-        if not entry:
-
-            print(
-                "No log selected."
-            )
-
-            return []
-
-        path = Path(
-            entry
-        )
-
-        if not path.exists():
-
-            print(
-                "Path not found."
-            )
-
-            return []
-
-        if path.is_file():
-
-            return [
-                path
-            ]
-
-        logs = sorted(
-            path.glob("*.BIN")
-        )
-
-        logs.extend(
-            sorted(
-                path.glob("*.bin")
-            )
-        )
-
-        if not logs:
-
-            print(
-                "No log files found."
-            )
-
-            return []
-
-        return logs
 
     def load_telemetry(
         self,

@@ -1,5 +1,4 @@
-from pathlib import Path
-
+from analyses.log_selector import select_log_input
 from core.event_extractor import EventExtractor
 from core.log_reader import (
     FlightReader,
@@ -15,10 +14,11 @@ class EventTimelineAnalysis:
 
     def run(self):
 
-        log_path = self._select_log()
+        selected_logs = select_log_input()
 
-        if log_path is None:
+        if selected_logs is None:
             return
+        log_path = selected_logs[0]
 
         try:
             flight_log = FlightReader(
@@ -53,55 +53,6 @@ class EventTimelineAnalysis:
             flight_window,
             events,
         )
-
-    def _select_log(self):
-
-        log_paths = sorted(
-            Path("Logs").glob("*.bin")
-        )
-
-        if not log_paths:
-            print()
-            print("No BIN logs found in Logs/")
-            return None
-
-        print()
-        print("Available Logs")
-        print("================")
-
-        for index, log_path in enumerate(
-            log_paths,
-            start=1,
-        ):
-            print(
-                f"{index}. {log_path.name}"
-            )
-
-        print("0. Cancel")
-
-        while True:
-
-            choice = input(
-                "\nSelection: "
-            ).strip()
-
-            if choice == "0":
-                return None
-
-            try:
-                index = int(choice)
-
-                if (
-                    1
-                    <= index
-                    <= len(log_paths)
-                ):
-                    return log_paths[index - 1]
-
-            except ValueError:
-                pass
-
-            print("Invalid selection.")
 
     def _select_flight(
         self,
