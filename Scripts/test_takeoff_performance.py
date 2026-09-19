@@ -13,6 +13,7 @@ from core.takeoff_execution import (
     TakeoffTerminationReason,
 )
 from core.takeoff_performance import (
+    AccelerationGateEvidenceStatus,
     ConfiguredMinimumAirspeedStatus,
     FixedThrottleTargetStatus,
     TakeoffControlIntervalStatus,
@@ -34,9 +35,9 @@ def _table(rows, columns):
     return pd.DataFrame(rows, columns=columns)
 
 
-def _event(time_us, event_type):
+def _event(time_us, event_type, detail=""):
     """Build one takeoff execution event."""
-    return TakeoffExecutionEvent(time_us, event_type)
+    return TakeoffExecutionEvent(time_us, event_type, detail)
 
 
 def _execution(
@@ -46,15 +47,33 @@ def _execution(
     target=True,
     completion=True,
     entry_context=TakeoffEntryContext.TAKEOFF_MODE,
+    armed_detail=None,
+    trigger_detail="",
+    trigger_time_us=TRIGGER_US,
+    unsuppressed_time_us=UNSUPPRESSED_US,
 ):
     """Build a representative immutable execution."""
     events = []
+    if armed_detail is not None:
+        events.append(
+            _event(
+                trigger_time_us - 200_000,
+                TakeoffExecutionEventType.ARMED_AUTO,
+                armed_detail,
+            )
+        )
     if trigger:
-        events.append(_event(TRIGGER_US, TakeoffExecutionEventType.TRIGGERED_AUTO))
+        events.append(
+            _event(
+                trigger_time_us,
+                TakeoffExecutionEventType.TRIGGERED_AUTO,
+                trigger_detail,
+            )
+        )
     if unsuppressed:
         events.append(
             _event(
-                UNSUPPRESSED_US,
+                unsuppressed_time_us,
                 TakeoffExecutionEventType.THROTTLE_UNSUPPRESSED,
             )
         )
@@ -96,6 +115,8 @@ def _flight_log(
     pos=(),
     baro=(),
     tecs=(),
+    msg=(),
+    stat=(),
     parameter_history=None,
 ):
     """Build only telemetry consumed by performance analysis."""
@@ -119,6 +140,8 @@ def _flight_log(
             "POS": _table(pos, ("TimeUS", "RelHomeAlt")),
             "BARO": _table(baro, ("TimeUS", "Alt")),
             "TECS": _table(tecs, ("TimeUS", "ph")),
+            "MSG": _table(msg, ("TimeUS", "Message")),
+            "STAT": _table(stat, ("TimeUS", "Stage", "Sup")),
         },
         parameter_history=parameter_history or ParameterHistory(),
     )
@@ -866,6 +889,155 @@ def test_first_observed_minimum_airspeed_rejects_unusable_evidence():
     )
 
 
+def test_throttle_to_minimum_airspeed_uses_owned_event_times():
+    """The duration shares the authoritative Vmin sample and suppression event."""
+    analysis = _analyse(
+        _flight_log(
+            ctun=((4_250_000, 0.0, 0.0, 0.0, 0.0, 11.0, 1, 0.0),),
+            parameter_history=_history({"AIRSPEED_MIN": 11.0}),
+        )
+    )
+
+    assert analysis is not None
+    observed = analysis.first_observed_configured_minimum_airspeed
+    assert observed.observation_time_us == 4_250_000
+    assert analysis.throttle_to_configured_minimum_airspeed_s == 1.25
+    report = format_takeoff_performance_report(analysis, 1)
+    assert "Trigger → AIRSPEED_MIN             2.250 s" in report
+    assert "Throttle → AIRSPEED_MIN            1.250 s" in report
+    assert "Throttle → AIRSPEED_MIN            +1.250 s" not in report
+
+
+def test_throttle_to_minimum_airspeed_accepts_equal_event_timestamps():
+    """Equal owned boundaries produce a zero duration without a leading sign."""
+    analysis = _analyse(
+        _flight_log(
+            ctun=((UNSUPPRESSED_US, 0.0, 0.0, 0.0, 0.0, 11.0, 1, 0.0),),
+            parameter_history=_history({"AIRSPEED_MIN": 11.0}),
+        )
+    )
+
+    assert analysis is not None
+    assert analysis.throttle_to_configured_minimum_airspeed_s == 0.0
+    assert "Throttle → AIRSPEED_MIN            0.000 s" in (
+        format_takeoff_performance_report(analysis, 1)
+    )
+
+
+def test_throttle_to_minimum_airspeed_rejects_missing_or_reversed_evidence():
+    """Missing boundaries and reversed time order remain unavailable, not zero."""
+    qualifying_log = _flight_log(
+        ctun=((2_500_000, 0.0, 0.0, 0.0, 0.0, 11.0, 1, 0.0),),
+        parameter_history=_history({"AIRSPEED_MIN": 11.0}),
+    )
+    missing_release = _analyse(
+        qualifying_log,
+        _execution(unsuppressed=False),
+    )
+    reversed_order = _analyse(qualifying_log)
+    missing_minimum = _analyse(
+        _flight_log(parameter_history=_history({"AIRSPEED_MIN": 11.0}))
+    )
+
+    assert missing_release is not None
+    assert missing_release.throttle_to_configured_minimum_airspeed_s is None
+    assert reversed_order is not None
+    assert reversed_order.throttle_to_configured_minimum_airspeed_s is None
+    assert missing_minimum is not None
+    assert missing_minimum.throttle_to_configured_minimum_airspeed_s is None
+    assert "Throttle → AIRSPEED_MIN            unavailable" in (
+        format_takeoff_performance_report(reversed_order, 1)
+    )
+    assert "Throttle → AIRSPEED_MIN            -" not in (
+        format_takeoff_performance_report(reversed_order, 1)
+    )
+
+
+def test_throttle_to_minimum_airspeed_does_not_reconstruct_stat_events():
+    """Raw STAT evidence is not borrowed around the owned execution model."""
+    analysis = _analyse(
+        _flight_log(
+            ctun=((4_000_000, 0.0, 0.0, 0.0, 0.0, 11.0, 1, 0.0),),
+            stat=((3_000_000, 1, 0),),
+            parameter_history=_history({"AIRSPEED_MIN": 11.0}),
+        ),
+        _execution(unsuppressed=False),
+    )
+
+    assert analysis is not None
+    assert analysis.execution.throttle_unsuppressed is None
+    assert analysis.throttle_to_configured_minimum_airspeed_s is None
+
+
+def test_altitude_at_minimum_airspeed_uses_latest_causal_pos_without_interpolation():
+    """Vmin altitude shares the qualifying CTUN event and latest earlier POS row."""
+    analysis = _analyse(
+        _flight_log(
+            ctun=((3_000_000, 0.0, 0.0, 0.0, 0.0, 11.0, 1, 0.0),),
+            pos=(
+                (1_900_000, 100.0),
+                (2_600_000, 102.5),
+                (3_100_000, 999.0),
+            ),
+            parameter_history=_history({"AIRSPEED_MIN": 11.0}),
+        )
+    )
+
+    assert analysis is not None
+    observed = analysis.first_observed_configured_minimum_airspeed
+    altitude = analysis.altitude_at_configured_minimum_airspeed
+    assert observed.observation_time_us == 3_000_000
+    assert altitude is not None
+    assert altitude.source_time_us == 2_600_000
+    assert altitude.value == 102.5
+    assert altitude.age_us == 400_000
+    assert analysis.altitude_delta_at_configured_minimum_airspeed_m == 2.5
+
+
+def test_altitude_at_minimum_airspeed_preserves_negative_signed_delta():
+    """Altitude loss at the shared Vmin event remains signed evidence."""
+    analysis = _analyse(
+        _flight_log(
+            ctun=((3_000_000, 0.0, 0.0, 0.0, 0.0, 11.0, 1, 0.0),),
+            pos=((1_900_000, 10.0), (2_900_000, 7.25)),
+            parameter_history=_history({"AIRSPEED_MIN": 11.0}),
+        )
+    )
+
+    assert analysis is not None
+    assert analysis.altitude_delta_at_configured_minimum_airspeed_m == -2.75
+    assert "Altitude Δ at AIRSPEED_MIN         -2.75 m" in (
+        format_takeoff_performance_report(analysis, 1)
+    )
+
+
+def test_altitude_at_minimum_airspeed_requires_baseline_and_causal_pos():
+    """Missing baseline or post-trigger causal POS keeps the result unavailable."""
+    ctun = ((3_000_000, 0.0, 0.0, 0.0, 0.0, 11.0, 1, 0.0),)
+    history = _history({"AIRSPEED_MIN": 11.0})
+    missing_baseline = _analyse(
+        _flight_log(
+            ctun=ctun,
+            pos=((2_500_000, 12.0),),
+            parameter_history=history,
+        )
+    )
+    missing_causal_sample = _analyse(
+        _flight_log(
+            ctun=ctun,
+            pos=((1_900_000, 10.0), (3_100_000, 12.0)),
+            parameter_history=history,
+        )
+    )
+
+    assert missing_baseline is not None
+    assert missing_baseline.altitude_at_configured_minimum_airspeed is None
+    assert missing_baseline.altitude_delta_at_configured_minimum_airspeed_m is None
+    assert missing_causal_sample is not None
+    assert missing_causal_sample.altitude_at_configured_minimum_airspeed is None
+    assert missing_causal_sample.altitude_delta_at_configured_minimum_airspeed_m is None
+
+
 def test_propulsion_response_uses_owned_inclusive_interval_and_primary_battery():
     """Throttle and BAT instance zero share the suppression-to-speed bounds."""
     flight_log = _flight_log(
@@ -1189,6 +1361,204 @@ def test_takeoff_options_preserve_and_decode_known_and_unknown_bits():
         assert f"TKOFF_OPTIONS                {rendered}" in report
 
 
+def test_phase_acceleration_gate_uses_owned_message_and_event_time_parameter():
+    """Owned Armed AUTO evidence uses the gate value effective at that event."""
+    history = _history(
+        {"TKOFF_THR_MINACC": 6.0},
+        {"TKOFF_THR_MINACC": (ParameterChange(1_900_000, 0.0),)},
+    )
+    analysis = _analyse(
+        _flight_log(parameter_history=history),
+        _execution(
+            armed_detail="Armed AUTO, xaccel = 7.4 m/s/s, waiting 0.0 sec",
+            trigger_detail="Triggered AUTO. GPS speed = 3.1",
+        ),
+    )
+
+    assert analysis is not None
+    phase = analysis.phase_evidence
+    assert phase.acceleration_gate_status is AccelerationGateEvidenceStatus.OBSERVED
+    assert phase.observed_xaccel_m_s2 == 7.4
+    assert analysis.configuration.groups[0].values[0].value == 0.0
+    report = format_takeoff_performance_report(analysis, 1)
+    assert "Acceleration gate                  Observed" in report
+    assert "Observed x-accel                   7.4 m/s²" in report
+
+
+def test_phase_acceleration_gate_distinguishes_configuration_states():
+    """Configured, disabled, and unavailable gates are not called observed."""
+    configured = _analyse(
+        _flight_log(parameter_history=_history({"TKOFF_THR_MINACC": 6.0}))
+    )
+    disabled = _analyse(
+        _flight_log(parameter_history=_history({"TKOFF_THR_MINACC": 0.0})),
+        _execution(armed_detail="Armed AUTO, xaccel = 9.9 m/s/s, waiting 0.0 sec"),
+    )
+    unavailable = _analyse(_flight_log())
+
+    assert configured is not None
+    assert configured.phase_evidence.acceleration_gate_status is (
+        AccelerationGateEvidenceStatus.CONFIGURED
+    )
+    assert disabled is not None
+    assert disabled.phase_evidence.acceleration_gate_status is (
+        AccelerationGateEvidenceStatus.DISABLED
+    )
+    assert disabled.phase_evidence.observed_xaccel_m_s2 is None
+    assert unavailable is not None
+    assert unavailable.phase_evidence.acceleration_gate_status is (
+        AccelerationGateEvidenceStatus.UNAVAILABLE
+    )
+    assert "Acceleration gate                  Configured" in (
+        format_takeoff_performance_report(configured, 1)
+    )
+    disabled_report = format_takeoff_performance_report(disabled, 2)
+    assert "Acceleration gate                  Disabled" in disabled_report
+    assert "Observed x-accel" not in disabled_report
+    assert "Acceleration gate                  Unavailable" in (
+        format_takeoff_performance_report(unavailable, 3)
+    )
+
+
+def test_phase_acceleration_gate_does_not_borrow_raw_foreign_message():
+    """An MSG row outside the execution event model remains configuration only."""
+    analysis = _analyse(
+        _flight_log(
+            msg=((500_000, "Armed AUTO, xaccel = 8.8 m/s/s, waiting 0.0 sec"),),
+            parameter_history=_history({"TKOFF_THR_MINACC": 6.0}),
+        )
+    )
+
+    assert analysis is not None
+    assert analysis.phase_evidence.acceleration_gate_status is (
+        AccelerationGateEvidenceStatus.CONFIGURED
+    )
+    assert analysis.phase_evidence.observed_xaccel_m_s2 is None
+
+
+def test_phase_trigger_uses_owned_firmware_message_not_raw_gps_or_msg():
+    """Trigger GPS speed comes only from the owned Triggered AUTO event text."""
+    owned = _analyse(
+        _flight_log(gps=((1_900_000, 0, 3, 99.0, 1),)),
+        _execution(trigger_detail="Triggered AUTO. GPS speed = 3.1"),
+    )
+    malformed_owned = _analyse(
+        _flight_log(
+            msg=((500_000, "Triggered AUTO. GPS speed = 8.8"),),
+            gps=((1_900_000, 0, 3, 7.7, 1),),
+        ),
+        _execution(trigger_detail="Triggered AUTO"),
+    )
+
+    assert owned is not None
+    assert owned.phase_evidence.trigger_gps_speed_m_s == 3.1
+    owned_report = format_takeoff_performance_report(owned, 1)
+    assert "Trigger                            Observed" in owned_report
+    assert "GPS speed at trigger               3.1 m/s" in owned_report
+    assert "99.0 m/s" not in owned_report
+    assert malformed_owned is not None
+    assert malformed_owned.phase_evidence.trigger_gps_speed_m_s is None
+    assert "GPS speed at trigger               Unavailable" in (
+        format_takeoff_performance_report(malformed_owned, 2)
+    )
+
+
+def test_phase_reuses_owned_throttle_airspeed_and_completion_evidence():
+    """Existing event and metric outcomes drive phase status without new rules."""
+    flight_log = _flight_log(
+        ctun=((3_500_000, 0.0, 0.0, 0.0, 0.0, 11.0, 1, 0.0),),
+        parameter_history=_history({"AIRSPEED_MIN": 11.0}),
+    )
+    completed = _analyse(flight_log)
+    censored = _analyse(flight_log, _execution(completion=False))
+    missing_release = _analyse(flight_log, _execution(unsuppressed=False))
+    missing_minimum = _analyse(
+        _flight_log(parameter_history=_history({"AIRSPEED_MIN": 11.0}))
+    )
+
+    assert completed is not None
+    assert completed.first_observed_configured_minimum_airspeed.status is (
+        ConfiguredMinimumAirspeedStatus.OBSERVED
+    )
+    completed_report = format_takeoff_performance_report(completed, 1)
+    assert "Throttle release                   Observed" in completed_report
+    assert "AIRSPEED_MIN                       Observed" in completed_report
+    assert "Takeoff completion                 Completed" in completed_report
+    assert censored is not None
+    assert "Takeoff completion                 Mode exit before completion" in (
+        format_takeoff_performance_report(censored, 2)
+    )
+    assert missing_release is not None
+    assert "Throttle release                   Unavailable" in (
+        format_takeoff_performance_report(missing_release, 3)
+    )
+    assert missing_minimum is not None
+    assert "AIRSPEED_MIN                       Unavailable" in (
+        format_takeoff_performance_report(missing_minimum, 4)
+    )
+
+
+def test_phase_keeps_rotation_unavailable_despite_config_and_sensor_crossing():
+    """Rotation is not inferred from TKOFF_ROTATE_SPD or CTUN response."""
+    analysis = _analyse(
+        _flight_log(
+            ctun=(
+                (2_500_000, 3.0, 2.0, 0.0, 0.0, 9.0, 1, 0.0),
+                (3_500_000, 15.0, 10.0, 0.0, 0.0, 13.0, 1, 0.0),
+            ),
+            pos=((1_900_000, 0.0), (3_500_000, 5.0)),
+            parameter_history=_history(
+                {"TKOFF_ROTATE_SPD": 10.0, "AIRSPEED_MIN": 11.0}
+            ),
+        )
+    )
+
+    assert analysis is not None
+    report = format_takeoff_performance_report(analysis, 1)
+    assert "Rotation complete                  Unavailable" in report
+    assert "Rotation complete                  Observed" not in report
+
+
+def test_phase_section_is_detailed_only_and_does_not_duplicate_configuration():
+    """Phase fields stay out of summary and static parameters stay at the bottom."""
+    first = _analyse(
+        _flight_log(parameter_history=_configuration_history()),
+        _execution(
+            armed_detail="Armed AUTO, xaccel = 7.4 m/s/s, waiting 0.0 sec",
+            trigger_detail="Triggered AUTO. GPS speed = 3.1",
+        ),
+    )
+    second = _analyse(
+        _flight_log(parameter_history=_configuration_history()),
+        _execution(completion=False),
+    )
+
+    assert first is not None
+    assert second is not None
+    report = format_takeoff_performance_reports((first, second))
+    summary = report.split("\n\nTAKEOFF 1", maxsplit=1)[0]
+    assert "Takeoff phase evidence" not in summary
+    assert "Acceleration gate" not in summary
+    assert "Rotation complete" not in summary
+    assert report.count("Takeoff phase evidence") == 2
+    phase_block = report.split("Takeoff phase evidence", maxsplit=1)[1].split(
+        "At trigger", maxsplit=1
+    )[0]
+    for field in (
+        "Acceleration gate",
+        "Observed x-accel",
+        "Trigger",
+        "GPS speed at trigger",
+        "Throttle release",
+        "AIRSPEED_MIN",
+        "Rotation complete",
+        "Takeoff completion",
+    ):
+        assert field in phase_block
+    assert "TKOFF_THR_MINACC" not in phase_block
+    assert report.count("TKOFF_THR_MINACC") == 1
+
+
 def test_report_uses_relative_timing_and_preserves_internal_timeus():
     """Normal output is relative while evidence retains exact microseconds."""
     flight_log = _flight_log(
@@ -1212,10 +1582,10 @@ def test_report_uses_relative_timing_and_preserves_internal_timeus():
     assert "\n  Mode exit" not in report
     assert "Airspeed vs AIRSPEED_MIN           -3.00 m/s" in report
     assert "Delta to AIRSPEED_MIN" not in report
-    assert "Time to AIRSPEED_MIN" in report
+    assert "Trigger → AIRSPEED_MIN" in report
     assert "Airspeed at AIRSPEED_MIN" in report
     assert "First observed ≥ AIRSPEED_MIN" not in report
-    assert "+0.500 s" in report
+    assert "Trigger → AIRSPEED_MIN             0.500 s" in report
     assert str(TRIGGER_US) not in report
     assert str(UNSUPPRESSED_US) not in report
     assert analysis.phase_timings.trigger_time_us == TRIGGER_US
@@ -1363,7 +1733,7 @@ def test_single_takeoff_report_omits_comparative_table_and_places_config_last():
     assert "1 triggered takeoff analysed" in report
     assert "0 non-trigger executions omitted" in report
     assert "Summary" not in report
-    assert "Time to AIRSPEED_MIN" not in report
+    assert "Trigger → AIRSPEED_MIN" not in report
     assert report.index("TAKEOFF 1\n") < report.index("TAKEOFF CONFIGURATION")
     assert "Applies to TAKEOFF" not in report
 
@@ -1377,7 +1747,7 @@ def test_summary_uses_dash_for_unavailable_airspeed_without_fabricating_zero():
     assert second is not None
     report = format_takeoff_performance_reports((first, second))
     summary = report.split("\n\nTAKEOFF 1", maxsplit=1)[0]
-    assert "Time to AIRSPEED_MIN" in summary
+    assert "Trigger→Vmin" in summary
     assert "—" in summary
     assert "0.000 s" not in summary
     assert report.count("Airspeed source                    Unavailable") == 2
