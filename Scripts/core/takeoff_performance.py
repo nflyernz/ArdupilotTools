@@ -1657,7 +1657,7 @@ def _format_takeoff_phase_evidence(
     )
     lines.append(f"  {'AIRSPEED_MIN':<34} {_minimum_airspeed_phase_status(analysis)}")
     lines.append(f"  {'Rotation complete':<34} Unavailable")
-    lines.append(f"  {'Takeoff completion':<34} {_execution_status(analysis)}")
+    lines.append(f"  {'TAKEOFF control':<34} {_execution_status(analysis)}")
     return lines
 
 
@@ -1665,15 +1665,19 @@ def format_takeoff_performance_reports(
     analyses: tuple[TakeoffPerformanceAnalysis, ...],
     *,
     detected_execution_count: int | None = None,
+    already_airborne_executions: tuple[TakeoffExecution, ...] = (),
 ) -> str:
     """Render an operational overview followed by evidence and configuration."""
     lines = ["TAKEOFF ANALYSIS", "=" * 70]
+    represented_count = len(analyses) + len(already_airborne_executions)
     detected_count = (
-        len(analyses) if detected_execution_count is None else detected_execution_count
+        represented_count
+        if detected_execution_count is None
+        else detected_execution_count
     )
-    if detected_count < len(analyses):
-        raise ValueError("detected execution count cannot be less than analyses")
-    omitted_count = detected_count - len(analyses)
+    if detected_count < represented_count:
+        raise ValueError("detected execution count cannot be less than represented")
+    omitted_count = detected_count - represented_count
     lines.extend(
         (
             "",
@@ -1682,16 +1686,20 @@ def format_takeoff_performance_reports(
                 f"{_plural(detected_count, 'execution')} detected"
             ),
             f"{len(analyses)} triggered {_plural(len(analyses), 'takeoff')} analysed",
-            (
-                f"{omitted_count} non-trigger "
-                f"{_plural(omitted_count, 'execution')} omitted"
-            ),
         )
     )
-    if not analyses:
+    if already_airborne_executions:
+        count = len(already_airborne_executions)
+        lines.append(
+            f"{count} already-airborne TAKEOFF {_plural(count, 'entry')} reported"
+        )
+    lines.append(
+        f"{omitted_count} non-trigger {_plural(omitted_count, 'execution')} omitted"
+    )
+    if not analyses and not already_airborne_executions:
         return "\n".join(lines)
 
-    shared_configuration = all(
+    shared_configuration = bool(analyses) and all(
         analysis.configuration.groups == analyses[0].configuration.groups
         for analysis in analyses[1:]
     )
@@ -1711,6 +1719,17 @@ def format_takeoff_performance_reports(
             )
         )
 
+    for number, execution in enumerate(already_airborne_executions, 1):
+        lines.extend(
+            (
+                "",
+                "",
+                _format_already_airborne_takeoff_report(execution, number),
+            )
+        )
+
+    if not analyses:
+        return "\n".join(lines)
     if shared_configuration:
         lines.extend(("", "", "TAKEOFF CONFIGURATION", "=" * 70))
         if len(analyses) > 1:
@@ -1727,6 +1746,43 @@ def format_takeoff_performance_reports(
                     *_format_configuration(analysis.configuration),
                 )
             )
+    return "\n".join(lines)
+
+
+def _format_already_airborne_takeoff_report(
+    execution: TakeoffExecution,
+    number: int,
+) -> str:
+    """Render explicit already-flying Mode-13 context without a fake trigger."""
+    event = execution.already_airborne_entry
+    if event is None:
+        raise ValueError("already-airborne report requires owned firmware evidence")
+
+    control_status = "Unavailable"
+    if execution.takeoff_control_completion is not None:
+        control_status = "Completed"
+    elif (
+        event.event_type
+        is TakeoffExecutionEventType.ALREADY_FLYING_CLIMB_TO_TAKEOFF_ALT
+        and execution.termination_reason is TakeoffTerminationReason.MODE_EXIT
+    ):
+        control_status = "Mode exit before completion"
+
+    lines = [f"ALREADY-AIRBORNE TAKEOFF {number}", "-" * 70]
+    lines.extend(
+        (
+            "",
+            f"{'Status':<36} Already airborne at TAKEOFF entry",
+            "",
+            "Takeoff phase evidence",
+            f"  {'Takeoff profile':<34} Already airborne at TAKEOFF entry",
+            (
+                f"  {'Throttle release':<34} "
+                f"{'Observed' if execution.throttle_unsuppressed else 'Unavailable'}"
+            ),
+            f"  {'TAKEOFF control':<34} {control_status}",
+        )
+    )
     return "\n".join(lines)
 
 

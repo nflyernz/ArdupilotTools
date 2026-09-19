@@ -18,6 +18,8 @@ class TakeoffExecutionEventType(Enum):
     PRETRIGGER_TIMEOUT = "pretrigger_timeout"
     BAD_LAUNCH = "bad_launch"
     TRIGGERED_AUTO = "triggered_auto"
+    ALREADY_FLYING_ABOVE_TAKEOFF_ALT = "already_flying_above_takeoff_alt"
+    ALREADY_FLYING_CLIMB_TO_TAKEOFF_ALT = "already_flying_climb_to_takeoff_alt"
     TARGET_COURSE_FINALIZED = "target_course_finalized"
     THROTTLE_UNSUPPRESSED = "throttle_unsuppressed"
     TAKEOFF_CONTROL_COMPLETED = "takeoff_control_completed"
@@ -80,6 +82,18 @@ class TakeoffExecution:
     def throttle_unsuppressed(self) -> TakeoffExecutionEvent | None:
         """Return the first retained STAT observation with suppression off."""
         return self._first_event(TakeoffExecutionEventType.THROTTLE_UNSUPPRESSED)
+
+    @property
+    def already_airborne_entry(self) -> TakeoffExecutionEvent | None:
+        """Return explicit firmware evidence of already-flying Mode-13 entry."""
+        event_types = {
+            TakeoffExecutionEventType.ALREADY_FLYING_ABOVE_TAKEOFF_ALT,
+            TakeoffExecutionEventType.ALREADY_FLYING_CLIMB_TO_TAKEOFF_ALT,
+        }
+        return next(
+            (event for event in self.events if event.event_type in event_types),
+            None,
+        )
 
     @property
     def takeoff_control_completion(self) -> TakeoffExecutionEvent | None:

@@ -249,11 +249,16 @@ configuration nor sensor traces establish those families in the current
 analysis. An already-airborne TAKEOFF-mode entry is a separate execution
 context, not a launch family.
 
-A presentation-only follow-up is also deferred: rename the phase-report label
-`Takeoff completion` to `TAKEOFF control` while retaining the existing values
-`Completed` and `Mode exit before completion`. This would clarify that the
-field describes inner automatic TAKEOFF-control completion rather than the
-outer Mode-13 execution. It must not change detector or status semantics.
+The phase-report label is `TAKEOFF control`, with the existing values
+`Completed` and `Mode exit before completion`. The label describes inner
+automatic TAKEOFF-control completion rather than the outer Mode-13 execution;
+detector and status semantics are unchanged.
+
+Explicit owned `Above TKOFF alt - loitering` and `Climbing to TKOFF alt then
+loitering` events identify the two firmware already-flying Mode-13 entry
+branches. Their compact context report does not substitute Mode-13 entry for a
+launch trigger, so trigger-dependent performance remains unavailable. Missing
+`Triggered AUTO` alone is never already-airborne evidence.
 
 ## 7. Altitude and climb/sink evidence
 
@@ -955,10 +960,6 @@ Stable `log_0.bin` validation for the three triggered executions is:
 
 Current deferred work:
 
-- presentation-only rename `Takeoff completion` → `TAKEOFF control`;
-- promote the firmware message `Above TKOFF alt - loitering` into an owned
-  already-airborne execution event before showing that context in the normal
-  phase report;
 - rotation completion remains `Unavailable` until authoritative retained log
   evidence exists; do not derive it from `TKOFF_ROTATE_SPD` or sensor traces;
 - tail-hold, ground-roll, rotation, liftoff, and surface-departure phases remain

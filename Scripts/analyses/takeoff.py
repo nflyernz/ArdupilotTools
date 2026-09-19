@@ -58,7 +58,13 @@ class TakeoffAnalysisPresentation:
             )
             is not None
         )
-        if not analyses:
+        already_airborne_executions = tuple(
+            execution
+            for execution in takeoff_executions
+            if execution.already_airborne_entry is not None
+            and execution.launch_trigger is None
+        )
+        if not analyses and not already_airborne_executions:
             count = len(takeoff_executions)
             noun = "execution" if count == 1 else "executions"
             print()
@@ -73,6 +79,7 @@ class TakeoffAnalysisPresentation:
             format_takeoff_performance_reports(
                 analyses,
                 detected_execution_count=len(takeoff_executions),
+                already_airborne_executions=already_airborne_executions,
             )
         )
 

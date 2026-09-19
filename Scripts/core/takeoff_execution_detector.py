@@ -73,6 +73,14 @@ class TakeoffExecutionDetector:
             TakeoffExecutionEventType.TRIGGERED_AUTO,
         ),
         (
+            "Above TKOFF alt - loitering",
+            TakeoffExecutionEventType.ALREADY_FLYING_ABOVE_TAKEOFF_ALT,
+        ),
+        (
+            "Climbing to TKOFF alt then loitering",
+            TakeoffExecutionEventType.ALREADY_FLYING_CLIMB_TO_TAKEOFF_ALT,
+        ),
+        (
             "Takeoff to ",
             TakeoffExecutionEventType.TARGET_COURSE_FINALIZED,
         ),
@@ -272,9 +280,11 @@ class TakeoffExecutionDetector:
     ) -> bool:
         if entry_context is TakeoffEntryContext.TAKEOFF_MODE:
             return event.event_type is not (TakeoffExecutionEventType.TAKEOFF_COMPLETE)
-        return event.event_type is not (
-            TakeoffExecutionEventType.TARGET_COURSE_FINALIZED
-        )
+        return event.event_type not in {
+            TakeoffExecutionEventType.TARGET_COURSE_FINALIZED,
+            TakeoffExecutionEventType.ALREADY_FLYING_ABOVE_TAKEOFF_ALT,
+            TakeoffExecutionEventType.ALREADY_FLYING_CLIMB_TO_TAKEOFF_ALT,
+        }
 
     def _status_events(
         self,

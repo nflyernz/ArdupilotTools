@@ -466,12 +466,12 @@ This is an edge case for entering Mode 13 in flight, not a physical launch
 method. It must be represented separately and must not redefine the normal
 fresh-arm/surface-or-non-surface execution model.
 
-Current APT note: the stable reference log contains an
-`Above TKOFF alt - loitering` observation in an already-airborne Mode-13
-window, but the current execution model does not yet promote that message into
-an owned already-airborne event for normal detailed phase output. That support
-is a bounded deferred event-model task. Until then, APT must not manufacture
-already-airborne status from missing trigger evidence or sensor inference.
+APT retains `Above TKOFF alt - loitering` and `Climbing to TKOFF alt then
+loitering` as distinct owned Mode-13 execution events and reports their shared
+human context as **Already airborne at TAKEOFF entry**. The exact event detail
+preserves which firmware branch occurred. Mode-13 entry is not substituted for
+`Triggered AUTO`, and APT does not manufacture already-airborne status from a
+missing trigger or sensor inference.
 
 ## 11. AUTO mission `NAV_TAKEOFF` as a separate context
 
@@ -678,10 +678,6 @@ They do constrain event naming and timing precision.
 
 The following are intentionally deferred rather than inferred:
 
-- **Already-airborne phase reporting:** promote the owned
-  `Above TKOFF alt - loitering` / related already-flying firmware observation
-  into the execution model before displaying that context in the normal phase
-  report.
 - **Rotation completion:** keep `Rotation complete = Unavailable` in normal
   phase evidence while `auto_state.rotation_complete` lacks authoritative
   retained log exposure. Do not reconstruct it from airspeed, pitch, altitude,
@@ -693,9 +689,6 @@ The following are intentionally deferred rather than inferred:
   rail versus wheeled/float/ski/dolly. Possible future high-level families are
   externally launched and surface takeoff, but classification requires a
   separate evidence contract.
-- **Presentation wording:** a future presentation-only change may rename
-  `Takeoff completion` to `TAKEOFF control` while preserving the existing
-  completion semantics and values.
 
 These deferred items must not weaken the primary rule: prefer owned firmware
 events/state over sensor-derived phase assertions.
