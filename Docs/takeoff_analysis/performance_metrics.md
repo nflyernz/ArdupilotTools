@@ -7,8 +7,9 @@
 
 **Stable log basis:** `Logs/log_0.bin`, ArduPlane V4.7.0 (`1511f271`)
 
-**Status:** evidence and first-metric semantics established; no performance
-metric implementation yet
+**Status:** TAKEOFF-mode execution, event-led phase evidence, and bounded
+performance metrics are implemented and validated on the stable reference log;
+deferred follow-ups are recorded below
 
 ## 1. Purpose and limits
 
@@ -248,6 +249,12 @@ configuration nor sensor traces establish those families in the current
 analysis. An already-airborne TAKEOFF-mode entry is a separate execution
 context, not a launch family.
 
+A presentation-only follow-up is also deferred: rename the phase-report label
+`Takeoff completion` to `TAKEOFF control` while retaining the existing values
+`Completed` and `Mode exit before completion`. This would clarify that the
+field describes inner automatic TAKEOFF-control completion rather than the
+outer Mode-13 execution. It must not change detector or status semantics.
+
 ## 7. Altitude and climb/sink evidence
 
 ### 7.1 Altitude
@@ -276,9 +283,46 @@ must not be a silent fallback.
 healthy instance, and `BARO.AltAMSL` is an AMSL estimate. Neither is the
 canonical fused takeoff navigation height. CTUN has no altitude field.
 
-The first implementation will therefore need normal retention of `POS`. This
-is a message-selection change only; the existing DataFlash reader already
-preserves the needed raw fields.
+The implemented POS-based metrics therefore retain `POS.RelHomeAlt` as their
+authoritative altitude family. Do not silently replace that evidence with a
+rangefinder result.
+
+#### 7.1.1 Deferred rangefinder AGL comparison
+
+A future low-altitude takeoff metric should investigate Plane's `RFNS.HE`
+(`rangefinder_state.height_estimate`) as optional height-above-ground evidence.
+Plane 4.7.0 logs `RFNS.HE` directly, and its rangefinder update path derives
+`height_estimate` from a range measurement corrected for sensor orientation and
+aircraft attitude before any applicable terrain correction.
+
+This work is deliberately deferred and must not change the meaning of the
+existing **Altitude Δ at AIRSPEED_MIN** metric. The first implementation should
+prefer a separately named comparison such as **AGL at AIRSPEED_MIN** or
+**AGL Δ at AIRSPEED_MIN**, then validate it against `POS.RelHomeAlt` on real
+takeoffs.
+
+Before implementation, define and test:
+
+- whether the metric is absolute `RFNS.HE` at the authoritative AIRSPEED_MIN
+  event or a delta from an owned pre/at-trigger rangefinder baseline;
+- which `RFNS.InRng` / source-validity evidence is required, especially when
+  the aircraft begins stationary close to the ground;
+- causal sample selection at or before the AIRSPEED_MIN event, with no future
+  sample and no interpolation;
+- behavior when RFNS is absent, not in range, points away from the ground, or
+  leaves range before AIRSPEED_MIN;
+- the effect of sloping/uneven terrain: RFNS describes the surface below the
+  aircraft, whereas `POS.RelHomeAlt` is home-relative vehicle position;
+- sensor mounting-height implications for an absolute AGL reading.
+
+Do not use raw `RFND.Dist` as a silent substitute when the Plane-owned
+attitude-corrected `RFNS.HE` evidence is available. Preserve both sources and
+their different meanings if both are later reported.
+
+Source basis:
+[`ArduPlane/Log.cpp`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/Log.cpp)
+and
+[`ArduPlane/altitude.cpp`](https://github.com/ArduPilot/ardupilot/blob/Plane-4.7.0/ArduPlane/altitude.cpp).
 
 ### 7.2 Climb and sink
 
@@ -409,6 +453,7 @@ them incrementally, but must retain the window and censoring labels.
 | Airspeed-minus-groundspeed | Independent streams and different rates require a declared pairing/window statistic; it is also wind-sensitive and must not be described as wind by itself |
 | Demand/response summaries beyond extrema | Need an explicit time-weighted versus sample-weighted aggregation rule |
 | ARSP sensor corroboration | Useful for diagnosing controller source/health, but CTUN already states the selected estimate type for the primary metric |
+| Rangefinder AGL at/near `AIRSPEED_MIN` | Investigate optional Plane `RFNS.HE` as a separately named low-altitude AGL result; define validity/baseline semantics and validate against real takeoffs before considering any preference over `POS.RelHomeAlt` |
 
 ### 10.3 Reject for this scope
 
@@ -886,6 +931,47 @@ evidence.
 - rotation-specific response metrics until a `TKOFF_ROTATE_SPD > 0` corpus is
   available to validate evidence and sampling, without inferring physical
   wheel rotation or liftoff.
+
+## 16.9 Current implementation checkpoint and deferred follow-ups
+
+The current APT TAKEOFF report now has three deliberately separate layers:
+
+1. **event-led phase evidence** — owned firmware events/state such as
+   `Armed AUTO`, `Triggered AUTO`, throttle unsuppression, the authoritative
+   AIRSPEED_MIN event, explicit rotation unavailability, and existing TAKEOFF
+   completion status;
+2. **derived performance evidence** — including `Trigger → AIRSPEED_MIN`,
+   `Throttle → AIRSPEED_MIN`, and `Altitude Δ at AIRSPEED_MIN`;
+3. **configuration context** — event-time takeoff, throttle, pitch/roll, and
+   airspeed parameters from `ParameterHistory`.
+
+Stable `log_0.bin` validation for the three triggered executions is:
+
+| TAKEOFF | Trigger → AIRSPEED_MIN | Throttle → AIRSPEED_MIN | Altitude Δ at AIRSPEED_MIN | `Armed AUTO` x-accel | Trigger GPS speed |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 1.581 s | 1.519 s | +2.58 m | 6.5 m/s² | 2.5 m/s |
+| 2 | 1.781 s | 1.639 s | +3.01 m | 6.6 m/s² | 2.0 m/s |
+| 3 | 1.761 s | 1.718 s | +0.13 m | 7.3 m/s² | 1.8 m/s |
+
+Current deferred work:
+
+- presentation-only rename `Takeoff completion` → `TAKEOFF control`;
+- promote the firmware message `Above TKOFF alt - loitering` into an owned
+  already-airborne execution event before showing that context in the normal
+  phase report;
+- rotation completion remains `Unavailable` until authoritative retained log
+  evidence exists; do not derive it from `TKOFF_ROTATE_SPD` or sensor traces;
+- tail-hold, ground-roll, rotation, liftoff, and surface-departure phases remain
+  deferred pending authoritative evidence and known surface-takeoff logs;
+- physical launch classification remains deferred; possible future high-level
+  families are externally launched and surface takeoff, but current evidence
+  does not justify assigning them;
+- investigate a separately named `RFNS.HE`-based low-altitude AGL result as
+  described in section 7.1.1; retain the existing POS-based altitude metric
+  until that evidence contract is validated.
+
+These are explicit deferred items, not reasons to weaken the current
+event-first evidence rules.
 
 ## 17. Post-launch pitch-demand freshness and report presentation
 

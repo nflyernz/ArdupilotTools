@@ -1,6 +1,6 @@
 # ArduPlane Analyzer Roadmap
 
-> **Updated:** 2026-09-11
+> **Updated:** 2026-09-18
 > **Current AMC target:** Step 66 — Everyday use / RTL correctness
 > **APT role:** Plane log-analysis R&D and validation
 
@@ -375,6 +375,84 @@ In particular, future Battery Analysis / battery-pack history work must not
 modify these filters merely to obtain `BATT_*` parameters. If battery
 parameter evidence is required, determine the correct evidence source and
 time semantics independently.
+
+## Current TAKEOFF Analysis Status
+
+APT's conventional fixed-wing TAKEOFF-mode analyser is now a mature active R&D
+feature on the `takeoff-analysis` branch. It is generic to ArduPlane Mode 13
+and is deliberately not hand-launch-specific.
+
+Current implemented structure:
+
+``` text
+Mode-13 outer execution
+        ↓
+owned firmware/event evidence
+        ├── Armed AUTO acceleration-gate evidence
+        ├── Triggered AUTO + firmware-message GPS speed
+        ├── throttle-unsuppression evidence
+        ├── authoritative AIRSPEED_MIN event
+        ├── rotation completion explicitly Unavailable
+        └── existing TAKEOFF-control completion status
+        ↓
+bounded performance metrics
+        ├── Trigger → AIRSPEED_MIN
+        ├── Throttle → AIRSPEED_MIN
+        ├── Altitude Δ at AIRSPEED_MIN
+        ├── propulsion response
+        ├── roll / altitude response
+        └── qualified pitch-tracking evidence
+        ↓
+event-time shared configuration
+```
+
+The functionality checkpoint is:
+
+``` text
+db2363f  feat(takeoff): add phase and AIRSPEED_MIN context
+```
+
+The dedicated focused test pass currently validates 115 TAKEOFF tests. The
+stable `log_0.bin` reference retains:
+
+``` text
+TAKEOFF 1  Trigger→Vmin 1.581 s  Throttle→Vmin 1.519 s  AltΔ@Vmin +2.58 m
+TAKEOFF 2  Trigger→Vmin 1.781 s  Throttle→Vmin 1.639 s  AltΔ@Vmin +3.01 m
+TAKEOFF 3  Trigger→Vmin 1.761 s  Throttle→Vmin 1.718 s  AltΔ@Vmin +0.13 m
+```
+
+Event-led phase reporting deliberately separates **Observed**, **Configured**,
+derived performance evidence, and **Unavailable**. It does not infer physical
+launch type from acceleration, speed, rotation configuration, or sensor
+traces.
+
+### TAKEOFF deferred backlog
+
+The following are explicitly deferred:
+
+- presentation-only rename `Takeoff completion` → `TAKEOFF control`, preserving
+  `Completed` / `Mode exit before completion` semantics;
+- bounded event-model support for already-airborne Mode-13 entry using owned
+  firmware evidence such as `Above TKOFF alt - loitering`; do not infer it
+  from missing trigger evidence;
+- rotation completion remains unavailable until authoritative retained log
+  evidence exists;
+- tail-hold, ground-roll, rotation, liftoff, and surface-departure analysis
+  waits for authoritative evidence and known surface-takeoff logs;
+- physical launch classification remains deferred; possible future top-level
+  families are **externally launched** and **surface takeoff**, but no family
+  is assigned by current evidence;
+- investigate an optional low-altitude rangefinder result using Plane
+  `RFNS.HE`. Keep the existing `POS.RelHomeAlt`-based altitude metric unchanged
+  until rangefinder validity/baseline semantics are validated. Prefer a
+  separately named AGL result first rather than a silent source replacement.
+
+The rangefinder investigation should determine whether absolute
+`RFNS.HE` at AIRSPEED_MIN or an owned rangefinder delta is the more defensible
+quantity, how `RFNS.InRng` and source validity apply during takeoff, and how
+uneven terrain and sensor mounting height affect interpretation.
+
+These items are research backlog, not an immediate AMC migration commitment.
 
 ## Current Battery Analysis Status
 
@@ -1400,6 +1478,9 @@ complete:
 -   [x] Landing console presentation is implemented.
 -   [x] Battery Analysis is implemented separately.
 -   [x] Event Timeline is implemented.
+-   [x] Conventional Plane Mode-13 TAKEOFF execution analysis is implemented.
+-   [x] TAKEOFF report separates event-led phase evidence, derived performance,
+    and event-time configuration.
 -   [x] Landing assertion regression exists.
 -   [x] Configuration paths are repository-relative.
 -   [x] Landing workflow has shared configuration ownership.
@@ -1419,6 +1500,11 @@ APT timestamped ParameterHistory                 COMPLETE
         │
         ▼
 APT bounded Battery Analysis                     COMPLETE (4e83b46)
+        │
+        ├── APT TAKEOFF analysis                    ACTIVE / VALIDATED
+        │     ├── event-led phase evidence
+        │     ├── AIRSPEED_MIN performance context
+        │     └── deferred surface/rangefinder work
         │
         ▼
 AMC Plane infrastructure

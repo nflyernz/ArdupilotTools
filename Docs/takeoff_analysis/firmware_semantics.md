@@ -7,8 +7,9 @@
 
 **Compatibility check:** the relevant Plane-4.7.1 source is unchanged
 
-**Status:** source semantics established; the current AUTO-only prototype must
-be revised before metric work
+**Status:** stable 4.7.x ownership/event semantics established and implemented
+in the current TAKEOFF-mode analyser; remaining surface-phase and
+already-airborne presentation work is explicitly deferred
 
 ## 1. Purpose and decisions
 
@@ -465,6 +466,13 @@ This is an edge case for entering Mode 13 in flight, not a physical launch
 method. It must be represented separately and must not redefine the normal
 fresh-arm/surface-or-non-surface execution model.
 
+Current APT note: the stable reference log contains an
+`Above TKOFF alt - loitering` observation in an already-airborne Mode-13
+window, but the current execution model does not yet promote that message into
+an owned already-airborne event for normal detailed phase output. That support
+is a bounded deferred event-model task. Until then, APT must not manufacture
+already-airborne status from missing trigger evidence or sensor inference.
+
 ## 11. AUTO mission `NAV_TAKEOFF` as a separate context
 
 AUTO mission takeoff shares the following with TAKEOFF mode:
@@ -619,11 +627,11 @@ Performance results must still retain the firmware identity. A logging-service
 or throttle-slew implementation difference can affect sampling or measured
 response without changing semantic ownership.
 
-## 15. Required revision of the current APT prototype
+## 15. Historical prototype revision requirements — implemented
 
-The current `takeoff_execution.py`, `takeoff_execution_detector.py`, and
-synthetic tests are intentionally left unchanged by this audit. Before metric
-work, a separate implementation task must revise these assumptions:
+The requirements below were identified by the original firmware audit and have
+since been incorporated into the current TAKEOFF-mode execution model. They are
+retained as the historical semantic contract rather than as outstanding work:
 
 - TAKEOFF-mode executions must be discoverable from Mode 13 entry/exit; they
   must not require AUTO mode or runtime `MISE NAV_TAKEOFF`.
@@ -641,8 +649,9 @@ work, a separate implementation task must revise these assumptions:
 - AUTO mission support and its strict `MISE`/AUTO ownership rules should remain
   available as the separate context described in section 11.
 
-This section identifies semantic work only. It does not prescribe public APIs,
-class hierarchy, or metric implementation.
+These requirements define semantics rather than a required public API or class
+hierarchy. Future changes must preserve them unless a new firmware/source audit
+justifies a deliberate revision.
 
 ## 16. Unresolved evidence limitations
 
@@ -662,8 +671,34 @@ class hierarchy, or metric implementation.
   rolling takeoff reference, and no direct evidence for validating physical
   rotation semantics.
 
-These limitations do not block a narrow TAKEOFF-mode ownership/stage model.
+These limitations do not block the current TAKEOFF-mode ownership/stage model.
 They do constrain event naming and timing precision.
+
+### 16.1 Explicit deferred analyser work
+
+The following are intentionally deferred rather than inferred:
+
+- **Already-airborne phase reporting:** promote the owned
+  `Above TKOFF alt - loitering` / related already-flying firmware observation
+  into the execution model before displaying that context in the normal phase
+  report.
+- **Rotation completion:** keep `Rotation complete = Unavailable` in normal
+  phase evidence while `auto_state.rotation_complete` lacks authoritative
+  retained log exposure. Do not reconstruct it from airspeed, pitch, altitude,
+  or `TKOFF_ROTATE_SPD`.
+- **Surface-specific phases:** tail hold, ground roll, rotation, liftoff, and
+  surface departure wait for known surface-takeoff logs and source-backed
+  authoritative evidence.
+- **Physical launch family:** do not currently classify hand/bungee/catapult/
+  rail versus wheeled/float/ski/dolly. Possible future high-level families are
+  externally launched and surface takeoff, but classification requires a
+  separate evidence contract.
+- **Presentation wording:** a future presentation-only change may rename
+  `Takeoff completion` to `TAKEOFF control` while preserving the existing
+  completion semantics and values.
+
+These deferred items must not weaken the primary rule: prefer owned firmware
+events/state over sensor-derived phase assertions.
 
 ## 17. Source references
 
