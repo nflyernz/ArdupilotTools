@@ -3,9 +3,13 @@
 from pathlib import Path
 
 import pytest
-from analyses.battery import BatteryAnalysisPresentation
+from analyses.battery import (
+    BatteryAnalysisPresentation,
+    BatteryPackManagementPresentation,
+)
 from core.battery_pack_store import (
     BatteryPackStore,
+    BatteryPackStoreError,
     BatteryPackStoreFormatError,
     LogPackState,
     fingerprint_log,
@@ -349,3 +353,149 @@ def test_explicit_constructor_pack_id_bypasses_persistent_resolution(
     monkeypatch.setattr("analyses.battery.FlightReader", EmptyFlightReader)
 
     presentation.run()
+
+
+
+def test_rename_pack_updates_all_matching_associations_atomically(tmp_path):
+    """Renaming one Pack ID updates every matching log and preserves others."""
+    path = tmp_path / "Data" / "battery_packs.json"
+    first = "1" * 64
+    second = "2" * 64
+    unrelated = "3" * 64
+    not_tracked = "4" * 64
+
+    store = BatteryPackStore(path)
+    store.create_and_associate(first, "Pack 1")
+    store.associate(second, "Pack 1")
+    store.create_and_associate(unrelated, "Pack 2")
+    store.mark_not_tracked(not_tracked)
+
+    store.rename_pack(" Pack 1 ", " Renamed Pack ")
+
+    reloaded = BatteryPackStore(path)
+
+    assert reloaded.pack_ids == ("Renamed Pack", "Pack 2")
+    assert reloaded.association_for(first).pack_id == "Renamed Pack"
+    assert reloaded.association_for(second).pack_id == "Renamed Pack"
+    assert reloaded.association_for(unrelated).pack_id == "Pack 2"
+    assert reloaded.association_for(not_tracked).state is LogPackState.NOT_TRACKED
+
+
+@pytest.mark.parametrize(
+    ("old_pack_id", "new_pack_id", "message"),
+    [
+        ("Missing", "Pack 3", "Unknown Pack ID: Missing"),
+        ("Pack 1", "Pack 2", "Pack ID already exists: Pack 2"),
+    ],
+    ids=["unknown-source", "duplicate-destination"],
+)
+def test_invalid_rename_leaves_store_unchanged(
+    tmp_path,
+    old_pack_id,
+    new_pack_id,
+    message,
+):
+    """Invalid rename requests change neither durable nor in-memory state."""
+    path = tmp_path / "Data" / "battery_packs.json"
+    first = "1" * 64
+    second = "2" * 64
+
+    store = BatteryPackStore(path)
+    store.create_and_associate(first, "Pack 1")
+    store.create_and_associate(second, "Pack 2")
+
+    original_bytes = path.read_bytes()
+
+    with pytest.raises(BatteryPackStoreError, match=message):
+        store.rename_pack(old_pack_id, new_pack_id)
+
+    assert path.read_bytes() == original_bytes
+    assert store.pack_ids == ("Pack 1", "Pack 2")
+    assert store.association_for(first).pack_id == "Pack 1"
+    assert store.association_for(second).pack_id == "Pack 2"
+
+
+def test_pack_management_same_name_is_reported_as_unchanged(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    """Entering the current Pack ID is a harmless no-op."""
+    path = tmp_path / "Data" / "battery_packs.json"
+    fingerprint = "1" * 64
+
+    store = BatteryPackStore(path)
+    store.create_and_associate(fingerprint, "Pack 1")
+
+    presentation = BatteryPackManagementPresentation(pack_store=store)
+    _inputs(monkeypatch, "1", "1", " Pack 1 ", "0")
+
+    presentation.run()
+
+    output = capsys.readouterr().out
+
+    assert "Pack ID unchanged." in output
+    assert store.pack_ids == ("Pack 1",)
+    assert store.association_for(fingerprint).pack_id == "Pack 1"
+
+
+def test_pack_management_renames_persisted_identity(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    """Management UI renames the selected physical pack and its log ownership."""
+    path = tmp_path / "Data" / "battery_packs.json"
+    lipo = "1" * 64
+    lithium_ion = "2" * 64
+
+    store = BatteryPackStore(path)
+    store.create_and_associate(lipo, "LIPO-3900-01")
+    store.create_and_associate(lithium_ion, "505-P1")
+
+    presentation = BatteryPackManagementPresentation(pack_store=store)
+    _inputs(monkeypatch, "1", "2", "50S-P1", "0")
+
+    presentation.run()
+
+    output = capsys.readouterr().out
+    reloaded = BatteryPackStore(path)
+
+    assert "Renamed Pack ID: 505-P1 -> 50S-P1" in output
+    assert reloaded.pack_ids == ("LIPO-3900-01", "50S-P1")
+    assert reloaded.association_for(lipo).pack_id == "LIPO-3900-01"
+    assert reloaded.association_for(lithium_ion).pack_id == "50S-P1"
+
+
+def test_pack_management_rename_write_failure_preserves_store(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    """A failed atomic rename leaves disk and live store state unchanged."""
+    path = tmp_path / "Data" / "battery_packs.json"
+    fingerprint = "1" * 64
+
+    store = BatteryPackStore(path)
+    store.create_and_associate(fingerprint, "Pack 1")
+    original_bytes = path.read_bytes()
+
+    monkeypatch.setattr(
+        "core.battery_pack_store.os.replace",
+        lambda _source, _destination: (_ for _ in ()).throw(
+            OSError("simulated rename failure")
+        ),
+    )
+
+    presentation = BatteryPackManagementPresentation(pack_store=store)
+    _inputs(monkeypatch, "1", "1", "Renamed Pack", "0")
+
+    presentation.run()
+
+    output = capsys.readouterr().out
+
+    assert "Unable to rename Battery Pack ID: simulated rename failure" in output
+    assert "Persistent pack data was not changed." in output
+    assert path.read_bytes() == original_bytes
+    assert store.pack_ids == ("Pack 1",)
+    assert store.association_for(fingerprint).pack_id == "Pack 1"
