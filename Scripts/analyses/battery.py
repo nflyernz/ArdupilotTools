@@ -290,16 +290,7 @@ class BatteryPackPerformancePresentation:
             ):
                 observations.append(observation)
 
-        observations.sort(
-            key=lambda observation: (
-                observation.recorded_at_utc is None,
-                observation.recorded_at_utc or "",
-                observation.source_filename,
-                observation.flight_number,
-                observation.battery_instance,
-                observation.event_start_us,
-            )
-        )
+        observations.sort(key=self._observation_sort_key)
 
         print()
         print(f"Pack ID: {pack_id}")
@@ -308,16 +299,59 @@ class BatteryPackPerformancePresentation:
             print("No stored AUTO takeoff observations for this Pack ID.")
             return
 
-        rows = [self._row(observation) for observation in observations]
+        first_takeoffs = self._first_takeoffs_by_session(observations)
+        print()
+        print("FIRST TAKEOFF BY BATTERY SESSION")
+        self._print_table(first_takeoffs)
+        print()
+        print("ALL AUTO TAKEOFFS")
+        self._print_table(observations)
+
+    @classmethod
+    def _first_takeoffs_by_session(cls, observations):
+        """Return the earliest retained AUTO event for each source BIN."""
+        first_by_source = {}
+        for observation in observations:
+            current = first_by_source.get(observation.source_sha256)
+            if current is None or cls._event_order_key(
+                observation
+            ) < cls._event_order_key(current):
+                first_by_source[observation.source_sha256] = observation
+        return sorted(first_by_source.values(), key=cls._observation_sort_key)
+
+    @staticmethod
+    def _event_order_key(observation):
+        return (
+            observation.event_start_us,
+            observation.flight_start_us,
+            observation.flight_number,
+            observation.battery_instance,
+            observation.event_end_us,
+            observation.observation_id,
+        )
+
+    @staticmethod
+    def _observation_sort_key(observation):
+        return (
+            observation.recorded_at_utc is None,
+            observation.recorded_at_utc or "",
+            observation.source_filename,
+            observation.flight_number,
+            observation.battery_instance,
+            observation.event_start_us,
+        )
+
+    @classmethod
+    def _print_table(cls, observations):
+        rows = [cls._row(observation) for observation in observations]
         widths = [
             max(len(heading), *(len(row[index]) for row in rows))
-            for index, heading in enumerate(self.HEADINGS)
+            for index, heading in enumerate(cls.HEADINGS)
         ]
-        print()
-        print(self._table_line(self.HEADINGS, widths))
-        print(self._table_line(tuple("-" * width for width in widths), widths))
+        print(cls._table_line(cls.HEADINGS, widths))
+        print(cls._table_line(tuple("-" * width for width in widths), widths))
         for row in rows:
-            print(self._table_line(row, widths))
+            print(cls._table_line(row, widths))
 
     @staticmethod
     def _row(observation):
