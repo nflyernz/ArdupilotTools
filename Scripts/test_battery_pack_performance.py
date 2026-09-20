@@ -1,0 +1,341 @@
+"""Focused tests for Pack Performance reporting and optional integration."""
+
+import dataclasses
+from pathlib import Path
+
+import pytest
+
+from analyses import battery
+from analyses.battery import (
+    BatteryAnalysisPresentation,
+    BatteryPackPerformancePresentation,
+)
+from core.battery_pack_history import BatteryPackHistoryStore
+from core.battery_pack_store import BatteryPackStore
+from core.flight_data import FlightLog
+from core.flight_window import FlightWindow
+from test_battery_pack_history import _observation
+
+
+def _inputs(monkeypatch, *responses):
+    answers = iter(responses)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+
+
+def _stores(tmp_path):
+    return (
+        BatteryPackStore(tmp_path / "battery_packs.json"),
+        BatteryPackHistoryStore(tmp_path / "battery_pack_history.json"),
+    )
+
+
+def test_report_uses_current_ownership_and_survives_without_bins(
+    monkeypatch, capsys, tmp_path
+):
+    pack_store, history = _stores(tmp_path)
+    selected = "1" * 64
+    other = "2" * 64
+    not_tracked = "3" * 64
+    unseen = "4" * 64
+    pack_store.create_and_associate(selected, "Pack A")
+    pack_store.create_and_associate(other, "Pack B")
+    pack_store.mark_not_tracked(not_tracked)
+    history.add_observations(
+        [
+            _observation(
+                source_sha256=selected,
+                source_filename="deleted-selected.bin",
+                pack_id="Old ingest name",
+            ),
+            _observation(
+                source_sha256=other,
+                source_filename="other.bin",
+                pack_id="Pack A",
+            ),
+            _observation(
+                source_sha256=not_tracked,
+                source_filename="not-tracked.bin",
+            ),
+            _observation(
+                source_sha256=unseen,
+                source_filename="unseen.bin",
+            ),
+        ]
+    )
+    original_history = history.path.read_bytes()
+    _inputs(monkeypatch, "1")
+
+    BatteryPackPerformancePresentation(pack_store, history).run()
+    output = capsys.readouterr().out
+
+    assert "deleted-selected.bin" in output
+    assert "other.bin" not in output
+    assert "not-tracked.bin" not in output
+    assert "unseen.bin" not in output
+    assert history.path.read_bytes() == original_history
+
+
+def test_reassignment_and_rename_change_membership_without_history_rewrite(
+    monkeypatch, capsys, tmp_path
+):
+    pack_store, history = _stores(tmp_path)
+    first = "1" * 64
+    second = "2" * 64
+    pack_store.create_and_associate(first, "Pack A")
+    pack_store.create_and_associate(second, "Pack B")
+    history.add_observations(
+        [
+            _observation(
+                source_sha256=first,
+                source_filename="first.bin",
+                pack_id="Pack A",
+            ),
+            _observation(
+                source_sha256=second,
+                source_filename="second.bin",
+                pack_id="Pack B",
+            ),
+        ]
+    )
+    original_history = history.path.read_bytes()
+
+    pack_store.associate(second, "Pack A")
+    pack_store.rename_pack("Pack A", "Pack Renamed")
+    _inputs(monkeypatch, "1")
+    BatteryPackPerformancePresentation(pack_store, history).run()
+    output = capsys.readouterr().out
+
+    assert "Pack ID: Pack Renamed" in output
+    assert "first.bin" in output
+    assert "second.bin" in output
+    assert history.path.read_bytes() == original_history
+
+
+def test_report_headings_ordering_and_unavailable_rendering(
+    monkeypatch, capsys, tmp_path
+):
+    pack_store, history = _stores(tmp_path)
+    early_source = "1" * 64
+    later_source = "2" * 64
+    unavailable_a = "3" * 64
+    unavailable_b = "4" * 64
+    for index, source in enumerate(
+        (early_source, later_source, unavailable_a, unavailable_b)
+    ):
+        if index == 0:
+            pack_store.create_and_associate(source, "Pack A")
+        else:
+            pack_store.associate(source, "Pack A")
+
+    early = dataclasses.replace(
+        _observation(
+            source_sha256=early_source,
+            source_filename="early.bin",
+        ),
+        recorded_at_utc="2018-04-29T00:00:01.000Z",
+        gps_anchor_week=1999,
+    )
+    later = dataclasses.replace(
+        _observation(
+            source_sha256=later_source,
+            source_filename="later.bin",
+        ),
+        recorded_at_utc="2018-05-13T00:00:01.000Z",
+        gps_anchor_week=2001,
+    )
+    unavailable_common = {
+        "recorded_at_utc": None,
+        "gps_anchor_week": None,
+        "gps_anchor_week_ms": None,
+        "gps_anchor_time_us": None,
+        "gps_instance": None,
+        "gps_utc_offset_seconds": None,
+        "capacity_used_mah": None,
+        "average_current_a": None,
+        "peak_current_a": None,
+        "pre_load_voltage_v": None,
+        "minimum_loaded_voltage_v": None,
+        "voltage_sag_v": None,
+        "voltage_recovery_v": None,
+    }
+    unavailable_z = dataclasses.replace(
+        _observation(
+            source_sha256=unavailable_a,
+            source_filename="z-undated.bin",
+        ),
+        **unavailable_common,
+    )
+    unavailable_a_row = dataclasses.replace(
+        _observation(
+            source_sha256=unavailable_b,
+            source_filename="a-undated.bin",
+        ),
+        **unavailable_common,
+    )
+    history.add_observations(
+        [later, unavailable_z, early, unavailable_a_row]
+    )
+    _inputs(monkeypatch, "1")
+
+    BatteryPackPerformancePresentation(pack_store, history).run()
+    output = capsys.readouterr().out
+
+    headings = (
+        "Date",
+        "Source",
+        "Flight",
+        "Capacity used",
+        "Avg curr (A)",
+        "Peak curr (A)",
+        "Pre-load volt (V)",
+        "Min loaded volt (V)",
+        "Sag (V)",
+        "Recovery (V)",
+    )
+    heading_line = next(line for line in output.splitlines() if "Date" in line)
+    assert tuple(part.strip() for part in heading_line.split(" | ")) == headings
+    assert output.index("early.bin") < output.index("later.bin")
+    assert output.index("later.bin") < output.index("a-undated.bin")
+    assert output.index("a-undated.bin") < output.index("z-undated.bin")
+    undated_line = next(
+        line for line in output.splitlines() if "a-undated.bin" in line
+    )
+    assert undated_line.count("Unavailable") >= 7
+    for prohibited in ("Health", "Resistance", "Diagnosis", "Comparability"):
+        assert prohibited not in output
+
+
+def test_report_clearly_handles_pack_without_observations(
+    monkeypatch, capsys, tmp_path
+):
+    pack_store, history = _stores(tmp_path)
+    pack_store.create_and_associate("1" * 64, "Pack A")
+    _inputs(monkeypatch, "1")
+
+    BatteryPackPerformancePresentation(pack_store, history).run()
+
+    assert (
+        "No stored AUTO takeoff observations for this Pack ID."
+        in capsys.readouterr().out
+    )
+
+
+@pytest.mark.parametrize("failure_point", ["store", "recorder", "save"])
+def test_optional_history_failure_does_not_block_normal_analysis(
+    monkeypatch, capsys, tmp_path, failure_point
+):
+    window = FlightWindow(1_000_000, 2_000_000)
+    flight_log = FlightLog(flights=[window])
+    presentation = BatteryAnalysisPresentation(config=object())
+    selected_flight_reached = []
+    monkeypatch.setattr(battery, "select_log_input", lambda: [tmp_path / "log.bin"])
+
+    def resolve(_path):
+        presentation._resolved_history_context = ("1" * 64, "Pack A")
+        return True, "Pack A"
+
+    monkeypatch.setattr(presentation, "_resolve_pack_id", resolve)
+    monkeypatch.setattr(
+        battery,
+        "FlightReader",
+        lambda *_args, **_kwargs: SimpleReader(flight_log),
+    )
+
+    def select_flight(_flight_log):
+        selected_flight_reached.append(True)
+        return None
+
+    monkeypatch.setattr(presentation, "_select_flight", select_flight)
+    if failure_point == "store":
+        monkeypatch.setattr(
+            battery,
+            "BatteryPackHistoryStore",
+            lambda: (_ for _ in ()).throw(RuntimeError("history load failed")),
+        )
+    else:
+        if failure_point == "save":
+            class FailingStore:
+                def add_observations(self, _observations):
+                    raise RuntimeError("history save failed")
+
+            presentation.history_store = FailingStore()
+        else:
+            class FailingRecorder:
+                def __init__(self, _config):
+                    pass
+
+                def record(self, *_args):
+                    raise RuntimeError("history recorder failed")
+
+            monkeypatch.setattr(
+                battery, "BatteryPackHistoryRecorder", FailingRecorder
+            )
+
+    presentation.run()
+    output = capsys.readouterr().out
+
+    assert selected_flight_reached == [True]
+    assert "Normal Battery Analysis will continue." in output
+
+
+class SimpleReader:
+    def __init__(self, flight_log):
+        self.flight_log = flight_log
+
+    def read(self):
+        return self.flight_log
+
+
+@pytest.mark.parametrize("ownership", ["not-tracked", "transient", "unseen"])
+def test_history_is_not_written_without_persisted_tracked_ownership(
+    monkeypatch, tmp_path, ownership
+):
+    log_path = tmp_path / "log.bin"
+    log_path.write_bytes(b"synthetic log")
+    window = FlightWindow(1_000_000, 2_000_000)
+    flight_log = FlightLog(flights=[window])
+    pack_store = BatteryPackStore(tmp_path / "battery_packs.json")
+    history_calls = []
+
+    class ForbiddenHistoryStore:
+        def __bool__(self):
+            return True
+
+        def add_observations(self, _observations):
+            history_calls.append(True)
+
+    if ownership == "not-tracked":
+        from core.battery_pack_store import fingerprint_log
+
+        pack_store.mark_not_tracked(fingerprint_log(log_path))
+        presentation = BatteryAnalysisPresentation(
+            config=object(),
+            pack_store=pack_store,
+            history_store=ForbiddenHistoryStore(),
+        )
+    elif ownership == "transient":
+        presentation = BatteryAnalysisPresentation(
+            pack_id="Transient",
+            config=object(),
+            pack_store=pack_store,
+            history_store=ForbiddenHistoryStore(),
+        )
+    else:
+        presentation = BatteryAnalysisPresentation(
+            config=object(),
+            pack_store=pack_store,
+            history_store=ForbiddenHistoryStore(),
+        )
+        _inputs(monkeypatch, "0")
+
+    monkeypatch.setattr(battery, "select_log_input", lambda: [log_path])
+    monkeypatch.setattr(
+        battery,
+        "FlightReader",
+        lambda *_args, **_kwargs: SimpleReader(flight_log),
+    )
+    monkeypatch.setattr(presentation, "_select_flight", lambda _log: None)
+
+    presentation.run()
+
+    assert history_calls == []
