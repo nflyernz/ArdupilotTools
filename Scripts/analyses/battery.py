@@ -938,7 +938,7 @@ class BatteryAnalysisPresentation:
                 f"{_format_value(event.duration_s, ' s', 3)}"
             )
             print(
-                "   Consumed at start    "
+                "   Capacity used before event    "
                 f"{_format_value(
                     event.consumed_mah_at_start,
                     ' mAh',
