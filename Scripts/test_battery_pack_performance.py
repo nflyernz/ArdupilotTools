@@ -1,6 +1,7 @@
 """Focused tests for Pack Performance reporting and optional integration."""
 
 import dataclasses
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,24 @@ from core.battery_pack_history import BatteryPackHistoryStore
 from core.battery_pack_store import BatteryPackStore
 from core.flight_data import FlightLog
 from core.flight_window import FlightWindow
+from core.gps_time import format_utc_milliseconds, gps_week_time_to_utc
 from test_battery_pack_history import _observation
+
+
+SUMMARY_HEADING = "FIRST TAKEOFF BY BATTERY SESSION"
+ALL_HEADING = "ALL AUTO TAKEOFFS"
+TABLE_HEADINGS = (
+    "Date",
+    "Source",
+    "Flight",
+    "Capacity used",
+    "Avg curr (A)",
+    "Peak curr (A)",
+    "Pre-load volt (V)",
+    "Min loaded volt (V)",
+    "Sag (V)",
+    "Recovery (V)",
+)
 
 
 def _inputs(monkeypatch, *responses):
@@ -27,6 +45,248 @@ def _stores(tmp_path):
         BatteryPackStore(tmp_path / "battery_packs.json"),
         BatteryPackHistoryStore(tmp_path / "battery_pack_history.json"),
     )
+
+
+def _section_rows(output, heading):
+    section = output.split(heading, maxsplit=1)[1]
+    if heading == SUMMARY_HEADING:
+        section = section.split(ALL_HEADING, maxsplit=1)[0]
+    table_lines = [line for line in section.splitlines() if " | " in line]
+    assert tuple(part.strip() for part in table_lines[0].split(" | ")) == (
+        TABLE_HEADINGS
+    )
+    return [
+        tuple(part.strip() for part in line.split(" | "))
+        for line in table_lines[2:]
+    ]
+
+
+def _event(
+    source_sha256,
+    source_filename,
+    event_start_us,
+    *,
+    flight_number=1,
+    battery_instance=0,
+    gps_week=2000,
+    capacity_used_mah=100.0,
+):
+    observation = _observation(
+        source_sha256=source_sha256,
+        source_filename=source_filename,
+        battery_instance=battery_instance,
+        event_start_us=event_start_us,
+        event_end_us=event_start_us + 100_000,
+    )
+    recorded_at_utc = format_utc_milliseconds(
+        gps_week_time_to_utc(gps_week, 18_000, 18)
+        + timedelta(microseconds=event_start_us - 1_000_000)
+    )
+    return dataclasses.replace(
+        observation,
+        flight_number=flight_number,
+        recorded_at_utc=recorded_at_utc,
+        gps_anchor_week=gps_week,
+        recovery_time_us=event_start_us + 200_000,
+        capacity_used_mah=capacity_used_mah,
+    )
+
+
+def _render(monkeypatch, capsys, pack_store, history, selection="1"):
+    _inputs(monkeypatch, selection)
+    BatteryPackPerformancePresentation(pack_store, history).run()
+    return capsys.readouterr().out
+
+
+def _associate_sources(pack_store, pack_id, sources):
+    for index, source in enumerate(sources):
+        if index == 0 and pack_id not in pack_store.pack_ids:
+            pack_store.create_and_associate(source, pack_id)
+        else:
+            pack_store.associate(source, pack_id)
+
+
+def test_one_session_summarizes_first_of_three_takeoffs(
+    monkeypatch, capsys, tmp_path
+):
+    pack_store, history = _stores(tmp_path)
+    source = "1" * 64
+    pack_store.create_and_associate(source, "50S-P1")
+    history.add_observations(
+        [
+            _event(source, "log_0.bin", 3_000_000, flight_number=2),
+            _event(source, "log_0.bin", 2_000_000, flight_number=1),
+            _event(source, "log_0.bin", 4_000_000, flight_number=3),
+        ]
+    )
+
+    output = _render(monkeypatch, capsys, pack_store, history)
+    summary_rows = _section_rows(output, SUMMARY_HEADING)
+    full_rows = _section_rows(output, ALL_HEADING)
+
+    assert len(summary_rows) == 1
+    assert len(full_rows) == 3
+    assert summary_rows[0][1:3] == ("log_0.bin", "1")
+    assert [row[2] for row in full_rows] == ["1", "2", "3"]
+
+
+@pytest.mark.parametrize(
+    ("pack_id", "session_counts", "summary_count", "full_count"),
+    [
+        ("LIPO-3900-01", (4, 1, 4), 3, 9),
+        ("50S-P1", (3,), 1, 3),
+        ("LIPO-2600-01", (1,), 1, 1),
+    ],
+)
+def test_temporary_history_matches_real_pack_session_counts(
+    monkeypatch,
+    capsys,
+    tmp_path,
+    pack_id,
+    session_counts,
+    summary_count,
+    full_count,
+):
+    pack_store, history = _stores(tmp_path)
+    observations = []
+    sources = []
+    for session_index, event_count in enumerate(session_counts, start=1):
+        source = str(session_index) * 64
+        sources.append(source)
+        for event_index in range(event_count):
+            observations.append(
+                _event(
+                    source,
+                    f"log_{session_index}.bin",
+                    1_500_000 + (event_index * 700_000),
+                    flight_number=event_index + 1,
+                )
+            )
+    _associate_sources(pack_store, pack_id, sources)
+    history.add_observations(observations)
+
+    output = _render(monkeypatch, capsys, pack_store, history)
+
+    assert len(_section_rows(output, SUMMARY_HEADING)) == summary_count
+    assert len(_section_rows(output, ALL_HEADING)) == full_count
+
+
+def test_earliest_event_time_wins_despite_flight_and_utc_order(
+    monkeypatch, capsys, tmp_path
+):
+    pack_store, history = _stores(tmp_path)
+    source = "1" * 64
+    pack_store.create_and_associate(source, "Pack A")
+    earlier_event_with_later_utc = _event(
+        source,
+        "session.bin",
+        2_000_000,
+        flight_number=9,
+        gps_week=2001,
+        capacity_used_mah=111.0,
+    )
+    later_event_with_earlier_utc = _event(
+        source,
+        "session.bin",
+        3_000_000,
+        flight_number=1,
+        gps_week=1999,
+        capacity_used_mah=222.0,
+    )
+    history.add_observations(
+        [later_event_with_earlier_utc, earlier_event_with_later_utc]
+    )
+
+    output = _render(monkeypatch, capsys, pack_store, history)
+    summary_rows = _section_rows(output, SUMMARY_HEADING)
+    full_rows = _section_rows(output, ALL_HEADING)
+
+    assert len(summary_rows) == 1
+    assert summary_rows[0][2] == "9"
+    assert summary_rows[0][3] == "111.00"
+    assert [row[3] for row in full_rows] == ["222.00", "111.00"]
+
+
+def test_exact_event_start_ties_resolve_deterministically():
+    source = "1" * 64
+    first = _event(
+        source,
+        "session.bin",
+        2_000_000,
+        battery_instance=0,
+    )
+    second = _event(
+        source,
+        "session.bin",
+        2_000_000,
+        battery_instance=1,
+    )
+
+    forward = BatteryPackPerformancePresentation._first_takeoffs_by_session(
+        [first, second]
+    )
+    reverse = BatteryPackPerformancePresentation._first_takeoffs_by_session(
+        [second, first]
+    )
+
+    assert len(forward) == 1
+    assert forward[0].observation_id == reverse[0].observation_id
+    assert forward[0].battery_instance == 0
+
+
+def test_same_filename_and_date_do_not_merge_distinct_source_sessions(
+    monkeypatch, capsys, tmp_path
+):
+    pack_store, history = _stores(tmp_path)
+    sources = ("1" * 64, "2" * 64)
+    _associate_sources(pack_store, "Pack A", sources)
+    history.add_observations(
+        [
+            _event(sources[0], "same-name.bin", 2_000_000),
+            _event(sources[1], "same-name.bin", 3_000_000),
+        ]
+    )
+
+    output = _render(monkeypatch, capsys, pack_store, history)
+    summary_rows = _section_rows(output, SUMMARY_HEADING)
+
+    assert len(summary_rows) == 2
+    assert [row[1] for row in summary_rows] == [
+        "same-name.bin",
+        "same-name.bin",
+    ]
+    assert summary_rows[0][0] == summary_rows[1][0] == "2018-05-06"
+
+
+def test_current_ownership_filters_before_summary_and_reassignment_adds_session(
+    monkeypatch, capsys, tmp_path
+):
+    pack_store, history = _stores(tmp_path)
+    selected = "1" * 64
+    reassigned = "2" * 64
+    pack_store.create_and_associate(selected, "Pack A")
+    pack_store.create_and_associate(reassigned, "Pack B")
+    history.add_observations(
+        [
+            _event(selected, "selected.bin", 2_000_000),
+            _event(reassigned, "reassigned.bin", 2_000_000),
+            _event(reassigned, "reassigned.bin", 3_000_000),
+        ]
+    )
+    original_history = history.path.read_bytes()
+
+    before = _render(monkeypatch, capsys, pack_store, history)
+    assert len(_section_rows(before, SUMMARY_HEADING)) == 1
+    assert len(_section_rows(before, ALL_HEADING)) == 1
+    assert "reassigned.bin" not in before
+
+    pack_store.associate(reassigned, "Pack A")
+    after = _render(monkeypatch, capsys, pack_store, history)
+
+    assert len(_section_rows(after, SUMMARY_HEADING)) == 2
+    assert len(_section_rows(after, ALL_HEADING)) == 3
+    assert "reassigned.bin" in after
+    assert history.path.read_bytes() == original_history
 
 
 def test_report_uses_current_ownership_and_survives_without_bins(
@@ -72,6 +332,8 @@ def test_report_uses_current_ownership_and_survives_without_bins(
     assert "other.bin" not in output
     assert "not-tracked.bin" not in output
     assert "unseen.bin" not in output
+    assert len(_section_rows(output, SUMMARY_HEADING)) == 1
+    assert len(_section_rows(output, ALL_HEADING)) == 1
     assert history.path.read_bytes() == original_history
 
 
@@ -108,6 +370,8 @@ def test_reassignment_and_rename_change_membership_without_history_rewrite(
     assert "Pack ID: Pack Renamed" in output
     assert "first.bin" in output
     assert "second.bin" in output
+    assert len(_section_rows(output, SUMMARY_HEADING)) == 2
+    assert len(_section_rows(output, ALL_HEADING)) == 2
     assert history.path.read_bytes() == original_history
 
 
@@ -180,28 +444,33 @@ def test_report_headings_ordering_and_unavailable_rendering(
     BatteryPackPerformancePresentation(pack_store, history).run()
     output = capsys.readouterr().out
 
-    headings = (
-        "Date",
-        "Source",
-        "Flight",
-        "Capacity used",
-        "Avg curr (A)",
-        "Peak curr (A)",
-        "Pre-load volt (V)",
-        "Min loaded volt (V)",
-        "Sag (V)",
-        "Recovery (V)",
-    )
-    heading_line = next(line for line in output.splitlines() if "Date" in line)
-    assert tuple(part.strip() for part in heading_line.split(" | ")) == headings
+    assert output.count(SUMMARY_HEADING) == 1
+    assert output.count(ALL_HEADING) == 1
+    assert output.count("Date") == 2
+    summary_rows = _section_rows(output, SUMMARY_HEADING)
+    full_rows = _section_rows(output, ALL_HEADING)
+    assert len(summary_rows) == 4
+    assert len(full_rows) == 4
     assert output.index("early.bin") < output.index("later.bin")
     assert output.index("later.bin") < output.index("a-undated.bin")
     assert output.index("a-undated.bin") < output.index("z-undated.bin")
-    undated_line = next(
-        line for line in output.splitlines() if "a-undated.bin" in line
-    )
-    assert undated_line.count("Unavailable") >= 7
-    for prohibited in ("Health", "Resistance", "Diagnosis", "Comparability"):
+    assert [row[0] for row in summary_rows[-2:]] == [
+        "Unavailable",
+        "Unavailable",
+    ]
+    assert [row[1] for row in summary_rows[-2:]] == [
+        "a-undated.bin",
+        "z-undated.bin",
+    ]
+    undated_row = next(row for row in summary_rows if row[1] == "a-undated.bin")
+    assert undated_row.count("Unavailable") >= 7
+    for prohibited in (
+        "Health",
+        "Resistance",
+        "Diagnosis",
+        "Trend score",
+        "Comparability",
+    ):
         assert prohibited not in output
 
 
