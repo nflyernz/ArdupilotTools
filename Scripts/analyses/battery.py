@@ -59,6 +59,7 @@ class BatteryPackManagementPresentation:
             print("=======================")
             print()
             print("1. Rename Pack ID")
+            print("2. Change log pack assignment")
             print("0. Back")
 
             choice = input("\nSelection: ").strip()
@@ -68,6 +69,10 @@ class BatteryPackManagementPresentation:
 
             if choice == "1":
                 self._rename_pack(store)
+                continue
+
+            if choice == "2":
+                self._change_log_pack_assignment(store)
                 continue
 
             print("Invalid selection.")
@@ -105,6 +110,96 @@ class BatteryPackManagementPresentation:
 
         print()
         print(f"Renamed Pack ID: {pack_id} -> {new_pack_id.strip()}")
+
+    def _change_log_pack_assignment(self, store):
+        """Change the physical Pack ID associated with one source BIN."""
+        selected_logs = select_log_input()
+        if selected_logs is None:
+            return
+
+        log_path = selected_logs[0]
+
+        try:
+            fingerprint = fingerprint_log(log_path)
+            association = store.association_for(fingerprint)
+        except (BatteryPackStoreError, OSError) as exc:
+            print()
+            print(f"Unable to identify source log: {exc}")
+            return
+
+        print()
+        print(f"Source log: {log_path.name}")
+
+        if association.state is LogPackState.TRACKED:
+            print(f"Current Pack ID: {association.pack_id}")
+        elif association.state is LogPackState.NOT_TRACKED:
+            print("Current Pack ID: not tracked")
+        else:
+            print("Current Pack ID: unseen")
+
+        while True:
+            print()
+            if store.pack_ids:
+                print("1. Select existing pack")
+                print("2. Create new pack")
+            else:
+                print("1. Create new pack")
+            print("0. Back")
+
+            choice = input("\nSelection: ").strip()
+
+            if choice == "0":
+                return
+
+            if store.pack_ids and choice == "1":
+                pack_id = self._select_pack(store.pack_ids)
+                if pack_id is None:
+                    continue
+
+                if (
+                    association.state is LogPackState.TRACKED
+                    and association.pack_id == pack_id
+                ):
+                    print()
+                    print("Pack assignment unchanged.")
+                    return
+
+                try:
+                    store.associate(fingerprint, pack_id)
+                except BatteryPackStoreError as exc:
+                    print()
+                    print(exc)
+                    return
+                except OSError as exc:
+                    print()
+                    print(f"Unable to change Pack ID assignment: {exc}")
+                    print("Persistent pack data was not changed.")
+                    return
+
+                print()
+                print(f"Pack assignment changed to: {pack_id}")
+                return
+
+            if choice == ("2" if store.pack_ids else "1"):
+                pack_id = input("\nNew Pack ID: ").strip()
+
+                try:
+                    store.create_and_associate(fingerprint, pack_id)
+                except BatteryPackStoreError as exc:
+                    print()
+                    print(exc)
+                    continue
+                except OSError as exc:
+                    print()
+                    print(f"Unable to change Pack ID assignment: {exc}")
+                    print("Persistent pack data was not changed.")
+                    return
+
+                print()
+                print(f"Pack assignment changed to: {pack_id}")
+                return
+
+            print("Invalid selection.")
 
     @staticmethod
     def _select_pack(pack_ids):
