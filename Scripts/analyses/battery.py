@@ -39,6 +39,101 @@ def _format_duration(seconds):
     return f"{minutes:02d}:{seconds:02d}"
 
 
+class BatteryPackManagementPresentation:
+    """Manage persistent physical battery Pack IDs."""
+
+    def __init__(self, pack_store=None):
+        self.pack_store = pack_store
+
+    def run(self):
+        try:
+            store = self.pack_store or BatteryPackStore()
+        except (BatteryPackStoreError, OSError) as exc:
+            print()
+            print(f"Battery pack management unavailable: {exc}")
+            return
+
+        while True:
+            print()
+            print("Battery Pack Management")
+            print("=======================")
+            print()
+            print("1. Rename Pack ID")
+            print("0. Back")
+
+            choice = input("\nSelection: ").strip()
+
+            if choice == "0":
+                return
+
+            if choice == "1":
+                self._rename_pack(store)
+                continue
+
+            print("Invalid selection.")
+
+    def _rename_pack(self, store):
+        if not store.pack_ids:
+            print()
+            print("No known Battery Pack IDs.")
+            return
+
+        pack_id = self._select_pack(store.pack_ids)
+        if pack_id is None:
+            return
+
+        print()
+        print(f"Current Pack ID: {pack_id}")
+        new_pack_id = input("New Pack ID: ").strip()
+
+        if new_pack_id == pack_id:
+            print()
+            print("Pack ID unchanged.")
+            return
+
+        try:
+            store.rename_pack(pack_id, new_pack_id)
+        except BatteryPackStoreError as exc:
+            print()
+            print(exc)
+            return
+        except OSError as exc:
+            print()
+            print(f"Unable to rename Battery Pack ID: {exc}")
+            print("Persistent pack data was not changed.")
+            return
+
+        print()
+        print(f"Renamed Pack ID: {pack_id} -> {new_pack_id.strip()}")
+
+    @staticmethod
+    def _select_pack(pack_ids):
+        print()
+        print("Known Battery Packs")
+        print("===================")
+
+        for index, pack_id in enumerate(pack_ids, start=1):
+            print(f"{index}. {pack_id}")
+
+        print("0. Back")
+
+        while True:
+            choice = input("\nSelection: ").strip()
+
+            if choice == "0":
+                return None
+
+            try:
+                index = int(choice)
+            except ValueError:
+                index = 0
+
+            if 1 <= index <= len(pack_ids):
+                return pack_ids[index - 1]
+
+            print("Invalid selection.")
+
+
 class BatteryAnalysisPresentation:
     """
     Present battery analysis for a selected flight and battery instance.

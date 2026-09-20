@@ -101,6 +101,40 @@ class BatteryPackStore:
         associations[fingerprint] = LogPackAssociation(LogPackState.NOT_TRACKED)
         self._save(self._pack_ids, associations)
 
+    def rename_pack(self, old_pack_id: str, new_pack_id: str) -> None:
+        """Rename a Pack ID and update all matching associations atomically."""
+        old_id = self._normalize_pack_id(old_pack_id)
+        new_id = self._normalize_pack_id(new_pack_id)
+
+        if old_id not in self._pack_ids:
+            raise BatteryPackStoreError(f"Unknown Pack ID: {old_id}")
+
+        if new_id == old_id:
+            return
+
+        if new_id in self._pack_ids:
+            raise BatteryPackStoreError(f"Pack ID already exists: {new_id}")
+
+        pack_ids = [
+            new_id if pack_id == old_id else pack_id
+            for pack_id in self._pack_ids
+        ]
+
+        associations = {
+            fingerprint: (
+                LogPackAssociation(
+                    LogPackState.TRACKED,
+                    new_id,
+                )
+                if association.state is LogPackState.TRACKED
+                and association.pack_id == old_id
+                else association
+            )
+            for fingerprint, association in self._associations.items()
+        }
+
+        self._save(pack_ids, associations)
+
     def _load(self) -> None:
         if not self.path.exists():
             return

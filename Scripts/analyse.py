@@ -38,6 +38,8 @@ def menu():
         print("5. Autotune Review")
         print("6. Sensor Diagnostics")
         print("7. Log Summary")
+        print("8. Battery Pack Management")
+
         print("0. Exit")
 
         choice = input("\nSelection: ").strip()
@@ -73,6 +75,14 @@ def menu():
 
         elif choice == "7":
             log_summary()
+
+        elif choice == "8":
+
+            from analyses.battery import BatteryPackManagementPresentation
+
+            analysis = BatteryPackManagementPresentation()
+
+            analysis.run()
 
         elif choice == "0":
             break
