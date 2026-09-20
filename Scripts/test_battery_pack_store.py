@@ -499,3 +499,161 @@ def test_pack_management_rename_write_failure_preserves_store(
     assert path.read_bytes() == original_bytes
     assert store.pack_ids == ("Pack 1",)
     assert store.association_for(fingerprint).pack_id == "Pack 1"
+
+
+
+def test_pack_management_dispatches_log_reassignment(
+    monkeypatch,
+    tmp_path,
+):
+    """Management menu option 2 reaches the log-reassignment workflow."""
+    store = BatteryPackStore(tmp_path / "Data" / "battery_packs.json")
+    presentation = BatteryPackManagementPresentation(pack_store=store)
+
+    called = []
+
+    monkeypatch.setattr(
+        presentation,
+        "_change_log_pack_assignment",
+        lambda selected_store: called.append(selected_store),
+    )
+    _inputs(monkeypatch, "2", "0")
+
+    presentation.run()
+
+    assert called == [store]
+
+
+def test_log_assignment_can_change_to_existing_pack(
+    monkeypatch,
+    tmp_path,
+):
+    """One source BIN can be reassigned to another existing physical pack."""
+    store_path = tmp_path / "Data" / "battery_packs.json"
+    first_log = _log(tmp_path / "first.bin", b"first")
+    second_log = _log(tmp_path / "second.bin", b"second")
+
+    first_fingerprint = fingerprint_log(first_log)
+    second_fingerprint = fingerprint_log(second_log)
+
+    store = BatteryPackStore(store_path)
+    store.create_and_associate(first_fingerprint, "Pack 1")
+    store.create_and_associate(second_fingerprint, "Pack 2")
+
+    presentation = BatteryPackManagementPresentation(pack_store=store)
+
+    monkeypatch.setattr(
+        "analyses.battery.select_log_input",
+        lambda: [first_log],
+    )
+    _inputs(monkeypatch, "1", "2")
+
+    presentation._change_log_pack_assignment(store)
+
+    reloaded = BatteryPackStore(store_path)
+
+    assert reloaded.pack_ids == ("Pack 1", "Pack 2")
+    assert reloaded.association_for(first_fingerprint).pack_id == "Pack 2"
+    assert reloaded.association_for(second_fingerprint).pack_id == "Pack 2"
+
+
+def test_log_assignment_can_create_new_pack(
+    monkeypatch,
+    tmp_path,
+):
+    """Reassignment may create a new physical Pack ID for the selected BIN."""
+    store_path = tmp_path / "Data" / "battery_packs.json"
+    log_path = _log(tmp_path / "flight.bin")
+    fingerprint = fingerprint_log(log_path)
+
+    store = BatteryPackStore(store_path)
+    store.create_and_associate(fingerprint, "Pack 1")
+
+    presentation = BatteryPackManagementPresentation(pack_store=store)
+
+    monkeypatch.setattr(
+        "analyses.battery.select_log_input",
+        lambda: [log_path],
+    )
+    _inputs(monkeypatch, "2", "Pack 2")
+
+    presentation._change_log_pack_assignment(store)
+
+    reloaded = BatteryPackStore(store_path)
+
+    assert reloaded.pack_ids == ("Pack 1", "Pack 2")
+    assert reloaded.association_for(fingerprint).pack_id == "Pack 2"
+
+
+def test_log_assignment_same_existing_pack_is_no_op(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    """Selecting the current physical Pack ID does not rewrite ownership."""
+    store_path = tmp_path / "Data" / "battery_packs.json"
+    log_path = _log(tmp_path / "flight.bin")
+    fingerprint = fingerprint_log(log_path)
+
+    store = BatteryPackStore(store_path)
+    store.create_and_associate(fingerprint, "Pack 1")
+    original_bytes = store_path.read_bytes()
+
+    presentation = BatteryPackManagementPresentation(pack_store=store)
+
+    monkeypatch.setattr(
+        "analyses.battery.select_log_input",
+        lambda: [log_path],
+    )
+    _inputs(monkeypatch, "1", "1")
+
+    presentation._change_log_pack_assignment(store)
+
+    output = capsys.readouterr().out
+
+    assert "Pack assignment unchanged." in output
+    assert store_path.read_bytes() == original_bytes
+    assert store.association_for(fingerprint).pack_id == "Pack 1"
+
+
+def test_log_reassignment_write_failure_preserves_existing_assignment(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    """A failed reassignment changes neither durable nor in-memory ownership."""
+    store_path = tmp_path / "Data" / "battery_packs.json"
+    first_log = _log(tmp_path / "first.bin", b"first")
+    second_log = _log(tmp_path / "second.bin", b"second")
+
+    first_fingerprint = fingerprint_log(first_log)
+    second_fingerprint = fingerprint_log(second_log)
+
+    store = BatteryPackStore(store_path)
+    store.create_and_associate(first_fingerprint, "Pack 1")
+    store.create_and_associate(second_fingerprint, "Pack 2")
+    original_bytes = store_path.read_bytes()
+
+    monkeypatch.setattr(
+        "analyses.battery.select_log_input",
+        lambda: [first_log],
+    )
+    monkeypatch.setattr(
+        "core.battery_pack_store.os.replace",
+        lambda _source, _destination: (_ for _ in ()).throw(
+            OSError("simulated reassignment failure")
+        ),
+    )
+
+    presentation = BatteryPackManagementPresentation(pack_store=store)
+    _inputs(monkeypatch, "1", "2")
+
+    presentation._change_log_pack_assignment(store)
+
+    output = capsys.readouterr().out
+
+    assert "Unable to change Pack ID assignment: simulated reassignment failure" in output
+    assert "Persistent pack data was not changed." in output
+    assert store_path.read_bytes() == original_bytes
+    assert store.association_for(first_fingerprint).pack_id == "Pack 1"
+    assert store.association_for(second_fingerprint).pack_id == "Pack 2"
