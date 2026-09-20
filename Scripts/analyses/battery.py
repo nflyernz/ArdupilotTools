@@ -4,6 +4,11 @@ from core.battery import (
     BatteryLoadEventType,
     BatteryProcessor,
 )
+from core.battery_pack_history import (
+    BatteryPackHistoryError,
+    BatteryPackHistoryStore,
+)
+from core.battery_pack_history_recorder import BatteryPackHistoryRecorder
 from core.battery_pack_store import (
     BatteryPackStore,
     BatteryPackStoreError,
@@ -229,18 +234,139 @@ class BatteryPackManagementPresentation:
             print("Invalid selection.")
 
 
+class BatteryPackPerformancePresentation:
+    """Present durable AUTO takeoff evidence for one physical battery pack."""
+
+    HEADINGS = (
+        "Date",
+        "Source",
+        "Flight",
+        "Capacity used",
+        "Avg curr (A)",
+        "Peak curr (A)",
+        "Pre-load volt (V)",
+        "Min loaded volt (V)",
+        "Sag (V)",
+        "Recovery (V)",
+    )
+
+    def __init__(self, pack_store=None, history_store=None):
+        self.pack_store = pack_store
+        self.history_store = history_store
+
+    def run(self):
+        """Select a known Pack ID and render its current owned history."""
+        try:
+            pack_store = self.pack_store or BatteryPackStore()
+            history_store = self.history_store or BatteryPackHistoryStore()
+        except (BatteryPackStoreError, BatteryPackHistoryError, OSError) as exc:
+            print()
+            print(f"Battery Pack performance data unavailable: {exc}")
+            return
+
+        print()
+        print("PACK PERFORMANCE REPORT")
+        print("=" * 70)
+
+        if not pack_store.pack_ids:
+            print()
+            print("No known Battery Pack IDs.")
+            return
+
+        pack_id = BatteryPackManagementPresentation._select_pack(
+            pack_store.pack_ids
+        )
+        if pack_id is None:
+            return
+
+        observations = []
+        for observation in history_store.newest_supported_observations():
+            association = pack_store.association_for(
+                observation.source_sha256
+            )
+            if (
+                association.state is LogPackState.TRACKED
+                and association.pack_id == pack_id
+            ):
+                observations.append(observation)
+
+        observations.sort(
+            key=lambda observation: (
+                observation.recorded_at_utc is None,
+                observation.recorded_at_utc or "",
+                observation.source_filename,
+                observation.flight_number,
+                observation.battery_instance,
+                observation.event_start_us,
+            )
+        )
+
+        print()
+        print(f"Pack ID: {pack_id}")
+        if not observations:
+            print()
+            print("No stored AUTO takeoff observations for this Pack ID.")
+            return
+
+        rows = [self._row(observation) for observation in observations]
+        widths = [
+            max(len(heading), *(len(row[index]) for row in rows))
+            for index, heading in enumerate(self.HEADINGS)
+        ]
+        print()
+        print(self._table_line(self.HEADINGS, widths))
+        print(self._table_line(tuple("-" * width for width in widths), widths))
+        for row in rows:
+            print(self._table_line(row, widths))
+
+    @staticmethod
+    def _row(observation):
+        date = (
+            observation.recorded_at_utc[:10]
+            if observation.recorded_at_utc is not None
+            else "Unavailable"
+        )
+        return (
+            date,
+            observation.source_filename,
+            str(observation.flight_number),
+            _format_value(observation.capacity_used_mah),
+            _format_value(observation.average_current_a),
+            _format_value(observation.peak_current_a),
+            _format_value(observation.pre_load_voltage_v),
+            _format_value(observation.minimum_loaded_voltage_v),
+            _format_value(observation.voltage_sag_v),
+            _format_value(observation.voltage_recovery_v),
+        )
+
+    @staticmethod
+    def _table_line(values, widths):
+        return " | ".join(
+            value.ljust(width) for value, width in zip(values, widths, strict=True)
+        )
+
+
 class BatteryAnalysisPresentation:
     """
     Present battery analysis for a selected flight and battery instance.
     """
 
-    def __init__(self, pack_id=None, config=None, pack_store=None):
+    def __init__(
+        self,
+        pack_id=None,
+        config=None,
+        pack_store=None,
+        history_store=None,
+    ):
         self.pack_id = pack_id
         self.config = config or Config("Config/battery.yaml")
         self.pack_store = pack_store
+        self.history_store = history_store
+        self._resolved_history_context = None
 
     def run(self):
 
+        self._resolved_history_context = None
         selected_logs = select_log_input()
 
         if selected_logs is None:
@@ -269,6 +395,15 @@ class BatteryAnalysisPresentation:
             print()
             print("No flights found.")
             return
+
+        if self._resolved_history_context is not None:
+            source_sha256, tracked_pack_id = self._resolved_history_context
+            self._record_pack_history(
+                flight_log,
+                log_path,
+                source_sha256,
+                tracked_pack_id,
+            )
 
         flight_window = self._select_flight(
             flight_log
@@ -327,10 +462,39 @@ class BatteryAnalysisPresentation:
             return True, None
 
         if association.state is LogPackState.TRACKED:
+            self._resolved_history_context = (
+                fingerprint,
+                association.pack_id,
+            )
             return True, association.pack_id
         if association.state is LogPackState.NOT_TRACKED:
             return True, None
-        return self._select_pack_decision(store, fingerprint)
+        result = self._select_pack_decision(store, fingerprint)
+        if result[0] and result[1] is not None:
+            self._resolved_history_context = (fingerprint, result[1])
+        return result
+
+    def _record_pack_history(
+        self,
+        flight_log,
+        log_path,
+        source_sha256,
+        pack_id,
+    ):
+        """Harvest whole-BIN AUTO history without blocking normal analysis."""
+        try:
+            history_store = self.history_store or BatteryPackHistoryStore()
+            BatteryPackHistoryRecorder(self.config).record(
+                flight_log,
+                log_path,
+                source_sha256,
+                pack_id,
+                history_store,
+            )
+        except Exception as exc:  # History is optional to normal Battery Analysis.
+            print()
+            print(f"Battery Pack history unavailable: {exc}")
+            print("Normal Battery Analysis will continue.")
 
     def _select_pack_decision(self, store, fingerprint):
         """Prompt once for an unseen source-log fingerprint."""

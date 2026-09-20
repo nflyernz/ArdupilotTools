@@ -39,6 +39,7 @@ def menu():
         print("6. Sensor Diagnostics")
         print("7. Log Summary")
         print("8. Battery Pack Management")
+        print("9. Pack Performance Report")
 
         print("0. Exit")
 
@@ -81,6 +82,14 @@ def menu():
             from analyses.battery import BatteryPackManagementPresentation
 
             analysis = BatteryPackManagementPresentation()
+
+            analysis.run()
+
+        elif choice == "9":
+
+            from analyses.battery import BatteryPackPerformancePresentation
+
+            analysis = BatteryPackPerformancePresentation()
 
             analysis.run()
 
