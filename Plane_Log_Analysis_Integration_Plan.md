@@ -1,7 +1,7 @@
 # Plane Log Analysis Integration Plan
 
-> **Updated:** 2026-09-15
-> **Current AMC task:** Real-aircraft ArduPlane configuration walkthrough on the known-good Plane
+> **Updated:** 2026-09-18
+> **Current AMC task:** Step 66 — ArduPlane 4.7.x Everyday use / RTL correctness
 > **Configuration-method audit:** COMPLETE
 > **Landing-report readability / grouping:** MERGED upstream — PR #2054
 
@@ -1849,6 +1849,42 @@ AMC implementation should begin only after the feature's meaning,
 required evidence, limitations, and expected behaviour are sufficiently
 established.
 
+## Current APT TAKEOFF research checkpoint — not yet AMC scope
+
+APT now has a conventional fixed-wing Mode-13 TAKEOFF analyser with event-led
+phase evidence and bounded performance context. The current implementation
+separates:
+
+- owned firmware/event evidence (`Armed AUTO`, `Triggered AUTO`, throttle
+  unsuppression, existing TAKEOFF-stage completion semantics);
+- the authoritative derived AIRSPEED_MIN event;
+- derived performance measurements including `Trigger → AIRSPEED_MIN`,
+  `Throttle → AIRSPEED_MIN`, and `Altitude Δ at AIRSPEED_MIN`;
+- event-time configuration from `ParameterHistory`.
+
+The current stable reference log has three triggered TAKEOFF executions
+validated against the same event/ownership rules. Rotation completion remains
+explicitly unavailable rather than inferred from configuration or sensor
+crossings.
+
+Deferred APT TAKEOFF work includes:
+
+- presentation-only rename `Takeoff completion` → `TAKEOFF control`;
+- owned already-airborne event-model support for firmware observations such as
+  `Above TKOFF alt - loitering`;
+- rotation, tail-hold, ground-roll, liftoff and surface-departure evidence
+  pending authoritative logged state and known surface-takeoff logs;
+- physical launch-family classification; future concepts may distinguish
+  externally launched from surface takeoff, but current evidence does not
+  assign either family;
+- optional low-altitude rangefinder research using Plane `RFNS.HE`, initially
+  as a separately named AGL result compared with the existing
+  `POS.RelHomeAlt` metric rather than as a silent replacement.
+
+This work remains APT R&D. It should only enter AMC after its evidence contract
+is frozen, representative externally launched and surface-takeoff logs are
+available where required, and maintainer direction supports promotion.
+
 Future Codex work must distinguish between:
 
 -   **APT research/prototyping:** experimentation is expected, but
@@ -2615,6 +2651,11 @@ APT timestamped ParameterHistory                 COMPLETE
         │
         ▼
 APT bounded Battery Analysis                     COMPLETE (4e83b46)
+        │
+        ├── APT TAKEOFF analysis                    ACTIVE / R&D VALIDATED
+        │     ├── event-led phase evidence
+        │     ├── AIRSPEED_MIN performance context
+        │     └── deferred surface/rangefinder evidence
         │
         ▼
 AMC Plane infrastructure

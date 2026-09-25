@@ -40,6 +40,7 @@ def menu():
         print("7. Log Summary")
         print("8. Battery Pack Management")
         print("9. Pack Performance Report")
+        print("10. Takeoff Analysis")
 
         print("0. Exit")
 
@@ -90,6 +91,14 @@ def menu():
             from analyses.battery import BatteryPackPerformancePresentation
 
             analysis = BatteryPackPerformancePresentation()
+
+            analysis.run()
+
+        elif choice == "10":
+
+            from analyses.takeoff import TakeoffAnalysisPresentation
+
+            analysis = TakeoffAnalysisPresentation()
 
             analysis.run()
 
