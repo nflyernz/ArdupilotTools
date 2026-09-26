@@ -1,0 +1,14 @@
+# Fixed-wing ArduPlane AUTOTUNE evidence; raw PARM is retained by FlightReader.
+analysis:
+  name: Fixed Wing AUTOTUNE Review
+
+messages:
+  - GPS
+  - MSG
+  - MODE
+  - ATRP
+  - VER
+  - MAVC
+  - MISE
+
+parameters: []

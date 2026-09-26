@@ -224,8 +224,7 @@ def test_implemented_presentations_receive_shared_selector_paths(monkeypatch):
 def test_placeholder_functions_remain_unimplemented(capsys):
     """The existing placeholder entries retain their existing behavior."""
     analyse.cruise_analysis()
-    analyse.autotune_review()
     analyse.sensor_diagnostics()
     analyse.log_summary()
 
-    assert capsys.readouterr().out.count("Not implemented.") == 4
+    assert capsys.readouterr().out.count("Not implemented.") == 3
