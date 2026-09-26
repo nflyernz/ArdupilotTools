@@ -115,11 +115,3 @@ def test_stage_restart_transfers_gps_observation_ownership():
     assert windows[0].end_reason == "stage_restart"
     assert windows[1].end_us == 5_000_000
     assert windows[1].end_reason == "gps"
-
-
-test_post_disarm_gps_cannot_confirm_prior_run()
-test_in_attempt_gps_confirmation_remains_backdated()
-test_post_mode_exit_gps_cannot_confirm_prior_run()
-test_stage_restart_transfers_gps_observation_ownership()
-
-print("Landing-window GPS-stop causality tests: PASS")

@@ -8,6 +8,7 @@ from core.params import (
     ParameterChange,
     ParameterHistory,
 )
+from test_support import require_log
 
 
 def history_from(*records):
@@ -225,6 +226,7 @@ def test_nonfinite_values_and_query_times_match_amc():
 
 
 def test_real_log_retention_and_bin_parameter_history():
+    require_log("Logs/log_17.bin")
     config = Config("Config/landing.yaml")
     assert "PARM" not in set(config.get("messages"))
 

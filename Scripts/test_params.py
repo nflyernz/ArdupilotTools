@@ -2,10 +2,12 @@
 
 from core.config import Config
 from core.log_reader import FlightReader
+from test_support import require_log
 
 
 def test_embedded_parm_and_history_are_available():
     """Read raw PARM and its history from the real BIN."""
+    require_log("Logs/log_17.bin")
     flight_log = FlightReader(
         "Logs/log_17.bin",
         config=Config("Config/landing.yaml"),

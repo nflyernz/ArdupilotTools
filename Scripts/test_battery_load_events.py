@@ -661,22 +661,3 @@ def test_optional_pack_id_is_presentation_only():
     assert without_pack.pack_id is None
     assert with_pack.pack_id == "Pack 1"
     assert analysis_without_pack == analysis_with_pack
-
-
-test_sustained_threshold_duration_and_separate_runs()
-test_sustained_just_below_duration_is_excluded()
-test_sustained_load_does_not_bridge_flights_or_ground_activity()
-test_bounded_event_battery_metrics()
-test_counter_reset_and_nonfinite_evidence_are_unavailable()
-test_recovery_does_not_escape_flight()
-test_disabled_and_unsupported_threshold_margins()
-test_session_configuration_rejects_later_changes()
-test_missing_and_nonfinite_session_configuration_is_unavailable()
-test_non_primary_instance_configuration_and_margins_are_unavailable()
-test_auto_takeoff_bounds_and_flight_association()
-test_missing_or_ambiguous_auto_marker_does_not_invent_bounds()
-test_airborne_and_later_auto_retriggers_do_not_create_takeoff_events()
-test_ground_auto_trigger_without_flight_window_is_rejected()
-test_optional_pack_id_is_presentation_only()
-
-print("Battery load-event tests: PASS")

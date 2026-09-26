@@ -4,88 +4,93 @@ from core.landing_window_detector import LandingWindowDetector
 from core.rangefinder import RangefinderEvents
 
 
-flight_log = FlightReader(
-    "Logs/log_17.bin"
-).read()
+def main():
+    flight_log = FlightReader(
+        "Logs/log_17.bin"
+    ).read()
 
-config = Config("Config/sensors.yaml")
+    config = Config("Config/sensors.yaml")
 
-if not flight_log.flights:
+    if not flight_log.flights:
 
-    print("No flight windows found.")
-    raise SystemExit
+        print("No flight windows found.")
+        raise SystemExit
 
-flight_window = flight_log.flights[0]
+    flight_window = flight_log.flights[0]
 
-detector = LandingWindowDetector()
+    detector = LandingWindowDetector()
 
-windows = detector.detect(
-    flight_log,
-    flight_window,
-)
+    windows = detector.detect(
+        flight_log,
+        flight_window,
+    )
 
-if not windows:
+    if not windows:
 
-    print("No landing windows found.")
-    raise SystemExit
+        print("No landing windows found.")
+        raise SystemExit
 
-landing_window = windows[0]
+    landing_window = windows[0]
 
-events = RangefinderEvents(
-    flight_log,
-    flight_window,
-    landing_window,
-    config,
-).build()
+    events = RangefinderEvents(
+        flight_log,
+        flight_window,
+        landing_window,
+        config,
+    ).build()
 
-print()
-print("Rangefinder Events")
-print("-" * 70)
+    print()
+    print("Rangefinder Events")
+    print("-" * 70)
 
-print(
-    f"Landing Start : {landing_window.start_us / 1e6:.3f} s"
-)
+    print(
+        f"Landing Start : {landing_window.start_us / 1e6:.3f} s"
+    )
 
-print(
-    f"Landing End   : {landing_window.end_us / 1e6:.3f} s"
-)
+    print(
+        f"Landing End   : {landing_window.end_us / 1e6:.3f} s"
+    )
 
-print(
-    f"Duration      : "
-    f"{(landing_window.end_us - landing_window.start_us) / 1e6:.2f} s"
-)
+    print(
+        f"Duration      : "
+        f"{(landing_window.end_us - landing_window.start_us) / 1e6:.2f} s"
+    )
 
-print()
+    print()
 
-rfnd = flight_log.get("RFND")
+    rfnd = flight_log.get("RFND")
 
-if len(rfnd) > 1:
+    if len(rfnd) > 1:
 
-    dt = rfnd["TimeUS"].diff().dropna().median()
+        dt = rfnd["TimeUS"].diff().dropna().median()
 
-    if dt > 0:
+        if dt > 0:
 
-        rate = 1e6 / dt
+            rate = 1e6 / dt
 
-        print(
-            f"RFND Rate     : {rate:.1f} Hz"
-        )
+            print(
+                f"RFND Rate     : {rate:.1f} Hz"
+            )
 
-print()
+    print()
 
-print("Published Events")
-print("-" * 70)
+    print("Published Events")
+    print("-" * 70)
 
-if not events:
+    if not events:
 
-    print("No events.")
+        print("No events.")
 
-else:
+    else:
 
-    for event in events:
+        for event in events:
 
-        print(
-            f"{event.time_us / 1e6:10.3f}  "
-            f"{event.event.value:<24}"
-            f"{event.detail}"
-        )
+            print(
+                f"{event.time_us / 1e6:10.3f}  "
+                f"{event.event.value:<24}"
+                f"{event.detail}"
+            )
+
+
+if __name__ == "__main__":
+    main()

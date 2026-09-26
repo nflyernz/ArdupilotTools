@@ -13,6 +13,7 @@ from core.landing_window_detector import LandingWindowDetector
 from core.log_reader import FlightReader
 from core.params import ParameterChange, ParameterHistory
 from core.rangefinder import RangefinderEvents
+from test_support import require_log
 
 
 CONFIG = Config("Config/landing.yaml")
@@ -308,6 +309,7 @@ def test_other_lifecycle_events_ignore_maximum_range():
 
 
 def test_log_11_uses_embedded_event_time_value():
+    require_log("Logs/log_11.bin")
     flight_log = FlightReader(
         "Logs/log_11.bin",
         config=CONFIG,
@@ -351,17 +353,3 @@ def test_log_11_uses_embedded_event_time_value():
             "RNGFND1_MAX",
             first_in_range[0].time_us,
         ) == 10.0
-
-
-test_startup_value_and_event_detail()
-test_decrease_uses_new_value_for_later_samples()
-test_increase_does_not_apply_retroactively()
-test_change_is_effective_at_same_timestamp()
-test_late_first_occurrence_does_not_apply_retroactively()
-test_missing_value_keeps_other_lifecycle_evidence()
-test_nonfinite_values_are_unavailable()
-test_nonpositive_values_are_unavailable()
-test_other_lifecycle_events_ignore_maximum_range()
-test_log_11_uses_embedded_event_time_value()
-
-print("Event-time rangefinder parameter tests: PASS")

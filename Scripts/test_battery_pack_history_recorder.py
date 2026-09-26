@@ -23,6 +23,7 @@ from core.config import Config
 from core.flight_data import FlightLog
 from core.flight_window import FlightWindow
 from core.log_reader import FlightReader
+from test_support import require_logs
 
 
 def _event(window, flight_number, instance, event_type, takeoff_type):
@@ -244,6 +245,7 @@ def test_five_log_pack_history_regression(tmp_path):
         "log_19": 1,
         "log_26": 4,
     }
+    require_logs(*(Path("Logs") / f"{name}.bin" for name in expected_counts))
     expected_packs = {
         "log_0": "50S-P1",
         "log_11": "LIPO-2600-01",

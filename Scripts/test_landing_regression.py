@@ -6,6 +6,7 @@ from analyses.landing import LandingAnalysis
 from core.config import Config
 from core.landing_attempt_processor import LandingAttemptProcessor
 from core.log_reader import FlightReader
+from test_support import require_logs
 
 
 LOGS = (
@@ -60,138 +61,140 @@ def analysis_at_gps_stop(report, expected_time_us):
 
 
 config = Config("Config/landing.yaml")
-all_analyses = []
-loaded_logs = {}
-
-for log_name in LOGS:
-    log_path = Path("Logs") / log_name
-    flight_log = FlightReader(log_path, config=config).read()
-    loaded_logs[log_name] = flight_log
-
-    if not flight_log.flights:
-        raise AssertionError(f"{log_name}: no FlightWindow detected")
-
-    for flight_window in flight_log.flights:
-        all_analyses.extend(analyses_for(flight_log, flight_window))
 
 
-# Existing validation cases must still represent each termination path.
-end_reasons = [analysis.end_reason for _, _, analysis in all_analyses]
-for reason in ("abort", "disarm", "flight_window_end", "gps"):
-    if reason not in end_reasons:
-        raise AssertionError(f"expected a {reason}-ended landing attempt")
+def test_real_log_landing_regression():
+    require_logs(*(Path("Logs") / name for name in LOGS))
+    all_analyses = []
+    loaded_logs = {}
 
-# GPS observations after disarm cannot retroactively qualify an earlier run.
-log_17_report = analyses_for(
-    loaded_logs["log_17.bin"],
-    loaded_logs["log_17.bin"].flights[3],
-)
-log_17_matches = [
-    analysis
-    for _, _, analysis in log_17_report
-    if analysis.attempt.end_us == LOG_17_FLIGHT_4_DISARM_US
-]
+    for log_name in LOGS:
+        log_path = Path("Logs") / log_name
+        flight_log = FlightReader(log_path, config=config).read()
+        loaded_logs[log_name] = flight_log
 
-if len(log_17_matches) != 1:
-    raise AssertionError(
-        "log_17.bin flight 4: expected one attempt ending at "
-        f"DISARM {LOG_17_FLIGHT_4_DISARM_US}, got {len(log_17_matches)}"
+        if not flight_log.flights:
+            raise AssertionError(f"{log_name}: no FlightWindow detected")
+
+        for flight_window in flight_log.flights:
+            all_analyses.extend(analyses_for(flight_log, flight_window))
+
+
+    # Existing validation cases must still represent each termination path.
+    end_reasons = [analysis.end_reason for _, _, analysis in all_analyses]
+    for reason in ("abort", "disarm", "flight_window_end", "gps"):
+        if reason not in end_reasons:
+            raise AssertionError(f"expected a {reason}-ended landing attempt")
+
+    # GPS observations after disarm cannot retroactively qualify an earlier run.
+    log_17_report = analyses_for(
+        loaded_logs["log_17.bin"],
+        loaded_logs["log_17.bin"].flights[3],
     )
+    log_17_matches = [
+        analysis
+        for _, _, analysis in log_17_report
+        if analysis.attempt.end_us == LOG_17_FLIGHT_4_DISARM_US
+    ]
 
-log_17_analysis = log_17_matches[0]
-if log_17_analysis.end_reason != "disarm":
-    raise AssertionError("log_17.bin flight 4: expected DISARM end reason")
-if log_17_analysis.gps_stop_time_us is not None:
-    raise AssertionError(
-        "log_17.bin flight 4: post-disarm GPS was accepted"
-    )
-
-# At least one logged attempt has no flare event; absence is evidence, not error.
-if not any(analysis.flare_time_us is None for _, _, analysis in all_analyses):
-    raise AssertionError("expected at least one no-flare landing attempt")
-
-# Completed-case values are descriptive regressions, with practical tolerances.
-for log_name, (
-    flight_number,
-    expected_stop_us,
-    expected_flare_to_stop_s,
-    expected_target_distance_m,
-) in COMPLETED_CASES.items():
-    flight_log = loaded_logs[log_name]
-    report = analyses_for(
-        flight_log,
-        flight_log.flights[flight_number - 1],
-    )
-    analysis = analysis_at_gps_stop(report, expected_stop_us)
-
-    if analysis.end_reason != "gps":
-        raise AssertionError(f"{log_name}: expected GPS end reason")
-
-    assert_close(
-        analysis.gps_stop_time_us,
-        expected_stop_us,
-        TIME_TOLERANCE_US,
-        f"{log_name} GPS stop",
-    )
-    assert_close(
-        analysis.flare_to_gps_stop_s,
-        expected_flare_to_stop_s,
-        SECONDS_TOLERANCE,
-        f"{log_name} flare-to-GPS-stop",
-    )
-    assert_close(
-        analysis.landing_end_target_distance_m,
-        expected_target_distance_m,
-        DISTANCE_TOLERANCE_M,
-        f"{log_name} target distance",
-    )
-
-    if analysis.preflare_time_us is None or analysis.flare_time_us is None:
+    if len(log_17_matches) != 1:
         raise AssertionError(
-            f"{log_name}: completed case lacks known preflare/flare evidence"
+            "log_17.bin flight 4: expected one attempt ending at "
+            f"DISARM {LOG_17_FLIGHT_4_DISARM_US}, got {len(log_17_matches)}"
         )
 
+    log_17_analysis = log_17_matches[0]
+    if log_17_analysis.end_reason != "disarm":
+        raise AssertionError("log_17.bin flight 4: expected DISARM end reason")
+    if log_17_analysis.gps_stop_time_us is not None:
+        raise AssertionError(
+            "log_17.bin flight 4: post-disarm GPS was accepted"
+        )
 
-# Optional ARSP and RFND must remain non-fatal and explicitly unavailable.
-optional_log = loaded_logs["log_19.bin"]
-optional_log.messages["ARSP"] = optional_log.get("ARSP").iloc[0:0]
-optional_log.messages["RFND"] = optional_log.get("RFND").iloc[0:0]
-optional_report = analyses_for(optional_log, optional_log.flights[0])
-optional_analysis = analysis_at_gps_stop(optional_report, 743_104_000)
+    # At least one logged attempt has no flare event; absence is evidence, not error.
+    if not any(analysis.flare_time_us is None for _, _, analysis in all_analyses):
+        raise AssertionError("expected at least one no-flare landing attempt")
 
-if optional_analysis.preflare_airspeed is not None:
-    raise AssertionError("missing ARSP must leave preflare airspeed unavailable")
+    # Completed-case values are descriptive regressions, with practical tolerances.
+    for log_name, (
+        flight_number,
+        expected_stop_us,
+        expected_flare_to_stop_s,
+        expected_target_distance_m,
+    ) in COMPLETED_CASES.items():
+        flight_log = loaded_logs[log_name]
+        report = analyses_for(
+            flight_log,
+            flight_log.flights[flight_number - 1],
+        )
+        analysis = analysis_at_gps_stop(report, expected_stop_us)
 
-rangefinder_fields = (
-    optional_analysis.rangefinder_first_nonzero_time_us,
-    optional_analysis.rangefinder_first_nonzero_distance,
-    optional_analysis.rangefinder_first_in_range_time_us,
-    optional_analysis.rangefinder_first_in_range_distance,
-    optional_analysis.rangefinder_continuous_time_us,
-)
-if any(value is not None for value in rangefinder_fields):
-    raise AssertionError("missing RFND must leave rangefinder evidence unavailable")
+        if analysis.end_reason != "gps":
+            raise AssertionError(f"{log_name}: expected GPS end reason")
+
+        assert_close(
+            analysis.gps_stop_time_us,
+            expected_stop_us,
+            TIME_TOLERANCE_US,
+            f"{log_name} GPS stop",
+        )
+        assert_close(
+            analysis.flare_to_gps_stop_s,
+            expected_flare_to_stop_s,
+            SECONDS_TOLERANCE,
+            f"{log_name} flare-to-GPS-stop",
+        )
+        assert_close(
+            analysis.landing_end_target_distance_m,
+            expected_target_distance_m,
+            DISTANCE_TOLERANCE_M,
+            f"{log_name} target distance",
+        )
+
+        if analysis.preflare_time_us is None or analysis.flare_time_us is None:
+            raise AssertionError(
+                f"{log_name}: completed case lacks known preflare/flare evidence"
+            )
 
 
-# Incomplete CMD snapshots are not accepted as mission-target evidence.
-cmd = optional_log.get("CMD").iloc[0:0].copy()
-cmd.loc[0] = {
-    "TimeUS": 1,
-    "CTot": 3,
-    "CNum": 0,
-    "CId": 16,
-    "Lat": 0,
-    "Lng": 0,
-}
-cmd.loc[1] = {
-    "TimeUS": 2,
-    "CTot": 3,
-    "CNum": 2,
-    "CId": 21,
-    "Lat": -35_0000000,
-    "Lng": 174_0000000,
-}
-if LandingAttemptProcessor._complete_cmd_snapshots(cmd):
-    raise AssertionError("incomplete CMD snapshot was accepted")
+    # Optional ARSP and RFND must remain non-fatal and explicitly unavailable.
+    optional_log = loaded_logs["log_19.bin"]
+    optional_log.messages["ARSP"] = optional_log.get("ARSP").iloc[0:0]
+    optional_log.messages["RFND"] = optional_log.get("RFND").iloc[0:0]
+    optional_report = analyses_for(optional_log, optional_log.flights[0])
+    optional_analysis = analysis_at_gps_stop(optional_report, 743_104_000)
 
-print("Landing analysis regression: PASS")
+    if optional_analysis.preflare_airspeed is not None:
+        raise AssertionError("missing ARSP must leave preflare airspeed unavailable")
+
+    rangefinder_fields = (
+        optional_analysis.rangefinder_first_nonzero_time_us,
+        optional_analysis.rangefinder_first_nonzero_distance,
+        optional_analysis.rangefinder_first_in_range_time_us,
+        optional_analysis.rangefinder_first_in_range_distance,
+        optional_analysis.rangefinder_continuous_time_us,
+    )
+    if any(value is not None for value in rangefinder_fields):
+        raise AssertionError("missing RFND must leave rangefinder evidence unavailable")
+
+
+    # Incomplete CMD snapshots are not accepted as mission-target evidence.
+    cmd = optional_log.get("CMD").iloc[0:0].copy()
+    cmd.loc[0] = {
+        "TimeUS": 1,
+        "CTot": 3,
+        "CNum": 0,
+        "CId": 16,
+        "Lat": 0,
+        "Lng": 0,
+    }
+    cmd.loc[1] = {
+        "TimeUS": 2,
+        "CTot": 3,
+        "CNum": 2,
+        "CId": 21,
+        "Lat": -35_0000000,
+        "Lng": 174_0000000,
+    }
+    if LandingAttemptProcessor._complete_cmd_snapshots(cmd):
+        raise AssertionError("incomplete CMD snapshot was accepted")
