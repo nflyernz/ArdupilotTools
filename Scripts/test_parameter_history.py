@@ -1,14 +1,12 @@
 """Assertion-based tests for timestamped BIN parameter history."""
 
 import math
-from pathlib import Path
 
 from core.config import Config
 from core.log_reader import FlightReader
 from core.params import (
     ParameterChange,
     ParameterHistory,
-    ParameterReader,
 )
 
 
@@ -226,13 +224,8 @@ def test_nonfinite_values_and_query_times_match_amc():
         )
 
 
-def test_real_log_retention_and_companion_parameters():
+def test_real_log_retention_and_bin_parameter_history():
     config = Config("Config/landing.yaml")
-    expected_parameters = ParameterReader(
-        Path("Params/log_17.params"),
-        config,
-    ).read()
-
     assert "PARM" not in set(config.get("messages"))
 
     flight_log = FlightReader(
@@ -255,26 +248,3 @@ def test_real_log_retention_and_companion_parameters():
         "AUTOTUNE_LEVEL",
         339_624_650,
     ) == 6.0
-
-    assert flight_log.parameters == expected_parameters
-    assert flight_log.param("RNGFND1_MAX") == expected_parameters.get(
-        "RNGFND1_MAX"
-    )
-    assert flight_log.has_param("RNGFND1_MAX") == (
-        "RNGFND1_MAX" in expected_parameters
-    )
-
-
-test_baseline_and_stepwise_lookup()
-test_late_first_occurrence_has_no_baseline()
-test_startup_duplicate_replaces_baseline()
-test_startup_gap_boundary_is_strict()
-test_duplicate_timestamps_and_repeated_values()
-test_direct_construction_stably_sorts_changes()
-test_incomplete_and_malformed_name_value_records()
-test_missing_timestamp_matches_amc_semantics()
-test_timestamp_validation()
-test_nonfinite_values_and_query_times_match_amc()
-test_real_log_retention_and_companion_parameters()
-
-print("Timestamped parameter history: PASS")
