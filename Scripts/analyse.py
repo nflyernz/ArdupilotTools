@@ -11,8 +11,9 @@ def cruise_analysis():
 
 
 def autotune_review():
-    print("\nAutotune Review")
-    print("Not implemented.")
+    from analyses.autotune import AutotuneAnalysisPresentation
+
+    AutotuneAnalysisPresentation().run()
 
 
 def sensor_diagnostics():

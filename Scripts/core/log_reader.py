@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -30,7 +31,9 @@ class FlightReader:
         (
             flight.messages,
             flight.parameter_history,
+            decoded_metadata,
         ) = self._read_messages()
+        flight.metadata.update(decoded_metadata)
 
         self._validate_firmware(flight)
         self._read_parameters(flight)
@@ -67,6 +70,8 @@ class FlightReader:
         rows = {name: [] for name in wanted}
 
         log = mavutil.mavlink_connection(str(self.filename))
+        source_order = -1
+        last_time_us = None
 
         while True:
             msg = log.recv_match()
@@ -75,9 +80,22 @@ class FlightReader:
                 break
 
             name = msg.get_type()
+            if name == "BAD_DATA":
+                continue
+            source_order += 1
+            record = msg.to_dict()
+            timestamp = record.get("TimeUS")
+            if (
+                isinstance(timestamp, (int, float))
+                and math.isfinite(timestamp)
+                and timestamp >= 0
+                and int(timestamp) == timestamp
+            ):
+                last_time_us = int(timestamp)
 
             if name in wanted:
-                rows[name].append(msg.to_dict())
+                record["_SourceOrder"] = source_order
+                rows[name].append(record)
 
         messages = {}
 
@@ -90,7 +108,10 @@ class FlightReader:
 
         parameter_history = ParameterHistory.from_records(rows["PARM"])
 
-        return messages, parameter_history
+        return messages, parameter_history, {
+            "last_decoded_source_order": source_order if source_order >= 0 else None,
+            "last_decoded_time_us": last_time_us,
+        }
 
     def _read_parameters(self, flight):
         paramfile = Path("Params") / (

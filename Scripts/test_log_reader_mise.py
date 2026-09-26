@@ -200,6 +200,7 @@ def test_normal_reader_retains_full_mise_records(monkeypatch):
         "Lng",
         "Alt",
         "Frame",
+        "_SourceOrder",
     )
     assert int(mise.iloc[0]["TimeUS"]) == 1_000_000
     assert int(mise.iloc[0]["CNum"]) == 1
@@ -306,6 +307,7 @@ def test_normal_reader_retains_full_stat_records(monkeypatch):
         "DCrt",
         "DAlt",
         "Sup",
+        "_SourceOrder",
     )
     assert int(status.iloc[0]["TimeUS"]) == 1_500_000
     assert int(status.iloc[0]["Stage"]) == 1
@@ -343,6 +345,7 @@ def test_normal_reader_retains_full_pos_records(monkeypatch):
         "Alt",
         "RelHomeAlt",
         "RelOriginAlt",
+        "_SourceOrder",
     )
     assert int(position.iloc[0]["TimeUS"]) == 1_250_000
     assert float(position.iloc[0]["RelHomeAlt"]) == 12.25
@@ -374,6 +377,7 @@ def test_landing_reader_configuration_retains_full_rfns_records(monkeypatch):
         "TimeUS",
         "HE",
         "InRng",
+        "_SourceOrder",
     )
     assert int(rangefinder_state.iloc[0]["TimeUS"]) == 1_345_678
     assert float(rangefinder_state.iloc[0]["HE"]) == 2.75
