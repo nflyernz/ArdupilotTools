@@ -390,59 +390,18 @@ Landing Analysis, Event Timeline, Battery Analysis, flight detection and
 rangefinder evidence now obtain their required evidence from telemetry or
 embedded timestamped `ParameterHistory`.
 
-`ParameterReader` is therefore **probably redundant for normal production
-analysis**, but removal is deliberately deferred.
-
-Removal requires a separate deprecation/design decision covering:
-
-- `FlightLog.parameters`;
-- `FlightLog.param()`;
-- `FlightLog.has_param()`;
-- companion parameter metadata;
-- remaining diagnostic/test tooling;
-- legacy `RNGFND1_MAX_CM` normalisation;
-- the possible future value of genuinely external configuration snapshots.
+The companion reader, `FlightLog` snapshot API, and companion parameter
+metadata were removed after that audit. Embedded BIN `PARM` records remain
+available through timestamp-aware `ParameterHistory`.
 
 Companion snapshots must not be reintroduced as fallback evidence for an
 event-time parameter lookup.
 
-The absence of current production consumers is evidence that the companion
-system is not presently required by analysis. It is not, by itself, a reason
-to remove the API or external-snapshot capability without a deliberate
-cleanup decision.
-
 ### `Config/landing.yaml` parameter filters
 
-Keep `Config/landing.yaml` and its existing parameter configuration unchanged.
-
-The YAML has responsibilities beyond companion parameter loading and must not
-be treated as obsolete merely because production analysis no longer consumes
-the filtered companion snapshot.
-
-Its companion-parameter filter section currently retains parameter families
-such as:
-
-    AHRS_*
-    ARSPD_*
-    EK3_*
-    LAND_*
-    RNGFND*
-    TECS_*
-
-Those filters are now legacy infrastructure associated with
-`ParameterReader`, because no current production analysis consumes the
-resulting filtered `FlightLog.parameters` dictionary.
-
-Do **not** remove or simplify these filters opportunistically.
-
-Reconsider the companion-parameter filter section only as part of a deliberate
-`ParameterReader` deprecation/removal task, with its own architecture review
-and regression validation.
-
-In particular, future Battery Analysis / battery-pack history work must not
-modify these filters merely to obtain `BATT_*` parameters. If battery
-parameter evidence is required, determine the correct evidence source and
-time semantics independently.
+The dead companion-parameter filter section was removed. Message-retention
+configuration remains. Future analyses requiring parameter evidence should
+use embedded BIN `PARM` history with explicit time semantics.
 
 ## Current TAKEOFF Analysis Status
 
@@ -1432,9 +1391,8 @@ Event-time parameter history is already used by:
 - `RangefinderEvents` for `RNGFND1_MAX`;
 - `FlightWindowDetector` for `AIRSPEED_STALL`.
 
-The companion `.params` reader remains available as a separate untimestamped
-snapshot source until a repository-wide consumer audit demonstrates whether
-it is still required.
+The former companion `.params` reader was removed after the repository-wide
+consumer audit found no production analysis using its snapshots.
 
 Do not reintroduce a per-`FlightWindow` reconstructed parameter dictionary
 unless a concrete consumer requires one. Prefer direct event-time lookup from
@@ -1827,8 +1785,7 @@ the BIN, that requirement should be identified explicitly and its appropriate
 source and semantics designed before implementation rather than silently using a
 companion snapshot as fallback.
 
-Existing companion `.params` support remains legacy infrastructure. Its eventual
-deprecation or continued role is a separate architectural decision.
+The former companion `.params` production path has been removed.
 
 This APT direction does not imply that external/current parameter sets are
 unnecessary in AMC, where Methodic Configurator's configuration workflow may

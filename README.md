@@ -343,11 +343,10 @@ Scripts/
     test_*.py               development and regression harnesses
 ```
 
-Local flight logs and parameter files are deliberately excluded from Git:
+Local flight logs are deliberately excluded from Git:
 
 ```text
 Logs/
-Params/
 ```
 
 Generated analysis output is also not maintained as source material in the

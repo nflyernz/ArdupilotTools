@@ -491,7 +491,8 @@ RNGFND1_MAX_CM
 
 in centimetres.
 
-`ParameterReader` normalises this to:
+At the time of this historical validation, the companion-file reader
+normalised this to:
 
 ```text
 RNGFND1_MAX
@@ -499,11 +500,14 @@ RNGFND1_MAX
 
 in metres.
 
-Processors and detectors therefore use the firmware-independent parameter name:
+The former snapshot interface used the firmware-independent name:
 
 ```python
 flight_log.param("RNGFND1_MAX")
 ```
+
+Current analysis uses embedded BIN `PARM` records through timestamp-aware
+`ParameterHistory.value_at()` instead.
 
 ---
 
@@ -911,4 +915,3 @@ produce incomplete landing analysis.
 
 Support for additional firmware versions may be added in a
 future release if there is sufficient demand.
-

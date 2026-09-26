@@ -57,19 +57,6 @@ print(
 
 print()
 
-if flight_log.has_param("RNGFND1_MAX"):
-
-    print(
-        f"RNGFND1_MAX   : "
-        f"{flight_log.param('RNGFND1_MAX'):.2f} m"
-    )
-
-else:
-
-    print("RNGFND1_MAX   : Not available")
-
-print()
-
 rfnd = flight_log.get("RFND")
 
 if len(rfnd) > 1:

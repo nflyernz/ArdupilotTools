@@ -6,7 +6,7 @@ from core.scope import filter_segments
 flight = FlightReader("Logs/log_17.bin").read()
 
 print(f"Messages   : {len(flight.messages)}")
-print(f"Parameters : {len(flight.parameters)}")
+print(f"BIN PARM records : {len(flight.get('PARM'))}")
 print(f"Flights    : {len(flight.flights)}")
 print(f"Segments   : {len(flight.segments)}")
 

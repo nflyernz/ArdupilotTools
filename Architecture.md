@@ -601,41 +601,25 @@ This preserves one authoritative mode timeline while preventing cross-flight ana
 
 # Parameter Architecture
 
-The framework presents a normalised parameter interface to processors and detectors.
-
-Firmware-specific parameter names and units are resolved in `ParameterReader`.
-
-Example:
-
-| Firmware | Native Parameter | Normalised |
-|----------|------------------|------------|
-| 4.6.x | `RNGFND1_MAX_CM` (cm) | `RNGFND1_MAX` (m) |
-| 4.7.x | `RNGFND1_MAX` (m) | `RNGFND1_MAX` (m) |
-
-Processors and detectors always request:
+`FlightReader` retains raw `PARM` records from the DataFlash BIN log and
+builds `ParameterHistory` from those records. Processors and detectors query
+the value applicable at the event timestamp:
 
 ```python
-flight_log.param("RNGFND1_MAX")
+flight_log.parameter_history.value_at("RNGFND1_MAX", event_time_us)
 ```
 
-They are never responsible for firmware compatibility.
-
-Firmware compatibility therefore remains isolated:
-
 ```text
-Firmware Parameters
+DataFlash BIN
         │
         ▼
-ParameterReader
+Raw PARM records
         │
         ▼
-Normalised Parameters
+ParameterHistory
         │
         ▼
-FlightLog
-        │
-        ▼
-Processors / Detectors
+Timestamp-aware analysis
 ```
 
 ---
@@ -818,6 +802,6 @@ The authoritative model is:
 5. Flight-scoped processors and detectors use `FlightLog + FlightWindow`.
 6. Analysis-specific child windows must remain within their parent `FlightWindow`.
 7. Telemetry ownership remains with `FlightLog`.
-8. Firmware compatibility remains within `ParameterReader`.
+8. Analyses obtain parameter evidence from the BIN log's `ParameterHistory`.
 9. Internal time remains `TimeUS`.
 10. Analysis output remains objective and reproducible.
