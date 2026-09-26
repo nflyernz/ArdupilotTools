@@ -158,8 +158,7 @@ def test_real_log_event_counts_and_configuration():
             for event in analysis.bounded_load_events
         )
 
-    log_0, log_0_analyses = results["log_0"]
-    assert log_0.parameters == {}
+    _, log_0_analyses = results["log_0"]
     configuration = log_0_analyses[0].session_configuration
     assert configuration.lookup_time_us == 736_623_934
     assert configuration.capacity_mah == 5000.0

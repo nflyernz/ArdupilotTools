@@ -18,7 +18,7 @@ from core.rangefinder import RangefinderEvents
 CONFIG = Config("Config/landing.yaml")
 
 
-def build_events(samples, history=None, companion_parameters=None):
+def build_events(samples, history=None):
     """Build rangefinder events from compact synthetic evidence."""
     start_us = min(time_us for time_us, _ in samples)
     end_us = max(time_us for time_us, _ in samples)
@@ -35,7 +35,6 @@ def build_events(samples, history=None, companion_parameters=None):
                 ]
             )
         },
-        parameters=companion_parameters or {},
         parameter_history=(
             history
             if history is not None
@@ -264,17 +263,6 @@ def test_nonpositive_values_are_unavailable():
         assert_no_first_in_range(events)
 
 
-def test_companion_value_is_not_a_fallback():
-    events = build_events(
-        ((100, 5.0),),
-        companion_parameters={
-            "RNGFND1_MAX": 10.0,
-        },
-    )
-
-    assert_no_first_in_range(events)
-
-
 def test_other_lifecycle_events_ignore_maximum_range():
     samples = (
         (1_000_000, 4.0),
@@ -336,7 +324,6 @@ def test_log_11_uses_embedded_event_time_value():
         (1_523_091_499, "5.61 / 10.00 m"),
     )
 
-    assert flight_log.param("RNGFND1_MAX") == 9.0
     assert len(landing_windows) == len(expected)
 
     for landing_window, expected_event in zip(
@@ -374,7 +361,6 @@ test_late_first_occurrence_does_not_apply_retroactively()
 test_missing_value_keeps_other_lifecycle_evidence()
 test_nonfinite_values_are_unavailable()
 test_nonpositive_values_are_unavailable()
-test_companion_value_is_not_a_fallback()
 test_other_lifecycle_events_ignore_maximum_range()
 test_log_11_uses_embedded_event_time_value()
 

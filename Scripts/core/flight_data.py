@@ -18,9 +18,6 @@ class FlightLog:
     # Decoded MAVLink messages
     messages: Dict[str, pd.DataFrame] = field(default_factory=dict)
 
-    # Loaded from matching .params file
-    parameters: Dict[str, Any] = field(default_factory=dict)
-
     # Reconstructed from timestamped PARM records in the BIN log
     parameter_history: ParameterHistory = field(
         default_factory=ParameterHistory
@@ -69,18 +66,6 @@ class FlightLog:
             return None
 
         return (df["TimeUS"] - df["TimeUS"].iloc[0]) / 1e6
-
-    def param(self, name: str, default=None):
-        """
-        Return a parameter value.
-        """
-        return self.parameters.get(name, default)
-
-    def has_param(self, name: str) -> bool:
-        """
-        True if a parameter exists.
-        """
-        return name in self.parameters
 
     def firmware_version(self):
         """

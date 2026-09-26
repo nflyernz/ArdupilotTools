@@ -8,7 +8,7 @@ from .config import Config
 from .flight_data import FlightLog
 from .flight_segmenter import FlightSegmenter
 from .flight_window_detector import FlightWindowDetector
-from .params import ParameterHistory, ParameterReader
+from .params import ParameterHistory
 
 
 class UnsupportedFirmwareError(ValueError):
@@ -36,7 +36,6 @@ class FlightReader:
         flight.metadata.update(decoded_metadata)
 
         self._validate_firmware(flight)
-        self._read_parameters(flight)
         self._build_flights(flight)
         self._build_segments(flight)
 
@@ -112,22 +111,6 @@ class FlightReader:
             "last_decoded_source_order": source_order if source_order >= 0 else None,
             "last_decoded_time_us": last_time_us,
         }
-
-    def _read_parameters(self, flight):
-        paramfile = Path("Params") / (
-            self.filename.stem + ".params"
-        )
-
-        flight.metadata["parameter_file"] = str(paramfile)
-        flight.metadata["parameters_loaded"] = paramfile.exists()
-
-        if not paramfile.exists():
-            return
-
-        flight.parameters = ParameterReader(
-            paramfile,
-            self.config,
-        ).read()
 
     def _build_flights(self, flight):
         flight.flights = FlightWindowDetector().detect(flight)

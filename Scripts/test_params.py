@@ -1,26 +1,17 @@
-"""Real BIN logs provide parameter evidence without companion files."""
-
-from pathlib import Path
+"""Real BIN logs provide embedded parameter evidence."""
 
 from core.config import Config
 from core.log_reader import FlightReader
 
 
-def test_embedded_parm_and_history_are_available_without_companion_file(
-    monkeypatch,
-    tmp_path,
-):
-    """Read the real BIN from a directory with no companion snapshots."""
-    log_path = Path(__file__).resolve().parents[1] / "Logs/log_17.bin"
-    monkeypatch.chdir(tmp_path)
-
+def test_embedded_parm_and_history_are_available():
+    """Read raw PARM and its history from the real BIN."""
     flight_log = FlightReader(
-        log_path,
+        "Logs/log_17.bin",
         config=Config("Config/landing.yaml"),
     ).read()
     raw_parm = flight_log.get("PARM")
 
-    assert flight_log.metadata["parameters_loaded"] is False
     assert not raw_parm.empty
     assert {"TimeUS", "Name", "Value"}.issubset(raw_parm.columns)
     level_records = raw_parm.loc[raw_parm["Name"] == "AUTOTUNE_LEVEL"]

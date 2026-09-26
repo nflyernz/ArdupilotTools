@@ -39,7 +39,6 @@ EXPECTED_REAL_LOG_WINDOWS = {
 def detect_windows(
     samples,
     history=None,
-    companion_parameters=None,
     speed_threshold=FlightWindowDetector.DEFAULT_THRESHOLD,
 ):
     """Detect public flight windows from compact GPS evidence."""
@@ -55,7 +54,6 @@ def detect_windows(
                 ]
             )
         },
-        parameters=companion_parameters or {},
         parameter_history=(
             history
             if history is not None
@@ -320,20 +318,6 @@ def test_speed_equal_to_effective_threshold_is_not_airborne():
     ) == []
 
 
-def test_companion_value_is_not_a_fallback():
-    windows = detect_windows(
-        (
-            (0, 6.0),
-            (2_000_000, 6.0),
-        ),
-        companion_parameters={
-            "AIRSPEED_STALL": 20.0,
-        },
-    )
-
-    assert windows == [FlightWindow(0, 2_000_000)]
-
-
 def test_real_log_flight_window_boundaries():
     for log_name, expected in EXPECTED_REAL_LOG_WINDOWS.items():
         flight_log = FlightReader(
@@ -362,7 +346,6 @@ test_below_floor_stall_value_keeps_floor()
 test_above_floor_stall_value_raises_threshold()
 test_nondefault_stall_value_is_used()
 test_speed_equal_to_effective_threshold_is_not_airborne()
-test_companion_value_is_not_a_fallback()
 test_real_log_flight_window_boundaries()
 
 print("Event-time FlightWindowDetector tests: PASS")
