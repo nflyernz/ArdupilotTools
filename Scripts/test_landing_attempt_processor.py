@@ -316,68 +316,73 @@ def print_attempt(
     )
 
 
-flight_log = FlightReader(
-    LOG_PATH
-).read()
+def main():
+    flight_log = FlightReader(
+        LOG_PATH
+    ).read()
 
-config = Config(
-    "Config/sensors.yaml"
-)
-
-print()
-print("Landing Analysis Prototype")
-print("=" * 70)
-
-for flight_number, flight_window in enumerate(
-    flight_log.flights,
-    start=1,
-):
-
-    landing_windows = (
-        LandingWindowDetector().detect(
-            flight_log,
-            flight_window,
-        )
+    config = Config(
+        "Config/sensors.yaml"
     )
-
-    if not landing_windows:
-        continue
 
     print()
-    print("=" * 70)
-    print(
-        f"FLIGHT {flight_number}"
-    )
+    print("Landing Analysis Prototype")
     print("=" * 70)
 
-    for landing_number, landing_window in enumerate(
-        landing_windows,
+    for flight_number, flight_window in enumerate(
+        flight_log.flights,
         start=1,
     ):
 
-        attempts = LandingAttemptExtractor(
-            flight_log
-        ).extract(
-            landing_window
+        landing_windows = (
+            LandingWindowDetector().detect(
+                flight_log,
+                flight_window,
+            )
         )
 
-        for attempt_number, attempt in enumerate(
-            attempts,
+        if not landing_windows:
+            continue
+
+        print()
+        print("=" * 70)
+        print(
+            f"FLIGHT {flight_number}"
+        )
+        print("=" * 70)
+
+        for landing_number, landing_window in enumerate(
+            landing_windows,
             start=1,
         ):
 
-            analysis = LandingAttemptProcessor(
-                flight_log=flight_log,
-                flight_window=flight_window,
-                landing_window=landing_window,
-                attempt=attempt,
-                config=config,
-            ).build()
-
-            print_attempt(
-                landing_number,
-                attempt_number,
-                analysis,
+            attempts = LandingAttemptExtractor(
+                flight_log
+            ).extract(
+                landing_window
             )
 
-print()
+            for attempt_number, attempt in enumerate(
+                attempts,
+                start=1,
+            ):
+
+                analysis = LandingAttemptProcessor(
+                    flight_log=flight_log,
+                    flight_window=flight_window,
+                    landing_window=landing_window,
+                    attempt=attempt,
+                    config=config,
+                ).build()
+
+                print_attempt(
+                    landing_number,
+                    attempt_number,
+                    analysis,
+                )
+
+    print()
+
+
+if __name__ == "__main__":
+    main()

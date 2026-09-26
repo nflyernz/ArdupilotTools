@@ -1,25 +1,31 @@
 from core.log_reader import FlightReader
 
-reader = FlightReader(
-    "Logs/log_19_2026-7-5-09-43-10.bin"
-)
 
-log = reader.read()
+def main():
+    reader = FlightReader(
+        "Logs/log_19_2026-7-5-09-43-10.bin"
+    )
 
-print("Message types:")
-print(log.message_types())
+    log = reader.read()
 
-print()
+    print("Message types:")
+    print(log.message_types())
 
-print("Has TECS?")
-print(log.has("TECS"))
+    print()
 
-print()
+    print("Has TECS?")
+    print(log.has("TECS"))
 
-print("TECS:")
-print(log.get("TECS").head())
+    print()
 
-print()
+    print("TECS:")
+    print(log.get("TECS").head())
 
-print("Time (seconds):")
-print(log.seconds("TECS").head())
+    print()
+
+    print("Time (seconds):")
+    print(log.seconds("TECS").head())
+
+
+if __name__ == "__main__":
+    main()

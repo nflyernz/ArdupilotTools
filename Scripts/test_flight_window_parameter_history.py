@@ -10,6 +10,7 @@ from core.flight_window import FlightWindow
 from core.flight_window_detector import FlightWindowDetector
 from core.log_reader import FlightReader
 from core.params import ParameterChange, ParameterHistory
+from test_support import require_logs
 
 
 CONFIG = Config("Config/landing.yaml")
@@ -319,6 +320,7 @@ def test_speed_equal_to_effective_threshold_is_not_airborne():
 
 
 def test_real_log_flight_window_boundaries():
+    require_logs(*(f"Logs/{name}" for name in EXPECTED_REAL_LOG_WINDOWS))
     for log_name, expected in EXPECTED_REAL_LOG_WINDOWS.items():
         flight_log = FlightReader(
             f"Logs/{log_name}",
@@ -330,22 +332,3 @@ def test_real_log_flight_window_boundaries():
         )
 
         assert actual == expected, log_name
-
-
-test_startup_value_raises_effective_threshold()
-test_missing_history_uses_configured_floor()
-test_late_first_occurrence_is_prospective()
-test_change_between_flights_affects_only_second_candidate()
-test_change_during_start_persistence_breaks_candidate()
-test_change_during_flight_preserves_start_and_ground_duration()
-test_change_during_ground_persistence_can_cancel_candidate()
-test_change_is_effective_at_exact_gps_timestamp()
-test_nonfinite_values_use_configured_floor()
-test_nonpositive_values_use_configured_floor()
-test_below_floor_stall_value_keeps_floor()
-test_above_floor_stall_value_raises_threshold()
-test_nondefault_stall_value_is_used()
-test_speed_equal_to_effective_threshold_is_not_airborne()
-test_real_log_flight_window_boundaries()
-
-print("Event-time FlightWindowDetector tests: PASS")

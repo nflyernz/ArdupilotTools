@@ -5,6 +5,7 @@ import math
 from core.battery import BatteryLoadEventType, BatteryProcessor
 from core.config import Config
 from core.log_reader import FlightReader
+from test_support import require_log, require_logs
 
 CONFIG = Config("Config/battery.yaml")
 
@@ -138,6 +139,7 @@ def analyse_log(log_name):
 
 
 def test_real_log_event_counts_and_configuration():
+    require_logs(*(f"Logs/{name}.bin" for name in EXPECTED_SUSTAINED_COUNTS))
     results = {}
     for log_name, expected_count in EXPECTED_SUSTAINED_COUNTS.items():
         results[log_name] = analyse_log(log_name)
@@ -180,6 +182,7 @@ def test_real_log_event_counts_and_configuration():
 
 
 def test_log_0_auto_takeoff_evidence():
+    require_log("Logs/log_0.bin")
     _, analyses = analyse_log("log_0")
     takeoffs = events_of_type(
         analyses,
@@ -214,9 +217,3 @@ def test_log_0_auto_takeoff_evidence():
                 expected[field],
                 rel_tol=1e-9,
             )
-
-
-test_real_log_event_counts_and_configuration()
-test_log_0_auto_takeoff_evidence()
-
-print("Battery load-event real-log regression: PASS")

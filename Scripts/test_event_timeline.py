@@ -151,217 +151,222 @@ def assert_expected_terminations(
         )
 
 
-print()
-print("Unified Event Timeline")
-print("=" * 70)
+def main():
+    print()
+    print("Unified Event Timeline")
+    print("=" * 70)
 
-log_paths = sorted(Path("Logs").glob("*.bin"))
+    log_paths = sorted(Path("Logs").glob("*.bin"))
 
-if not log_paths:
-    print("No BIN logs found in Logs/")
-    raise SystemExit(1)
-
-
-validated_flights = 0
-validated_cases = 0
-skipped_logs = 0
-processed_supported_logs = set()
+    if not log_paths:
+        print("No BIN logs found in Logs/")
+        raise SystemExit(1)
 
 
-for log_path in log_paths:
+    validated_flights = 0
+    validated_cases = 0
+    skipped_logs = 0
+    processed_supported_logs = set()
+
+
+    for log_path in log_paths:
+
+        print()
+        print("=" * 70)
+        print(f"LOG : {log_path.name}")
+        print("=" * 70)
+
+        try:
+            flight_log = FlightReader(
+                str(log_path)
+            ).read()
+
+        except UnsupportedFirmwareError as exc:
+            print("STATUS : SKIPPED")
+            print(f"Reason : {exc}")
+            skipped_logs += 1
+            continue
+
+        # ------------------------------------------------------------
+        # A supported regression log must successfully reach here.
+        # ------------------------------------------------------------
+
+        if log_path.name in EXPECTED_REGRESSION_LOGS:
+            processed_supported_logs.add(log_path.name)
+
+        firmware = flight_log.firmware_version()
+
+        if firmware:
+            print(
+                f"Firmware : {firmware['version']}"
+            )
+        else:
+            print(
+                "Firmware : unavailable"
+            )
+
+        print(
+            f"Flights : "
+            f"{len(flight_log.flights)}"
+        )
+
+        expected_for_log = EXPECTED_TERMINATIONS.get(
+            log_path.name,
+            {},
+        )
+
+        for flight_number, flight_window in enumerate(
+            flight_log.flights,
+            start=1,
+        ):
+
+            print()
+            print(
+                f"Flight {flight_number}"
+            )
+
+            print(
+                f"Window : "
+                f"{format_time(flight_window.start_us)}"
+                f" -> "
+                f"{format_time(flight_window.end_us)}"
+            )
+
+            landing_windows = LandingWindowDetector().detect(
+                flight_log,
+                flight_window,
+            )
+
+            actual_reasons = []
+
+            if landing_windows:
+
+                for index, window in enumerate(
+                    landing_windows,
+                    start=1,
+                ):
+
+                    reason = landing_end_reason(
+                        flight_log,
+                        window,
+                    )
+
+                    actual_reasons.append(reason)
+
+                    print(
+                        f"Landing Window {index} : "
+                        f"{format_time(window.start_us)}"
+                        f" -> "
+                        f"{format_time(window.end_us)}"
+                    )
+
+                    print(
+                        f"Landing End : {reason}"
+                    )
+
+            else:
+                print(
+                    "Landing Windows : none"
+                )
+
+            # --------------------------------------------------------
+            # Assertions for validated representative flights.
+            # --------------------------------------------------------
+
+            if flight_number in expected_for_log:
+
+                assert_expected_terminations(
+                    log_path.name,
+                    flight_number,
+                    actual_reasons,
+                )
+
+                validated_flights += 1
+                validated_cases += len(
+                    expected_for_log[flight_number]
+                )
+
+            events = EventExtractor().extract(
+                flight_log,
+                flight_window,
+            )
+
+            print(
+                f"Events : {len(events)}"
+            )
+
+            print()
+
+            for event in events:
+
+                print(
+                    f"{format_time(event.time_us)}  "
+                    f"{event.event.value:<14}"
+                    f"{event.detail}"
+                )
+
+
+    # ----------------------------------------------------------------
+    # Final regression validation
+    # ----------------------------------------------------------------
 
     print()
     print("=" * 70)
-    print(f"LOG : {log_path.name}")
+    print("VALIDATION")
     print("=" * 70)
 
-    try:
-        flight_log = FlightReader(
-            str(log_path)
-        ).read()
+    missing_regression_logs = (
+        EXPECTED_REGRESSION_LOGS
+        - processed_supported_logs
+    )
 
-    except UnsupportedFirmwareError as exc:
-        print("STATUS : SKIPPED")
-        print(f"Reason : {exc}")
-        skipped_logs += 1
-        continue
-
-    # ------------------------------------------------------------
-    # A supported regression log must successfully reach here.
-    # ------------------------------------------------------------
-
-    if log_path.name in EXPECTED_REGRESSION_LOGS:
-        processed_supported_logs.add(log_path.name)
-
-    firmware = flight_log.firmware_version()
-
-    if firmware:
-        print(
-            f"Firmware : {firmware['version']}"
+    if missing_regression_logs:
+        raise AssertionError(
+            "Expected regression logs were not processed: "
+            + ", ".join(sorted(missing_regression_logs))
         )
-    else:
-        print(
-            "Firmware : unavailable"
+
+    if validated_flights != EXPECTED_VALIDATED_FLIGHTS:
+        raise AssertionError(
+            f"Unexpected validated flight count: "
+            f"expected {EXPECTED_VALIDATED_FLIGHTS}, "
+            f"got {validated_flights}"
+        )
+
+    if validated_cases != EXPECTED_VALIDATED_CASES:
+        raise AssertionError(
+            f"Unexpected validated case count: "
+            f"expected {EXPECTED_VALIDATED_CASES}, "
+            f"got {validated_cases}"
+        )
+
+    if skipped_logs != 0:
+        raise AssertionError(
+            f"Unexpected skipped logs: {skipped_logs}"
         )
 
     print(
-        f"Flights : "
-        f"{len(flight_log.flights)}"
+        f"Regression logs  : "
+        f"{len(processed_supported_logs)} / "
+        f"{len(EXPECTED_REGRESSION_LOGS)}"
     )
 
-    expected_for_log = EXPECTED_TERMINATIONS.get(
-        log_path.name,
-        {},
+    print(
+        f"Validated flights : {validated_flights}"
     )
 
-    for flight_number, flight_window in enumerate(
-        flight_log.flights,
-        start=1,
-    ):
-
-        print()
-        print(
-            f"Flight {flight_number}"
-        )
-
-        print(
-            f"Window : "
-            f"{format_time(flight_window.start_us)}"
-            f" -> "
-            f"{format_time(flight_window.end_us)}"
-        )
-
-        landing_windows = LandingWindowDetector().detect(
-            flight_log,
-            flight_window,
-        )
-
-        actual_reasons = []
-
-        if landing_windows:
-
-            for index, window in enumerate(
-                landing_windows,
-                start=1,
-            ):
-
-                reason = landing_end_reason(
-                    flight_log,
-                    window,
-                )
-
-                actual_reasons.append(reason)
-
-                print(
-                    f"Landing Window {index} : "
-                    f"{format_time(window.start_us)}"
-                    f" -> "
-                    f"{format_time(window.end_us)}"
-                )
-
-                print(
-                    f"Landing End : {reason}"
-                )
-
-        else:
-            print(
-                "Landing Windows : none"
-            )
-
-        # --------------------------------------------------------
-        # Assertions for validated representative flights.
-        # --------------------------------------------------------
-
-        if flight_number in expected_for_log:
-
-            assert_expected_terminations(
-                log_path.name,
-                flight_number,
-                actual_reasons,
-            )
-
-            validated_flights += 1
-            validated_cases += len(
-                expected_for_log[flight_number]
-            )
-
-        events = EventExtractor().extract(
-            flight_log,
-            flight_window,
-        )
-
-        print(
-            f"Events : {len(events)}"
-        )
-
-        print()
-
-        for event in events:
-
-            print(
-                f"{format_time(event.time_us)}  "
-                f"{event.event.value:<14}"
-                f"{event.detail}"
-            )
-
-
-# ----------------------------------------------------------------
-# Final regression validation
-# ----------------------------------------------------------------
-
-print()
-print("=" * 70)
-print("VALIDATION")
-print("=" * 70)
-
-missing_regression_logs = (
-    EXPECTED_REGRESSION_LOGS
-    - processed_supported_logs
-)
-
-if missing_regression_logs:
-    raise AssertionError(
-        "Expected regression logs were not processed: "
-        + ", ".join(sorted(missing_regression_logs))
+    print(
+        f"Validated cases   : {validated_cases}"
     )
 
-if validated_flights != EXPECTED_VALIDATED_FLIGHTS:
-    raise AssertionError(
-        f"Unexpected validated flight count: "
-        f"expected {EXPECTED_VALIDATED_FLIGHTS}, "
-        f"got {validated_flights}"
+    print(
+        f"Skipped logs      : {skipped_logs}"
     )
 
-if validated_cases != EXPECTED_VALIDATED_CASES:
-    raise AssertionError(
-        f"Unexpected validated case count: "
-        f"expected {EXPECTED_VALIDATED_CASES}, "
-        f"got {validated_cases}"
-    )
+    print()
+    print("STATUS : PASS")
+    print("=" * 70)
 
-if skipped_logs != 0:
-    raise AssertionError(
-        f"Unexpected skipped logs: {skipped_logs}"
-    )
 
-print(
-    f"Regression logs  : "
-    f"{len(processed_supported_logs)} / "
-    f"{len(EXPECTED_REGRESSION_LOGS)}"
-)
-
-print(
-    f"Validated flights : {validated_flights}"
-)
-
-print(
-    f"Validated cases   : {validated_cases}"
-)
-
-print(
-    f"Skipped logs      : {skipped_logs}"
-)
-
-print()
-print("STATUS : PASS")
-print("=" * 70)
+if __name__ == "__main__":
+    main()
