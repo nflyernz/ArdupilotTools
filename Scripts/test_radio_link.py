@@ -19,6 +19,10 @@ def rc(time, flags, override=0):
     return "RCI2", {"TimeUS": time, "Flags": flags, "OMask": override}
 
 
+def rcin(time, throttle=1500):
+    return "RCIN", {"TimeUS": time, "C3": throttle}
+
+
 def msg(time, text):
     return "MSG", {"TimeUS": time, "Message": text}
 
@@ -60,6 +64,8 @@ def _log(*events, history=None, end=None):
                 "THR_FAILSAFE": 1,
                 "THR_FS_VALUE": 950,
                 "RC_FS_TIMEOUT": 1,
+                "FS_LONG_TIMEOUT": 10,
+                "RC3_REVERSED": 0,
             }
         ),
         flights=[],
@@ -406,3 +412,116 @@ def test_presentation_uses_shared_single_log_selector_and_ground_log(
     assert "Radio Link / RC Failsafe — synthetic.bin" in output_text
     assert "Armed RC-failsafe episodes: 1" in output_text
     assert "00:03.000–00:04.000" in output_text
+
+
+def _timed_episode(history=None, long=True, revalid=97_966_951):
+    events = [
+        arm(1_000_000, 1),
+        rc(55_327_561, 1),
+        rcin(55_350_000),
+        rc(55_367_174, 2),
+        msg(55_566_372, "RC Short Failsafe On"),
+    ]
+    if long:
+        events.append(msg(64_406_750, "RC Long Failsafe On: switched to RTL"))
+        events.append(rc(revalid, 1))
+        events.append(msg(revalid + 40_000, "RC Long Failsafe Cleared"))
+    else:
+        events.append(rc(revalid, 1))
+        events.append(msg(revalid + 40_000, "RC Short Failsafe Cleared"))
+    return _detect(*events, history=history)
+
+
+def test_timing_uses_shared_last_valid_origin_not_short_msg():
+    result = _timed_episode()
+    assert len(result.episodes) == 1
+    timing = result.episodes[0].timing
+    assert (timing.rc_timeout_s, timing.long_timeout_s) == (1, 10)
+    assert timing.invalid_to_short_s == pytest.approx(0.199198)
+    assert timing.short_to_long_s == pytest.approx(8.840378)
+    assert timing.candidate_long_age_s == pytest.approx((10.039576, 10.079189))
+    assert timing.assessment == "Compatible with configured timing"
+    report = _report(result)
+    assert "RC_FS_TIMEOUT 1 s; FS_LONG_TIMEOUT 10 s" in report
+    assert "short→long MSG 8.84 s" in report
+    assert "Long timeout starts at last acceptable RC input, not short MSG" in report
+    assert "Inconsistent" not in report
+
+
+def test_short_only_timing_compatible_when_revalidated_before_long_threshold():
+    timing = _timed_episode(long=False, revalid=62_847_174).episodes[0].timing
+    assert timing.short_to_long_s is None
+    assert timing.assessment == "Compatible with configured timing"
+    assert "revalidation precedes" in timing.reason
+
+
+def test_timing_insufficient_without_timeout_path_or_adjacent_rc_sample():
+    no_input = _detect(
+        arm(1_000_000, 1), rc(55_327_561, 1), rc(55_367_174, 2),
+        msg(55_566_372, "RC Short Failsafe On"),
+        msg(64_406_750, "RC Long Failsafe On: switched to RTL"),
+    ).episodes[0].timing
+    assert no_input.assessment == "Insufficient evidence"
+    assert "timeout-path" in no_input.reason
+
+    wide_gap = _detect(
+        arm(1_000_000, 1), rc(54_000_000, 1), rcin(55_350_000),
+        rc(55_367_174, 2), msg(55_566_372, "RC Short Failsafe On"),
+        msg(64_406_750, "RC Long Failsafe On: switched to RTL"),
+    ).episodes[0].timing
+    assert wide_gap.assessment == "Insufficient evidence"
+    assert "sampling gap" in wide_gap.reason
+
+
+def test_timing_missing_parameter_does_not_invent_configuration():
+    history = ParameterHistory({
+        "RC_FS_TIMEOUT": 1, "THR_FAILSAFE": 1,
+        "THR_FS_VALUE": 950, "RCMAP_THROTTLE": 3,
+    })
+    result = _timed_episode(history=history)
+    timing = result.episodes[0].timing
+    assert timing.long_timeout_s is None
+    assert timing.assessment == "Insufficient evidence"
+    assert "FS_LONG_TIMEOUT unavailable" in _report(result)
+
+
+def test_timing_uses_event_time_parameter_and_rejects_mid_interval_change():
+    history = ParameterHistory(
+        {
+            "RC_FS_TIMEOUT": 1, "FS_LONG_TIMEOUT": 10,
+            "THR_FAILSAFE": 1, "THR_FS_VALUE": 950,
+            "RCMAP_THROTTLE": 3, "RC3_REVERSED": 0,
+        },
+        {"FS_LONG_TIMEOUT": (ParameterChange(60_000_000, 12),)},
+    )
+    result = _timed_episode(history=history)
+    timing = result.episodes[0].timing
+    assert timing.long_timeout_s == 10
+    assert timing.long_timeout_at_action_s == 12
+    assert timing.assessment == "Insufficient evidence"
+    assert "changed during candidate timing interval" in timing.reason
+    assert "FS_LONG_TIMEOUT at long MSG: 12 s" in _report(result)
+    assert result.episodes[0].start.time_us == 55_367_174
+
+    later = _detect(
+        arm(1_000_000, 1), rc(70_327_561, 1),
+        rcin(70_350_000), rc(70_367_174, 2),
+        msg(70_566_372, "RC Short Failsafe On"),
+        rc(72_000_000, 1), msg(72_040_000, "RC Short Failsafe Cleared"),
+        history=history,
+    ).episodes[0].timing
+    assert later.long_timeout_s == 12
+    assert later.assessment == "Compatible with configured timing"
+
+
+def test_late_long_observation_is_not_declared_inconsistent():
+    result = _detect(
+        arm(1_000_000, 1), rc(55_327_561, 1),
+        rcin(55_350_000), rc(55_367_174, 2),
+        msg(55_566_372, "RC Short Failsafe On"),
+        msg(66_000_000, "RC Long Failsafe On: switched to RTL"),
+    )
+    timing = result.episodes[0].timing
+    assert timing.assessment == "Insufficient evidence"
+    assert "outside nominal check window" in timing.reason
+    assert "Inconsistent" not in _report(result)
