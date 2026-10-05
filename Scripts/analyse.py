@@ -42,6 +42,7 @@ def menu():
         print("8. Battery Pack Management")
         print("9. Pack Performance Report")
         print("10. Takeoff Analysis")
+        print("11. Radio Link Analysis")
 
         print("0. Exit")
 
@@ -102,6 +103,12 @@ def menu():
             analysis = TakeoffAnalysisPresentation()
 
             analysis.run()
+
+        elif choice == "11":
+
+            from analyses.radio_link import RadioLinkAnalysisPresentation
+
+            RadioLinkAnalysisPresentation().run()
 
         elif choice == "0":
             break
