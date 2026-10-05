@@ -102,6 +102,18 @@ def _pattern_rows(*, offset=0, gps=False):
     ]
 
 
+def _selection_in_utc(monkeypatch, answers):
+    """Make selector tests independent of the machine's local timezone."""
+    replies = iter(answers)
+    monkeypatch.setattr("builtins.input", lambda _: next(replies))
+    real_analysis = presentation.analyse_edgetx
+    monkeypatch.setattr(
+        presentation, "analyse_edgetx",
+        lambda *args, **kwargs: real_analysis(
+            *args, local_zone=timezone.utc, **kwargs),
+    )
+
+
 def test_gps_zero_week_startup_is_excluded_and_affine_time_is_mapped():
     flight = _flight(zero_week=True, slope=1.002)
     clock = gps_clock_from_flight(flight)
@@ -276,24 +288,98 @@ def test_gps_mapped_session_window_excludes_unrelated_earlier_csv_run(tmp_path):
     assert any("outside GPS-mapped" in warning for warning in overlay.warnings)
 
 
-def test_auto_selection_rejects_two_equally_supported_csv_candidates(
-    tmp_path, monkeypatch,
+def test_auto_selection_falls_back_to_explicit_number_when_two_candidates_match(
+    tmp_path, monkeypatch, capsys,
 ):
     rows = _pattern_rows()
     _write(tmp_path, rows, name="one.csv")
     _write(tmp_path, rows, name="two.csv")
-    monkeypatch.setattr("builtins.input", lambda _: "a")
-    real_analysis = presentation.analyse_edgetx
-    monkeypatch.setattr(
-        presentation, "analyse_edgetx",
-        lambda *args, **kwargs: real_analysis(
-            *args, local_zone=timezone.utc, **kwargs),
-    )
-    response = presentation._optional_csv(
+    _selection_in_utc(monkeypatch, ["a", "2"])
+    overlay = presentation._optional_csv(
         tmp_path / "aircraft.bin", _result((10.2, 10.8)), _flight(),
     )
-    assert isinstance(response, str)
-    assert "2 accepted CSV candidates" in response
+    output = capsys.readouterr().out
+    assert overlay.pairing == "accepted explicit"
+    assert overlay.session.path.name == "two.csv"
+    assert "Auto could not choose uniquely (2 eligible candidates)" in output
+    assert output.count("Nearby EdgeTX CSV candidates:") == 2
+
+
+def test_auto_uniquely_selects_only_existing_auto_eligible_candidate(
+    tmp_path, monkeypatch,
+):
+    _write(tmp_path, _pattern_rows(), name="candidate.csv")
+    _selection_in_utc(monkeypatch, ["a"])
+    overlay = presentation._optional_csv(
+        tmp_path / "aircraft.bin", _result((10.2, 10.8)), _flight(),
+    )
+    assert overlay.pairing == "accepted automatic"
+    assert overlay.session.path.name == "candidate.csv"
+
+
+def test_auto_failure_can_be_skipped_without_selecting_csv(tmp_path, monkeypatch, capsys):
+    _write(tmp_path, _pattern_rows(offset=3600, gps=True))
+    _selection_in_utc(monkeypatch, ["a", ""])
+    assert presentation._optional_csv(
+        tmp_path / "aircraft.bin", _result((10.2, 10.8)), _flight(),
+    ) is None
+    assert "Auto could not choose uniquely (0 eligible candidates)" in capsys.readouterr().out
+
+
+def test_candidate_hints_do_not_promote_preview_to_pairing_or_rf_claim(
+    tmp_path, monkeypatch, capsys,
+):
+    path = _write(tmp_path, _pattern_rows(offset=3600, gps=True))
+    result = _result((10.2, 10.8))
+    before = [(episode.start, episode.revalid) for episode in result.episodes]
+    _selection_in_utc(monkeypatch, ["1"])
+    overlay = presentation._optional_csv(tmp_path / "aircraft.bin", result, _flight())
+    output = capsys.readouterr().out
+    assert "2 aircraft GPS-coordinate landmarks" in output
+    assert "~3600 s aircraft/radio clock difference" in output
+    assert "GPS-coordinate candidate; explicit selection required" in output
+    assert "confirmed match" not in output
+    assert "episode" not in output.lower()
+    assert overlay.pairing == "accepted explicit"
+    assert overlay.alignment.status == "coarse"
+    assert overlay.episode_rf == {}
+    assert overlay.session.path == path
+    direct = analyse_edgetx(result, _flight(), read_edgetx_csv(path),
+                            explicit=True, local_zone=timezone.utc)
+    assert (overlay.pairing, overlay.alignment, overlay.episode_rf) == (
+        direct.pairing, direct.alignment, direct.episode_rf,
+    )
+    assert [(episode.start, episode.revalid) for episode in result.episodes] == before
+
+
+def test_candidate_hint_identifies_partial_csv_scope_without_confirming_pair(
+    tmp_path, monkeypatch, capsys,
+):
+    rows = [_row(-500, quality=80), *_pattern_rows(gps=True)]
+    _write(tmp_path, rows)
+    _selection_in_utc(monkeypatch, [""])
+    assert presentation._optional_csv(
+        tmp_path / "aircraft.bin", _result((10.2, 10.8)), _flight(),
+    ) is None
+    output = capsys.readouterr().out
+    assert "partial CSV coverage" in output
+    assert "2 aircraft GPS-coordinate landmarks" in output
+    assert "confirmed match" not in output
+
+
+def test_unusable_candidate_preview_allows_another_number(
+    tmp_path, monkeypatch, capsys,
+):
+    (tmp_path / "bad.csv").write_text("Date,Time\n2026-10-05,00:00:00.000\n")
+    _write(tmp_path, _pattern_rows(), name="good.csv")
+    _selection_in_utc(monkeypatch, ["1", "2"])
+    overlay = presentation._optional_csv(
+        tmp_path / "aircraft.bin", _result((10.2, 10.8)), _flight(),
+    )
+    output = capsys.readouterr().out
+    assert "unusable CSV:" in output
+    assert overlay.session.path.name == "good.csv"
+    assert overlay.pairing == "accepted explicit"
 
 
 def test_ambiguous_auto_and_missing_gps_keep_bin_result_unchanged(tmp_path):
