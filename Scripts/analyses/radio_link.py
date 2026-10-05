@@ -241,47 +241,94 @@ def format_edgetx_overlay(overlay):
     return "\n".join(lines)
 
 
+def _candidate_preview(candidate, result, flight_log):
+    """Summarize existing evidence without accepting a candidate for the user."""
+    try:
+        session = read_edgetx_csv(candidate)
+    except (OSError, UnicodeError, ValueError) as exc:
+        return None, None, f"unusable CSV: {exc}"
+
+    automatic = analyse_edgetx(result, flight_log, session, explicit=False)
+    diagnostic = analyse_edgetx(result, flight_log, session, explicit=True)
+    hints = []
+    if automatic.pairing == "accepted automatic":
+        hints.append("Auto-eligible candidate")
+    elif diagnostic.alignment.status == "coarse":
+        hints.append("GPS-coordinate candidate; explicit selection required")
+    else:
+        hints.append("no usable GPS-coordinate clock landmarks; explicit selection required")
+
+    if diagnostic.alignment.status == "coarse":
+        hints.append(f"{diagnostic.alignment.anchors} aircraft GPS-coordinate landmarks")
+        hints.append(
+            f"~{diagnostic.alignment.offset_s:.0f} s aircraft/radio clock difference "
+            "(local timezone assumed)"
+        )
+    modes = []
+    for row in session.rows:
+        if row.fm and (not modes or modes[-1] != row.fm):
+            modes.append(row.fm)
+    if len(modes) >= 2:
+        hints.append("file-wide CSV FM " + "→".join(modes[:3]))
+    if (diagnostic.session.source_row_count > len(diagnostic.session.rows)
+            or any("covers only part" in note for note in diagnostic.warnings)):
+        hints.append("partial CSV coverage")
+    return session, automatic, "; ".join(hints)
+
+
 def _optional_csv(path, result, flight_log):
     """Keep CSV selection local to Radio Link; Enter preserves BIN-only use."""
     nearby = sorted(path.parent.glob("*.csv"))
-    if nearby:
-        print("\nNearby EdgeTX CSV candidates:")
-        for number, candidate in enumerate(nearby, start=1):
-            print(f"{number}. {candidate.name}")
-    try:
-        choice = input("\nOptional EdgeTX CSV [Enter=skip, A=auto, number, P=path]: ").strip()
-    except (EOFError, OSError):
-        return None
-    if not choice:
-        return None
-    if choice.casefold() == "a":
-        candidates = []
-        for candidate in nearby:
-            try:
-                session = read_edgetx_csv(candidate)
-            except (OSError, UnicodeError, ValueError):
-                continue
-            overlay = analyse_edgetx(result, flight_log, session, explicit=False)
-            if overlay.pairing == "accepted automatic":
-                candidates.append(overlay)
-        if len(candidates) == 1:
-            return candidates[0]
-        return ("automatic pairing ambiguous: "
-                f"{len(candidates)} accepted CSV candidates; supply a path explicitly")
-    if choice.casefold() == "p":
+    previews = [_candidate_preview(candidate, result, flight_log)
+                for candidate in nearby]
+    while True:
+        if nearby:
+            print("\nNearby EdgeTX CSV candidates:")
+            for number, (candidate, (_, _, hint)) in enumerate(
+                    zip(nearby, previews), start=1):
+                print(f"{number}. {candidate.name}\n   {hint}")
         try:
-            choice = input("EdgeTX CSV path: ").strip()
+            choice = input(
+                "\nOptional EdgeTX CSV [Enter=skip, A=auto, number, P=path]: "
+            ).strip()
         except (EOFError, OSError):
             return None
         if not choice:
             return None
-    elif choice.isdigit() and 1 <= int(choice) <= len(nearby):
-        choice = str(nearby[int(choice) - 1])
-    try:
-        session = read_edgetx_csv(choice)
-        return analyse_edgetx(result, flight_log, session, explicit=True)
-    except (OSError, UnicodeError, ValueError) as exc:
-        return f"CSV unavailable: {exc}"
+        if choice.casefold() == "a":
+            eligible = [automatic for _, automatic, _ in previews
+                        if automatic is not None
+                        and automatic.pairing == "accepted automatic"]
+            if len(eligible) == 1:
+                return eligible[0]
+            print(
+                "EdgeTX note: Auto could not choose uniquely "
+                f"({len(eligible)} eligible candidates). "
+                "Choose a number, P for a path, or Enter to skip."
+            )
+            continue
+        if choice.casefold() == "p":
+            try:
+                choice = input("EdgeTX CSV path: ").strip()
+            except (EOFError, OSError):
+                return None
+            if not choice:
+                continue
+        elif choice.isdigit():
+            number = int(choice)
+            if not 1 <= number <= len(nearby):
+                print("Invalid CSV candidate number.")
+                continue
+            session, _, hint = previews[number - 1]
+            if session is None:
+                print(f"EdgeTX note: {hint}")
+                continue
+            return analyse_edgetx(result, flight_log, session, explicit=True)
+        try:
+            session = read_edgetx_csv(choice)
+            return analyse_edgetx(result, flight_log, session, explicit=True)
+        except (OSError, UnicodeError, ValueError) as exc:
+            return f"CSV unavailable: {exc}"
 
 
 class RadioLinkAnalysisPresentation:
