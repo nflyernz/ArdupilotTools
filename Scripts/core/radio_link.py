@@ -16,6 +16,21 @@ class Position:
 
 
 @dataclass
+class FailsafeTiming:
+    """Configured values and qualified observations, not firmware timer state."""
+
+    rc_timeout_s: float | None = None
+    long_timeout_s: float | None = None
+    long_timeout_at_action_s: float | None = None
+    previous_valid: Position | None = None
+    invalid_to_short_s: float | None = None
+    short_to_long_s: float | None = None
+    candidate_long_age_s: tuple[float, float] | None = None
+    assessment: str = "Insufficient evidence"
+    reason: str | None = None
+
+
+@dataclass
 class FailsafeEpisode:
     """Separate sampled-input and firmware-action evidence for one episode."""
 
@@ -38,6 +53,7 @@ class FailsafeEpisode:
     throttle: str | None = None
     suppression: str | None = None
     cause: str | None = None
+    timing: FailsafeTiming | None = None
     left_censored: bool = False
     warnings: list[str] = field(default_factory=list)
 
@@ -408,6 +424,130 @@ def _qualify_timeout_path(episodes, log, rci2, rcin):
             episode.cause = "RC-input timeout path supported; exact last frame/RF cause unknown"
 
 
+def _positive_parameter(history, name, time_us):
+    value = history.value_at(name, time_us)
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
+def _parameter_changed(history, names, begin_us, end_us):
+    return any(
+        begin_us <= change.time_us <= end_us
+        for name in names
+        for change in history.changes.get(name, ())
+    )
+
+
+def _annotate_timing(episodes, log, rci2):
+    """Compare only a qualified sampled timeout path with shared-origin timing."""
+    history = log.parameter_history
+    for episode in episodes:
+        first = episode.first
+        if first is None:
+            continue
+        timing = FailsafeTiming(
+            rc_timeout_s=_positive_parameter(history, "RC_FS_TIMEOUT", first.time_us),
+            long_timeout_s=_positive_parameter(history, "FS_LONG_TIMEOUT", first.time_us),
+            long_timeout_at_action_s=(
+                _positive_parameter(history, "FS_LONG_TIMEOUT", episode.long_on.time_us)
+                if episode.long_on else None
+            ),
+        )
+        episode.timing = timing
+        if episode.start and episode.short_on:
+            timing.invalid_to_short_s = (
+                episode.short_on.time_us - episode.start.time_us
+            ) / 1e6
+        if episode.short_on and episode.long_on:
+            timing.short_to_long_s = (
+                episode.long_on.time_us - episode.short_on.time_us
+            ) / 1e6
+        if timing.rc_timeout_s is None or timing.long_timeout_s is None:
+            timing.reason = "relevant PARM value unavailable"
+            continue
+        if episode.start is None or episode.cause is None:
+            timing.reason = "sampled timeout-path boundary unavailable"
+            continue
+        if episode.armed not in ("armed throughout", "armed at start"):
+            timing.reason = "armed-state scope is uncertain"
+            continue
+        channel = _integer(history.value_at("RCMAP_THROTTLE", first.time_us))
+        if channel is None or history.value_at(f"RC{channel}_REVERSED", first.time_us) != 0:
+            timing.reason = "throttle direction unavailable or reversed"
+            continue
+        index = next(
+            (i for i, (position, _) in enumerate(rci2) if position == episode.start),
+            None,
+        )
+        if index is None or index == 0:
+            timing.reason = "preceding valid RCI2 sample unavailable"
+            continue
+        previous, previous_row = rci2[index - 1]
+        flags = _integer(previous_row.get("Flags"))
+        if flags != 1 or _integer(previous_row.get("OMask")) != 0:
+            timing.reason = "preceding RCI2 sample is not unambiguous valid input"
+            continue
+        timing.previous_valid = previous
+        sample_gap_s = (episode.start.time_us - previous.time_us) / 1e6
+        if sample_gap_s <= 0 or sample_gap_s > 0.08:
+            timing.reason = "RCI2 transition sampling gap exceeds two nominal 25 Hz periods"
+            continue
+        end = episode.long_on or episode.revalid
+        if end is None or episode.short_on is None:
+            timing.reason = "firmware action or recovery boundary unavailable"
+            continue
+        if episode.short_on > end or (episode.long_on and episode.long_on < episode.short_on):
+            timing.reason = "firmware action ordering conflicts with sampled interval"
+            continue
+        if episode.long_on and episode.revalid and episode.revalid <= episode.long_on:
+            timing.reason = "long action follows sampled input revalidation"
+            continue
+        effective_rc_timeout_s = max(timing.rc_timeout_s, 0.1)
+        origin_earliest_us = previous.time_us - effective_rc_timeout_s * 1e6
+        origin_latest_us = episode.start.time_us - effective_rc_timeout_s * 1e6
+        relevant = (
+            "RC_FS_TIMEOUT", "FS_LONG_TIMEOUT", "THR_FAILSAFE", "THR_FS_VALUE",
+            "FS_SHORT_ACTN", "FS_GCS_ENABL", "RCMAP_THROTTLE", "RC_OPTIONS",
+            f"RC{channel}_REVERSED",
+        )
+        if _parameter_changed(history, relevant, origin_earliest_us, end.time_us):
+            timing.reason = "relevant parameter changed during candidate timing interval"
+            continue
+        if any(
+            (_integer(row.get("Flags")) not in (1, 2)
+             or _integer(row.get("OMask")) != 0)
+            for position, row in rci2
+            if previous <= position <= end
+        ):
+            timing.reason = "conflicting RC validity, protocol or override evidence"
+            continue
+        if episode.long_on:
+            low_age = (end.time_us - origin_latest_us) / 1e6
+            high_age = (end.time_us - origin_earliest_us) / 1e6
+            timing.candidate_long_age_s = (low_age, high_age)
+            # This is a *nominal compatibility* window, never a hard bound on
+            # scheduler or logger latency and never an inconsistent verdict.
+            nominal_late_s = 1 / 3 + sample_gap_s
+            if (
+                low_age >= timing.long_timeout_s
+                and high_age <= timing.long_timeout_s + nominal_late_s
+            ):
+                timing.assessment = "Compatible with configured timing"
+                timing.reason = "candidate last-valid origin; uninterrupted timeout path assumed"
+            else:
+                timing.reason = "outside nominal check window; delay/origin cannot be verified"
+        elif episode.revalid:
+            latest_possible_age = (end.time_us - origin_earliest_us) / 1e6
+            if latest_possible_age < timing.long_timeout_s:
+                timing.assessment = "Compatible with configured timing"
+                timing.reason = "sampled revalidation precedes candidate long threshold"
+            else:
+                timing.reason = "absence of long MSG cannot establish timer behaviour"
+
+
 class RadioLinkDetector:
     """Detect BIN-backed Plane RC failsafe without requiring a flight window."""
 
@@ -429,5 +569,6 @@ class RadioLinkDetector:
         _arm_state(result.episodes, arm, stat)
         _commanded_throttle(result.episodes, log, rcou, stat)
         _qualify_timeout_path(result.episodes, log, rci2, rcin)
+        _annotate_timing(result.episodes, log, rci2)
         result.omitted_unarmed = sum(ep.armed == "disarmed at start" for ep in result.episodes)
         return result

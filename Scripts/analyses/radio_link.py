@@ -17,6 +17,51 @@ def _duration(seconds):
     return f"{seconds:.3f} s" if seconds is not None else "unavailable"
 
 
+def _configured_seconds(value):
+    return f"{value:g} s" if value is not None else "unavailable"
+
+
+def _timing_lines(episode):
+    timing = episode.timing
+    if timing is None:
+        return []
+    lines = [
+        "   Configured (PARM at episode onset): "
+        f"RC_FS_TIMEOUT {_configured_seconds(timing.rc_timeout_s)}; "
+        f"FS_LONG_TIMEOUT {_configured_seconds(timing.long_timeout_s)}"
+    ]
+    if (
+        episode.long_on
+        and timing.long_timeout_at_action_s != timing.long_timeout_s
+    ):
+        lines.append(
+            "   FS_LONG_TIMEOUT at long MSG: "
+            f"{_configured_seconds(timing.long_timeout_at_action_s)}"
+        )
+    observations = []
+    if timing.previous_valid and episode.start:
+        observations.append(
+            f"valid→invalid RCI2 {_time(timing.previous_valid)}–{_time(episode.start)}"
+        )
+    if timing.invalid_to_short_s is not None:
+        observations.append(f"invalid→short MSG {timing.invalid_to_short_s:.2f} s")
+    if timing.short_to_long_s is not None:
+        observations.append(f"short→long MSG {timing.short_to_long_s:.2f} s")
+    if observations:
+        lines.append("   Observed (BIN): " + "; ".join(observations))
+    if timing.candidate_long_age_s:
+        low, high = timing.candidate_long_age_s
+        lines.append(
+            "   Candidate long age from last-valid interval: "
+            f"{low:.2f}–{high:.2f} s (inferred, not an exact RC-frame time)"
+        )
+    explanation = f"; {timing.reason}" if timing.reason else ""
+    lines.append(f"   Timing assessment: {timing.assessment}{explanation}")
+    if timing.short_to_long_s is not None:
+        lines.append("   Long timeout starts at last acceptable RC input, not short MSG.")
+    return lines
+
+
 def format_radio_link_report(result, log_path):
     """Present each evidence layer without turning BIN state into RF claims."""
     armed = [episode for episode in result.episodes if episode.armed.startswith("armed")]
@@ -98,6 +143,7 @@ def format_radio_link_report(result, log_path):
             lines.append(f"   Throttle command (aircraft BIN): {episode.throttle}")
         if episode.cause:
             lines.append(f"   Cause evidence (aircraft BIN): {episode.cause}")
+        lines.extend(_timing_lines(episode))
         if episode.suppression:
             lines.append(f"   {episode.suppression} (aircraft BIN)")
         if episode.start and not episode.revalid:
