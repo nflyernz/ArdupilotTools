@@ -1,9 +1,10 @@
-"""User-facing BIN-only Plane Radio Link / RC Failsafe review."""
+"""User-facing Plane Radio Link / RC Failsafe review with optional CSV."""
 
 from pathlib import Path
 
 from analyses.log_selector import select_log_input
 from core.config import Config
+from core.edgetx import analyse_edgetx, read_edgetx_csv
 from core.log_reader import FlightReader, UnsupportedFirmwareError
 from core.radio_link import RadioLinkDetector
 from core.time import format_time_us
@@ -166,8 +167,125 @@ def format_radio_link_report(result, log_path):
     return "\n".join(lines)
 
 
+def format_edgetx_overlay(overlay):
+    """Append only provenance-labelled transmitter evidence to the BIN report."""
+    lines = ["", f"EdgeTX CSV — {overlay.session.path.name}",
+             f"Pairing: {overlay.pairing}; alignment: {overlay.alignment.status}"]
+    if overlay.pairing == "unpaired":
+        return "\n".join([*lines, *(f"EdgeTX note: {note}" for note in overlay.warnings)])
+    alignment = overlay.alignment
+    lines.append(
+        "EdgeTX CSV radio-clock span: "
+        f"{overlay.session.rows[0].clock.isoformat(sep=' ', timespec='milliseconds')}"
+        " to "
+        f"{overlay.session.rows[-1].clock.isoformat(sep=' ', timespec='milliseconds')}"
+    )
+    if alignment.offset_s is not None:
+        lines.append(
+            "EdgeTX clock: aircraft GPS time minus radio clock approximately "
+            f"{alignment.offset_s:.0f} s; "
+            + ("numeric bound established" if alignment.status == "bounded" else
+               "coarse; exact RF timing unbounded")
+        )
+    if alignment.anchor_offsets_s:
+        lines.append(
+            "EdgeTX alignment landmarks: "
+            f"{alignment.anchors} {alignment.reason}; observed offset range "
+            f"{min(alignment.anchor_offsets_s):.1f}–"
+            f"{max(alignment.anchor_offsets_s):.1f} s"
+            + (" (diagnostic spread, not an uncertainty bound)"
+               if alignment.status == "coarse" else " (bounded anchor intervals)")
+        )
+    for field, label, unit in (
+        ("RQly(%)", "RQly", "%"), ("1RSS(dB)", "1RSS", " dBm"),
+        ("2RSS(dB)", "2RSS", " dBm"), ("RSNR(dB)", "RSNR", " dB"),
+    ):
+        bounds = overlay.session.extrema(field)
+        if bounds:
+            lines.append(
+                f"EdgeTX CSV session observed {label}: {bounds[0]:g}–{bounds[1]:g}{unit} "
+                "(receiver-reported; values may be held between rows)"
+            )
+    for field, label, unit in (("RFMD", "RFMD index", ""),
+                               ("TPWR(mW)", "TPWR", " mW")):
+        values = sorted({value for row in overlay.session.rows
+                         if (value := row.observed(field)) is not None})
+        if values:
+            display = ", ".join(f"{value:g}" for value in values[:8])
+            qualifier = (
+                " (reported mode index; packet rate unverified)" if field == "RFMD"
+                else " (telemetry-reported; not measured radiated power or configuration)"
+            )
+            lines.append(
+                f"EdgeTX CSV observed {label}: {display}{unit}{qualifier}"
+                + (" (additional values omitted)" if len(values) > 8 else "")
+            )
+    gaps = [run for run in overlay.session.runs if run.availability == "unavailable"
+            and run.count >= 2]
+    if gaps:
+        lines.append(f"EdgeTX CSV telemetry-unavailable runs: {len(gaps)}; "
+                     "zero/blank placeholders excluded from RF measurements")
+    for index, context in sorted(overlay.episode_context.items()):
+        lines.append(f"Aircraft BIN episode #{index}: {context}")
+    for index, fields in sorted(overlay.episode_rf.items()):
+        details = "; ".join(
+            f"{name} {low:g}–{high:g}" for name, (low, high) in fields.items()
+        )
+        lines.append(f"Aircraft BIN episode #{index}: EdgeTX CSV observed {details}; "
+                     "bounded clock and sample age; BIN boundaries unchanged")
+    if not overlay.episode_rf:
+        lines.append("EdgeTX CSV numeric RF observations are session-level only; "
+                     "episode-specific RF aggregation unavailable.")
+    for warning in overlay.warnings:
+        lines.append(f"EdgeTX note: {warning}")
+    return "\n".join(lines)
+
+
+def _optional_csv(path, result, flight_log):
+    """Keep CSV selection local to Radio Link; Enter preserves BIN-only use."""
+    nearby = sorted(path.parent.glob("*.csv"))
+    if nearby:
+        print("\nNearby EdgeTX CSV candidates:")
+        for number, candidate in enumerate(nearby, start=1):
+            print(f"{number}. {candidate.name}")
+    try:
+        choice = input("\nOptional EdgeTX CSV [Enter=skip, A=auto, number, P=path]: ").strip()
+    except (EOFError, OSError):
+        return None
+    if not choice:
+        return None
+    if choice.casefold() == "a":
+        candidates = []
+        for candidate in nearby:
+            try:
+                session = read_edgetx_csv(candidate)
+            except (OSError, UnicodeError, ValueError):
+                continue
+            overlay = analyse_edgetx(result, flight_log, session, explicit=False)
+            if overlay.pairing == "accepted automatic":
+                candidates.append(overlay)
+        if len(candidates) == 1:
+            return candidates[0]
+        return ("automatic pairing ambiguous: "
+                f"{len(candidates)} accepted CSV candidates; supply a path explicitly")
+    if choice.casefold() == "p":
+        try:
+            choice = input("EdgeTX CSV path: ").strip()
+        except (EOFError, OSError):
+            return None
+        if not choice:
+            return None
+    elif choice.isdigit() and 1 <= int(choice) <= len(nearby):
+        choice = str(nearby[int(choice) - 1])
+    try:
+        session = read_edgetx_csv(choice)
+        return analyse_edgetx(result, flight_log, session, explicit=True)
+    except (OSError, UnicodeError, ValueError) as exc:
+        return f"CSV unavailable: {exc}"
+
+
 class RadioLinkAnalysisPresentation:
-    """Select one log and render BIN-only RC-failsafe evidence."""
+    """Select a BIN, then optionally append EdgeTX session evidence."""
 
     def __init__(self, config=None):
         self.config = config or Config("Config/radio_link.yaml")
@@ -184,3 +302,8 @@ class RadioLinkAnalysisPresentation:
             return
         result = RadioLinkDetector().detect(flight_log)
         print("\n" + format_radio_link_report(result, path))
+        overlay = _optional_csv(path, result, flight_log)
+        if isinstance(overlay, str):
+            print(f"EdgeTX note: {overlay}")
+        elif overlay is not None:
+            print(format_edgetx_overlay(overlay))
