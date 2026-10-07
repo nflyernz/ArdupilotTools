@@ -162,6 +162,16 @@ def test_four_recoveries_create_four_episodes_including_short_only_rtl():
     assert episodes[1].long_mode[1] == "RTL"
     assert all(ep.short_mode is None and ep.mode_at_start == "RTL" for ep in episodes[2:])
     assert all(ep.armed == "armed throughout" for ep in episodes)
+    report = _report(result)
+    assert report.count("Failsafe configuration (PARM at reported episode onset)") == 1
+    assert report.count("Short timeout (RC_FS_TIMEOUT): 1 s") == 1
+    assert report.count("Long timeout (FS_LONG_TIMEOUT): 10 s") == 1
+    assert report.count("Episode #") == 4
+    assert all(f"({duration})" in report for duration in
+               ("3.100 s", "10.000 s", "2.100 s"))
+    assert "Short failsafe (MSG): 00:32.100 while already RTL; no MODE change observed" in report
+    assert "Recovery MODE: MANUAL" in report
+    assert "Mode at clear: RTL" in report
 
 
 def test_valid_rc_throughout_has_no_episode_or_rf_health_verdict():
@@ -198,7 +208,7 @@ def test_open_episode_has_no_invented_recovery_or_completed_duration():
     assert episode.action_duration_s is None
     assert episode.armed == "armed at start"
     report = _report(result)
-    assert "Input invalid (RCI2 sampled): 00:10.000–?; unavailable" in report
+    assert "RC input invalid (RCI2 sampled): 00:10.000–? (unavailable)" in report
     assert "episode open at log boundary" in report
     assert "00:40.000" not in report
 
@@ -342,8 +352,10 @@ def test_commanded_throttle_uses_only_interval_samples_and_never_claims_motor_st
     assert "configured minimum" not in episode.throttle
     assert episode.suppression == "STAT.Sup sampled 1"
     report = _report(result)
-    assert "Throttle command (aircraft BIN)" in report
-    assert "motor activity unknown" in report
+    assert "Commanded throttle PWM (sampled input-invalid span): 1100–1200 µs" in report
+    assert "Physical motor activity: Not measurable from BIN" in report
+    assert "Throttle output channel: RCOU.C3" in report
+    assert "STAT.Sup sampled 1 (aircraft BIN)" in report.split("Notes")[-1]
     assert "motor running" not in report.lower()
     assert "1900" not in report and "1300" not in report
 
@@ -442,9 +454,13 @@ def test_timing_uses_shared_last_valid_origin_not_short_msg():
     assert timing.candidate_long_age_s == pytest.approx((10.039576, 10.079189))
     assert timing.assessment == "Compatible with configured timing"
     report = _report(result)
-    assert "RC_FS_TIMEOUT 1 s; FS_LONG_TIMEOUT 10 s" in report
-    assert "short→long MSG 8.84 s" in report
+    assert "Short timeout (RC_FS_TIMEOUT): 1 s" in report
+    assert "Long timeout (FS_LONG_TIMEOUT): 10 s" in report
+    assert "Short → long MSG: 8.84 s" in report
+    assert "Candidate last-valid RC → long MSG: 10.04–10.08 s" in report
     assert "Long timeout starts at last acceptable RC input, not short MSG" in report
+    assert "Exact physical RF-loss instant: Not measurable" in report
+    assert "Fresh RXLQ minimum: Not available from BIN" in report
     assert "Inconsistent" not in report
 
 
@@ -482,7 +498,7 @@ def test_timing_missing_parameter_does_not_invent_configuration():
     timing = result.episodes[0].timing
     assert timing.long_timeout_s is None
     assert timing.assessment == "Insufficient evidence"
-    assert "FS_LONG_TIMEOUT unavailable" in _report(result)
+    assert "Long timeout (FS_LONG_TIMEOUT): unavailable" in _report(result)
 
 
 def test_timing_uses_event_time_parameter_and_rejects_mid_interval_change():
@@ -500,7 +516,10 @@ def test_timing_uses_event_time_parameter_and_rejects_mid_interval_change():
     assert timing.long_timeout_at_action_s == 12
     assert timing.assessment == "Insufficient evidence"
     assert "changed during candidate timing interval" in timing.reason
-    assert "FS_LONG_TIMEOUT at long MSG: 12 s" in _report(result)
+    report = _report(result)
+    assert "FS_LONG_TIMEOUT at long MSG: 12 s" in report
+    assert "Failsafe configuration (PARM at reported episode onset)" not in report
+    assert "Configuration at episode onset (PARM):" in report
     assert result.episodes[0].start.time_us == 55_367_174
 
     later = _detect(
@@ -512,6 +531,33 @@ def test_timing_uses_event_time_parameter_and_rejects_mid_interval_change():
     ).episodes[0].timing
     assert later.long_timeout_s == 12
     assert later.assessment == "Compatible with configured timing"
+
+
+def test_report_keeps_different_event_time_configuration_with_each_episode():
+    history = ParameterHistory(
+        {
+            "SERVO3_FUNCTION": 70, "SERVO3_MIN": 1100,
+            "RC_FS_TIMEOUT": 1, "FS_LONG_TIMEOUT": 10,
+        },
+        {"FS_LONG_TIMEOUT": (ParameterChange(15_000_000, 12),)},
+    )
+    result = _detect(
+        arm(1_000_000, 1), rc(2_000_000, 1),
+        rc(10_000_000, 2), msg(10_100_000, "RC Short Failsafe On"),
+        rc(12_000_000, 1), msg(12_100_000, "RC Short Failsafe Cleared"),
+        rc(20_000_000, 2), msg(20_100_000, "RC Short Failsafe On"),
+        rc(22_000_000, 1), msg(22_100_000, "RC Short Failsafe Cleared"),
+        history=history,
+    )
+    report = _report(result)
+    first, second = report.split("Episode #1 — RC failsafe")[1].split(
+        "Episode #2 — RC failsafe"
+    )
+    assert "Failsafe configuration (PARM at reported episode onset)" not in report
+    assert report.count("Configuration at episode onset (PARM):") == 2
+    assert "Long timeout (FS_LONG_TIMEOUT): 10 s" in first
+    assert "Long timeout (FS_LONG_TIMEOUT): 12 s" in second
+    assert "Long failsafe: No long MSG assertion observed" in first
 
 
 def test_late_long_observation_is_not_declared_inconsistent():
