@@ -9,6 +9,8 @@ import pandas as pd
 import pytest
 from core.edgetx import (
     AlignmentAnchor,
+    EdgeTxAlignment,
+    EdgeTxOverlay,
     analyse_edgetx,
     bounded_alignment,
     gps_clock_from_flight,
@@ -323,7 +325,7 @@ def test_auto_failure_can_be_skipped_without_selecting_csv(tmp_path, monkeypatch
     assert presentation._optional_csv(
         tmp_path / "aircraft.bin", _result((10.2, 10.8)), _flight(),
     ) is None
-    assert "Auto could not choose uniquely (0 eligible candidates)" in capsys.readouterr().out
+    assert "Auto found no eligible candidate." in capsys.readouterr().out
 
 
 def test_candidate_hints_do_not_promote_preview_to_pairing_or_rf_claim(
@@ -402,13 +404,56 @@ def test_presentation_labels_bin_and_csv_provenance_without_numeric_episode_clai
     result = _result((10, 14))
     overlay = analyse_edgetx(result, _flight(), session, local_zone=timezone.utc)
     report = presentation.format_edgetx_overlay(overlay)
-    assert "EdgeTX CSV session observed RQly" in report
-    assert "episode-specific RF aggregation unavailable" in report
-    assert "EdgeTX CSV radio-clock span" in report
+    assert "Session RF observations (EdgeTX CSV)" in report
+    assert "Lowest RQly:" in report
+    assert "No episode-specific RF minima established" in report
+    assert "CSV radio-clock span" in report
     assert "diagnostic spread, not an uncertainty bound" in report
-    assert "packet rate unverified" in report
+    assert "not a verified packet rate" in report
     assert "not measured radiated power or configuration" in report
     assert "2RSS" not in report
+
+
+def test_session_minima_and_qualified_episode_context_remain_separate(tmp_path):
+    session = read_edgetx_csv(_write(tmp_path, [
+        _row(0, quality=100, rssi=-105, snr=0),
+        _row(1, quality=82, rssi=-110, snr=-4),
+        _gap(2), _gap(3),
+        _row(4, quality=3, rssi=-115, snr=-6),
+    ]))
+    overlay = EdgeTxOverlay(
+        session, "accepted explicit",
+        EdgeTxAlignment("coarse", 3461, sensitivity_s=3,
+                        reason="aircraft GPS coordinate echoes", anchors=9),
+        episode_context={
+            1: ("EdgeTX CSV telemetry unavailable throughout projected BIN episode "
+                "under ±3 s offset sensitivity (not a proven bound); "
+                "not a measured RF-loss interval; "
+                "EdgeTX CSV pre-episode lead-in (final 30 s before telemetry "
+                "disappearance): RQly 82–100%, 1RSS -110–-105 dBm; "
+                "values may be held"),
+            3: ("EdgeTX CSV telemetry return near projected BIN recovery; "
+                "numeric RF episode membership withheld"),
+        },
+    )
+    report = presentation.format_edgetx_overlay(overlay)
+    session_text = report.split("Episode #1 — EdgeTX CSV")[0]
+    episode_one = report.split("Episode #1 — EdgeTX CSV")[1].split(
+        "Episode #3 — EdgeTX CSV"
+    )[0]
+    assert "Lowest RQly: 3%" in session_text
+    assert "Weakest 1RSS: -115 dBm" in session_text
+    assert "Lowest RSNR: -6 dB" in session_text
+    assert "RQly: 82–100%" in episode_one
+    assert "1RSS: -110–-105 dBm" in episode_one
+    assert "Unavailable throughout the projected aircraft failsafe" in episode_one
+    assert "not a proven timing bound" in episode_one
+    assert "RF at the exact aircraft failsafe trigger: Not measurable" in episode_one
+    assert "-115" not in episode_one
+    assert "Telemetry returned near the projected aircraft recovery" in report
+    assert "RF values for this episode cannot be determined reliably" in report
+    assert "No episode-specific RF minima established" in report
+    assert "not measured failsafe thresholds" in report
 
 
 def test_radio_link_menu_path_accepts_optional_csv_after_bin_report(
@@ -432,7 +477,7 @@ def test_radio_link_menu_path_accepts_optional_csv_after_bin_report(
     presentation.RadioLinkAnalysisPresentation(config=object()).run()
     output = capsys.readouterr().out
     assert "Radio Link / RC Failsafe" in output
-    assert "EdgeTX CSV — radio.csv" in output
+    assert "EdgeTX — radio.csv" in output
     assert "Armed RC-failsafe episodes: 1" in output
 
 
