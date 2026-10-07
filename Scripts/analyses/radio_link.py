@@ -23,56 +23,101 @@ def _configured_seconds(value):
     return f"{value:g} s" if value is not None else "unavailable"
 
 
-def _timing_lines(episode):
+def _common_configuration(episodes):
+    """Collapse only complete, unchanged event-time values in reported episodes."""
+    if not episodes or any(episode.timing is None for episode in episodes):
+        return None
+    timings = [episode.timing for episode in episodes]
+    values = {(timing.rc_timeout_s, timing.long_timeout_s)
+              for timing in timings}
+    if len(values) != 1 or None in next(iter(values)):
+        return None
+    if any(episode.long_on and timing.long_timeout_at_action_s != timing.long_timeout_s
+           for episode, timing in zip(episodes, timings)):
+        return None
+    return next(iter(values))
+
+
+def _configuration_lines(rc_timeout, long_timeout, *, indent="  "):
+    return [
+        f"{indent}Short timeout (RC_FS_TIMEOUT): {_configured_seconds(rc_timeout)}",
+        f"{indent}Long timeout (FS_LONG_TIMEOUT): {_configured_seconds(long_timeout)}",
+    ]
+
+
+def _timing_lines(episode, *, show_configuration):
     timing = episode.timing
     if timing is None:
         return []
-    lines = [
-        "   Configured (PARM at episode onset): "
-        f"RC_FS_TIMEOUT {_configured_seconds(timing.rc_timeout_s)}; "
-        f"FS_LONG_TIMEOUT {_configured_seconds(timing.long_timeout_s)}"
-    ]
+    lines = ["", "Failsafe timing"]
+    if show_configuration:
+        lines.append("  Configuration at episode onset (PARM):")
+        lines.extend(_configuration_lines(timing.rc_timeout_s, timing.long_timeout_s,
+                                          indent="    "))
     if (
         episode.long_on
         and timing.long_timeout_at_action_s != timing.long_timeout_s
     ):
         lines.append(
-            "   FS_LONG_TIMEOUT at long MSG: "
+            "  FS_LONG_TIMEOUT at long MSG: "
             f"{_configured_seconds(timing.long_timeout_at_action_s)}"
         )
-    observations = []
     if timing.previous_valid and episode.start:
-        observations.append(
-            f"valid→invalid RCI2 {_time(timing.previous_valid)}–{_time(episode.start)}"
+        lines.append(
+            "  Last valid → invalid (RCI2 sampled): "
+            f"{_time(timing.previous_valid)}–{_time(episode.start)}"
         )
     if timing.invalid_to_short_s is not None:
-        observations.append(f"invalid→short MSG {timing.invalid_to_short_s:.2f} s")
+        lines.append(
+            f"  Invalid RCI2 → short MSG: {timing.invalid_to_short_s:.2f} s"
+        )
     if timing.short_to_long_s is not None:
-        observations.append(f"short→long MSG {timing.short_to_long_s:.2f} s")
-    if observations:
-        lines.append("   Observed (BIN): " + "; ".join(observations))
+        lines.append(f"  Short → long MSG: {timing.short_to_long_s:.2f} s")
+    elif episode.short_on and not episode.long_on:
+        lines.append("  Long failsafe: No long MSG assertion observed")
     if timing.candidate_long_age_s:
         low, high = timing.candidate_long_age_s
         lines.append(
-            "   Candidate long age from last-valid interval: "
+            "  Candidate last-valid RC → long MSG: "
             f"{low:.2f}–{high:.2f} s (inferred, not an exact RC-frame time)"
         )
     explanation = f"; {timing.reason}" if timing.reason else ""
-    lines.append(f"   Timing assessment: {timing.assessment}{explanation}")
-    if timing.short_to_long_s is not None:
-        lines.append("   Long timeout starts at last acceptable RC input, not short MSG.")
+    lines.append(f"  Assessment: {timing.assessment}{explanation}")
     return lines
+
+
+def _throttle_lines(throttle):
+    """Keep the sampled PWM summary and its physical-motor limitation distinct."""
+    match = re.fullmatch(
+        r"RCOU\.C(\d+) ([\d–]+) µs \(([^)]+)\)"
+        r"(; configured minimum)?; motor activity unknown", throttle,
+    )
+    if match:
+        minimum = " (configured minimum)" if match[4] else ""
+        return ([
+            f"  Commanded throttle PWM ({match[3]}): {match[2]} µs{minimum}",
+            "  Physical motor activity: Not measurable from BIN",
+        ], f"  Throttle output channel: RCOU.C{match[1]} (aircraft BIN)")
+    return ([
+        f"  Throttle command (aircraft BIN): {throttle}",
+        "  Physical motor activity: Not measurable from BIN",
+    ], None)
 
 
 def format_radio_link_report(result, log_path):
     """Present each evidence layer without turning BIN state into RF claims."""
     armed = [episode for episode in result.episodes if episode.armed.startswith("armed")]
     uncertain = [episode for episode in result.episodes if episode.armed == "unknown"]
+    reported = [*armed, *uncertain]
     lines = [
         f"Radio Link / RC Failsafe — {Path(log_path).name}",
         f"Firmware: {result.firmware}",
         f"Armed RC-failsafe episodes: {len(armed)}",
     ]
+    common_configuration = _common_configuration(reported)
+    if common_configuration:
+        lines.extend(["", "Failsafe configuration (PARM at reported episode onset)"])
+        lines.extend(_configuration_lines(*common_configuration))
     if not armed:
         if uncertain:
             lines.append(
@@ -88,17 +133,19 @@ def format_radio_link_report(result, log_path):
                 f"No armed Plane RC-failsafe evidence found ({evidence}); "
                 "RF health not assessed."
             )
-    for number, episode in enumerate([*armed, *uncertain], start=1):
-        lines.append("")
+    for number, episode in enumerate(reported, start=1):
+        lines.extend(["", f"Episode #{number} — RC failsafe"])
         if episode.start:
             lines.append(
-                f"{number}  Input invalid (RCI2 sampled): "
-                f"{_time(episode.start)}–{_time(episode.revalid)}; "
-                f"{_duration(episode.input_duration_s)}; {episode.armed}"
+                "  RC input invalid (RCI2 sampled): "
+                f"{_time(episode.start)}–{_time(episode.revalid)} "
+                f"({_duration(episode.input_duration_s)})"
             )
         else:
             prefix = "left-censored" if episode.left_censored else "RCI2 unavailable"
-            lines.append(f"{number}  Input-invalid boundary {prefix}; {episode.armed}")
+            lines.append(f"  RC input-invalid boundary: {prefix}")
+        lines.append(f"  Armed state: {episode.armed}")
+        lines.extend(["", "Aircraft response"])
         if episode.short_on:
             if episode.short_mode:
                 response = f"→ {episode.short_mode[1]} (MODE, radio-failsafe reason)"
@@ -108,9 +155,9 @@ def format_radio_link_report(result, log_path):
                 response = f"while already {episode.mode_at_start}; no MODE change observed"
             else:
                 response = "MODE response unavailable"
-            lines.append(f"   Short (MSG) {_time(episode.short_on)} {response}")
+            lines.append(f"  Short failsafe (MSG): {_time(episode.short_on)} {response}")
         else:
-            lines.append("   Short assertion: MSG evidence unavailable")
+            lines.append("  Short assertion: MSG evidence unavailable")
         if episode.long_on:
             if episode.long_mode:
                 response = f"→ {episode.long_mode[1]} (MODE, radio-failsafe reason)"
@@ -118,40 +165,59 @@ def format_radio_link_report(result, log_path):
                 response = f"MSG claims → {episode.long_claim}; MODE record unavailable"
             else:
                 response = "MODE response unavailable"
-            lines.append(f"   Long (MSG) {_time(episode.long_on)} {response}")
+            lines.append(f"  Long failsafe (MSG): {_time(episode.long_on)} {response}")
         for position, mode in episode.unassigned_modes:
             lines.append(
-                f"   Radio-failsafe MODE: {mode} at {_time(position)}; short/long stage unknown"
+                f"  Radio-failsafe MODE: {mode} at {_time(position)}; short/long stage unknown"
             )
         if episode.revalid:
-            lines.append(f"   Input revalidated (RCI2 sampled) {_time(episode.revalid)}")
+            lines.append(f"  RC input revalidated (RCI2 sampled): {_time(episode.revalid)}")
         clear = episode.action_clear
         if clear:
             kind = "long" if episode.long_on else "short"
             lines.append(
-                f"   {kind.title()} cleared (MSG) {_time(clear)}; "
+                f"  {kind.title()} failsafe cleared (MSG): {_time(clear)}; "
                 f"action span {_duration(episode.action_duration_s)}"
             )
         elif episode.short_on or episode.long_on:
-            lines.append("   Firmware action clear unavailable; action duration unavailable")
+            lines.append("  Firmware action clear unavailable; action duration unavailable")
         if episode.recovery_mode:
             lines.append(
-                f"   Recovery MODE: {episode.recovery_mode[1]} "
+                f"  Recovery MODE: {episode.recovery_mode[1]} "
                 f"at {_time(episode.recovery_mode[0])}"
             )
         elif episode.mode_at_clear:
-            lines.append(f"   Mode at clear: {episode.mode_at_clear}")
+            lines.append(f"  Mode at clear: {episode.mode_at_clear}")
+        lines.extend(_timing_lines(episode, show_configuration=common_configuration is None))
+        notes = []
+        if episode.timing and episode.timing.short_to_long_s is not None:
+            notes.append(
+                "  Long timeout starts at last acceptable RC input, not short MSG."
+            )
         if episode.throttle:
-            lines.append(f"   Throttle command (aircraft BIN): {episode.throttle}")
+            output_lines, channel_note = _throttle_lines(episode.throttle)
+            lines.extend(["", "Aircraft outputs", *output_lines])
+            if channel_note:
+                notes.append(channel_note)
         if episode.cause:
-            lines.append(f"   Cause evidence (aircraft BIN): {episode.cause}")
-        lines.extend(_timing_lines(episode))
+            lines.extend(["", "Evidence"])
+            if episode.cause == (
+                "RC-input timeout path supported; exact last frame/RF cause unknown"
+            ):
+                lines.extend([
+                    "  RC-input timeout path supported (aircraft BIN)",
+                    "  Exact last RC frame / physical RF-loss cause: Not measurable",
+                ])
+            else:
+                lines.append(f"  Cause evidence (aircraft BIN): {episode.cause}")
         if episode.suppression:
-            lines.append(f"   {episode.suppression} (aircraft BIN)")
+            notes.append(f"  {episode.suppression} (aircraft BIN)")
         if episode.start and not episode.revalid:
-            lines.append("   Input-invalid episode open at log boundary; no recovery inferred")
+            notes.append("  Input-invalid episode open at log boundary; no recovery inferred")
         for warning in episode.warnings:
-            lines.append(f"   Evidence note: {warning}")
+            notes.append(f"  Evidence note: {warning}")
+        if notes:
+            lines.extend(["", "Notes", *notes])
     if result.omitted_unarmed:
         lines.append(f"Unarmed startup/episode evidence omitted: {result.omitted_unarmed}")
     if uncertain:
@@ -161,10 +227,13 @@ def format_radio_link_report(result, log_path):
         )
     for warning in result.warnings:
         lines.append(f"Evidence note: {warning}")
-    lines.append(
-        "RF-loss instant, motor activity, fresh RXLQ minimum and range "
-        "unavailable from BIN."
-    )
+    lines.extend([
+        "", "BIN limitations",
+        "  Exact physical RF-loss instant: Not measurable",
+        "  Physical motor activity: Not measurable",
+        "  Fresh RXLQ minimum: Not available from BIN",
+        "  Transmitter distance/range: Not available from BIN",
+    ])
     return "\n".join(lines)
 
 
