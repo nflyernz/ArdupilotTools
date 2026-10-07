@@ -1,6 +1,7 @@
 """User-facing Plane Radio Link / RC Failsafe review with optional CSV."""
 
 from pathlib import Path
+import re
 
 from analyses.log_selector import select_log_input
 from core.config import Config
@@ -167,77 +168,144 @@ def format_radio_link_report(result, log_path):
     return "\n".join(lines)
 
 
+def _episode_context_lines(context):
+    """Render the existing qualified context without deriving new event timing."""
+    lead_in = []
+    telemetry = []
+    other = []
+    for part in context.split("; "):
+        if part.startswith("EdgeTX CSV pre-episode lead-in "):
+            match = re.search(r": RQly (.+?)%, 1RSS (.+?) dBm$", part)
+            if match:
+                lead_in.extend([
+                    "  RF before telemetry loss (final 30 s before disappearance):",
+                    f"    RQly: {match[1]}%",
+                    f"    1RSS: {match[2]} dBm",
+                    "  These CSV values may have been held between updates.",
+                ])
+            else:
+                other.append(f"  Evidence: {part}")
+        elif part == "values may be held":
+            continue
+        elif part.startswith("EdgeTX CSV telemetry unavailable throughout "):
+            telemetry.append(
+                "  Telemetry: Unavailable throughout the projected aircraft "
+                "failsafe episode."
+            )
+            sensitivity = re.search(r"±([\d.]+) s offset sensitivity", part)
+            bound = re.search(r"±([\d.]+) s bounded offset", part)
+            if sensitivity:
+                telemetry.append(
+                    "  This holds when the coarse clock estimate is shifted by "
+                    f"±{sensitivity[1]} s; that test is not a proven timing bound."
+                )
+            elif bound:
+                telemetry.append(
+                    f"  Clock-offset uncertainty is bounded to ±{bound[1]} s."
+                )
+            else:
+                telemetry.append(f"  Evidence: {part}")
+            telemetry.append("  The telemetry gap is not a measured RF-loss interval.")
+        elif part.startswith("EdgeTX CSV telemetry return near projected BIN recovery"):
+            telemetry.append("  Telemetry returned near the projected aircraft recovery.")
+        elif part == "numeric RF episode membership withheld":
+            other.append("  RF values for this episode cannot be determined reliably.")
+        elif part != "not a measured RF-loss interval":
+            other.append(f"  Evidence: {part}")
+    return [*lead_in, *telemetry, *other]
+
+
 def format_edgetx_overlay(overlay):
-    """Append only provenance-labelled transmitter evidence to the BIN report."""
-    lines = ["", f"EdgeTX CSV — {overlay.session.path.name}",
-             f"Pairing: {overlay.pairing}; alignment: {overlay.alignment.status}"]
-    if overlay.pairing == "unpaired":
-        return "\n".join([*lines, *(f"EdgeTX note: {note}" for note in overlay.warnings)])
+    """Present transmitter observations beside, not as causes of, BIN events."""
+    pairing = {
+        "accepted explicit": "Explicit",
+        "accepted automatic": "Automatic",
+        "paired but unaligned": "Explicit; session evidence insufficient for alignment",
+        "unpaired": "Not established",
+    }.get(overlay.pairing, overlay.pairing)
     alignment = overlay.alignment
-    lines.append(
-        "EdgeTX CSV radio-clock span: "
-        f"{overlay.session.rows[0].clock.isoformat(sep=' ', timespec='milliseconds')}"
-        " to "
-        f"{overlay.session.rows[-1].clock.isoformat(sep=' ', timespec='milliseconds')}"
-    )
+    lines = ["", f"EdgeTX — {overlay.session.path.name}",
+             f"Pairing: {pairing}", f"Alignment: {alignment.status.title()}"]
+    if overlay.pairing == "unpaired":
+        return "\n".join([*lines, *(f"Note: {note}" for note in overlay.warnings)])
     if alignment.offset_s is not None:
         lines.append(
-            "EdgeTX clock: aircraft GPS time minus radio clock approximately "
-            f"{alignment.offset_s:.0f} s; "
-            + ("numeric bound established" if alignment.status == "bounded" else
-               "coarse; exact RF timing unbounded")
+            f"Radio clock difference: aircraft GPS time minus radio clock "
+            f"~{alignment.offset_s:.0f} s"
         )
-    if alignment.anchor_offsets_s:
-        lines.append(
-            "EdgeTX alignment landmarks: "
-            f"{alignment.anchors} {alignment.reason}; observed offset range "
-            f"{min(alignment.anchor_offsets_s):.1f}–"
-            f"{max(alignment.anchor_offsets_s):.1f} s"
-            + (" (diagnostic spread, not an uncertainty bound)"
-               if alignment.status == "coarse" else " (bounded anchor intervals)")
-        )
+
+    lines.extend(["", "Session RF observations (EdgeTX CSV)"])
     for field, label, unit in (
-        ("RQly(%)", "RQly", "%"), ("1RSS(dB)", "1RSS", " dBm"),
-        ("2RSS(dB)", "2RSS", " dBm"), ("RSNR(dB)", "RSNR", " dB"),
+        ("RQly(%)", "Lowest RQly", "%"),
+        ("1RSS(dB)", "Weakest 1RSS", " dBm"),
+        ("2RSS(dB)", "Weakest 2RSS", " dBm"),
+        ("RSNR(dB)", "Lowest RSNR", " dB"),
     ):
         bounds = overlay.session.extrema(field)
         if bounds:
             lines.append(
-                f"EdgeTX CSV session observed {label}: {bounds[0]:g}–{bounds[1]:g}{unit} "
-                "(receiver-reported; values may be held between rows)"
+                f"  {label}: {bounds[0]:g}{unit} "
+                f"(observed range {bounds[0]:g}–{bounds[1]:g}{unit})"
             )
-    for field, label, unit in (("RFMD", "RFMD index", ""),
-                               ("TPWR(mW)", "TPWR", " mW")):
+    for field, label, unit in (("RFMD", "RF mode index", ""),
+                               ("TPWR(mW)", "TX power reported", " mW")):
         values = sorted({value for row in overlay.session.rows
                          if (value := row.observed(field)) is not None})
         if values:
             display = ", ".join(f"{value:g}" for value in values[:8])
-            qualifier = (
-                " (reported mode index; packet rate unverified)" if field == "RFMD"
-                else " (telemetry-reported; not measured radiated power or configuration)"
-            )
-            lines.append(
-                f"EdgeTX CSV observed {label}: {display}{unit}{qualifier}"
-                + (" (additional values omitted)" if len(values) > 8 else "")
-            )
+            lines.append(f"  {label}: {display}{unit}"
+                         + (" (additional values omitted)" if len(values) > 8 else ""))
     gaps = [run for run in overlay.session.runs if run.availability == "unavailable"
             and run.count >= 2]
     if gaps:
-        lines.append(f"EdgeTX CSV telemetry-unavailable runs: {len(gaps)}; "
-                     "zero/blank placeholders excluded from RF measurements")
-    for index, context in sorted(overlay.episode_context.items()):
-        lines.append(f"Aircraft BIN episode #{index}: {context}")
-    for index, fields in sorted(overlay.episode_rf.items()):
-        details = "; ".join(
-            f"{name} {low:g}–{high:g}" for name, (low, high) in fields.items()
-        )
-        lines.append(f"Aircraft BIN episode #{index}: EdgeTX CSV observed {details}; "
-                     "bounded clock and sample age; BIN boundaries unchanged")
+        lines.append(f"\nTelemetry was unavailable {len(gaps)} times in this CSV session.")
+
+    for index in sorted(overlay.episode_context.keys() | overlay.episode_rf.keys()):
+        lines.extend(["", f"Episode #{index} — EdgeTX CSV"])
+        if index in overlay.episode_context:
+            lines.extend(_episode_context_lines(overlay.episode_context[index]))
+        if index in overlay.episode_rf:
+            fields = overlay.episode_rf[index]
+            details = "; ".join(
+                f"{name} {low:g}–{high:g}" for name, (low, high) in fields.items()
+            )
+            lines.append(f"  RF observed within bounded episode: {details}.")
+            lines.append("  Clock and sample-age bounds established; BIN boundaries unchanged.")
+        lines.append("  RF at the exact aircraft failsafe trigger: Not measurable from this CSV.")
     if not overlay.episode_rf:
-        lines.append("EdgeTX CSV numeric RF observations are session-level only; "
-                     "episode-specific RF aggregation unavailable.")
-    for warning in overlay.warnings:
-        lines.append(f"EdgeTX note: {warning}")
+        lines.append(
+            "\nNo episode-specific RF minima established. RF observations around "
+            "link loss are not measured failsafe thresholds."
+        )
+
+    lines.extend([
+        "", "Notes:",
+        "  RQly, RSSI and SNR are receiver-reported and may be held between CSV "
+        "rows; zero/blank telemetry placeholders are excluded from RF measurements.",
+        "  Aircraft BIN RXLQ may remain stale during complete link loss and is "
+        "not used as instantaneous RF evidence.",
+        "  RF mode is a reported index, not a verified packet rate; TX power is "
+        "telemetry-reported, not measured radiated power or configuration.",
+        "  CSV radio-clock span: "
+        f"{overlay.session.rows[0].clock.isoformat(sep=' ', timespec='milliseconds')}"
+        " to "
+        f"{overlay.session.rows[-1].clock.isoformat(sep=' ', timespec='milliseconds')}",
+    ])
+    if alignment.offset_s is not None:
+        lines.append(
+            "  Exact RF timing remains unbounded."
+            if alignment.status == "coarse" else
+            "  Numeric clock-offset bound established."
+        )
+    if alignment.anchor_offsets_s:
+        qualifier = ("diagnostic spread, not an uncertainty bound"
+                     if alignment.status == "coarse" else "bounded anchor intervals")
+        lines.append(
+            f"  Alignment: {alignment.anchors} {alignment.reason}; observed offset "
+            f"range {min(alignment.anchor_offsets_s):.1f}–"
+            f"{max(alignment.anchor_offsets_s):.1f} s ({qualifier})."
+        )
+    lines.extend(f"  {warning}" for warning in overlay.warnings)
     return "\n".join(lines)
 
 
@@ -301,11 +369,13 @@ def _optional_csv(path, result, flight_log):
                         and automatic.pairing == "accepted automatic"]
             if len(eligible) == 1:
                 return eligible[0]
-            print(
-                "EdgeTX note: Auto could not choose uniquely "
-                f"({len(eligible)} eligible candidates). "
-                "Choose a number, P for a path, or Enter to skip."
-            )
+            if eligible:
+                reason = ("Auto could not choose uniquely "
+                          f"({len(eligible)} eligible candidates).")
+            else:
+                reason = "Auto found no eligible candidate."
+            print(f"EdgeTX note: {reason} "
+                  "Choose a number, P for a path, or Enter to skip.")
             continue
         if choice.casefold() == "p":
             try:
