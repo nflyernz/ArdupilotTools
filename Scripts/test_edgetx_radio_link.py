@@ -337,9 +337,10 @@ def test_candidate_hints_do_not_promote_preview_to_pairing_or_rf_claim(
     _selection_in_utc(monkeypatch, ["1"])
     overlay = presentation._optional_csv(tmp_path / "aircraft.bin", result, _flight())
     output = capsys.readouterr().out
-    assert "2 aircraft GPS-coordinate landmarks" in output
-    assert "~3600 s aircraft/radio clock difference" in output
-    assert "GPS-coordinate candidate; explicit selection required" in output
+    normalized = " ".join(output.split())
+    assert "2 aircraft GPS-coordinate landmarks" in normalized
+    assert "~3600 s aircraft/radio clock difference" in normalized
+    assert "GPS-coordinate candidate; explicit selection required" in normalized
     assert "confirmed match" not in output
     assert "episode" not in output.lower()
     assert overlay.pairing == "accepted explicit"
@@ -446,18 +447,20 @@ def test_session_minima_and_qualified_episode_context_remain_separate(tmp_path):
     assert "Lowest RSNR: -6 dB" in session_text
     assert "RQly: 82–100%" in episode_one
     assert "1RSS: -110–-105 dBm" in episode_one
-    assert "Unavailable throughout the projected aircraft failsafe" in episode_one
+    assert "Unavailable throughout the projected aircraft RC-input loss" in episode_one
     assert "not a proven timing bound" in episode_one
-    assert "RF at the exact aircraft failsafe trigger: Not measurable" in episode_one
+    assert "RF at the aircraft RC-input event: Not measurable" in episode_one
     assert "-115" not in episode_one
-    assert "Telemetry returned near the projected aircraft recovery" in report
+    assert "Returned near projected aircraft RC-input recovery" in report
     assert "RF values for this episode cannot be determined reliably" in report
     assert "No episode-specific RF minima established" in report
     assert "not measured failsafe thresholds" in report
+    assert "Periods without usable telemetry: 1" in report
 
 
-def test_radio_link_menu_path_accepts_optional_csv_after_bin_report(
-    tmp_path, monkeypatch, capsys,
+@pytest.mark.parametrize("detail", ["", "y"])
+def test_radio_link_menu_path_accepts_optional_csv_after_either_bin_view(
+    tmp_path, monkeypatch, capsys, detail,
 ):
     csv_path = _write(tmp_path, _pattern_rows(gps=True))
     result = _result((10, 14))
@@ -473,12 +476,14 @@ def test_radio_link_menu_path_accepts_optional_csv_after_bin_report(
     monkeypatch.setattr(presentation, "select_log_input", lambda: [Path("synthetic.bin")])
     monkeypatch.setattr(presentation, "FlightReader", Reader)
     monkeypatch.setattr(presentation, "RadioLinkDetector", Detector)
-    monkeypatch.setattr("builtins.input", lambda _: str(csv_path))
+    responses = iter((detail, str(csv_path)))
+    monkeypatch.setattr("builtins.input", lambda _: next(responses))
     presentation.RadioLinkAnalysisPresentation(config=object()).run()
     output = capsys.readouterr().out
     assert "Radio Link / RC Failsafe" in output
     assert "EdgeTX — radio.csv" in output
-    assert "Armed RC-failsafe episodes: 1" in output
+    assert "RC-input loss episodes: 1 confirmed armed" in output
+    assert ("── Episode #1 — Aircraft BIN" in output) == (detail == "y")
 
 
 def test_skipping_csv_preserves_exact_bin_report(tmp_path, monkeypatch):

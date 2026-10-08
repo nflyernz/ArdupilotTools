@@ -1,14 +1,19 @@
 """Portable BIN-only Radio Link episode and presentation contracts."""
 
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 import analyse
 import analyses.radio_link as radio_presentation
+from analyses.presentation_text import wrap_report
 import pandas as pd
 import pytest
 from core.flight_data import FlightLog
 from core.params import ParameterChange, ParameterHistory
 from core.radio_link import RadioLinkDetector
+
+
+GPS_EPOCH = datetime(1980, 1, 6, tzinfo=timezone.utc)
 
 
 def arm(time, state):
@@ -82,6 +87,113 @@ def _detect(*events, **kwargs):
 
 def _report(result):
     return radio_presentation.format_radio_link_report(result, Path("synthetic.bin"))
+
+
+def _clock_log(start_utc, *, zero_week=False):
+    """Portable valid GPS wall time with an optional invalid startup week."""
+    rows = []
+    if zero_week:
+        rows.append({"TimeUS": 1_000_000, "I": 0, "U": 1, "Status": 3,
+                     "GWk": 0, "GMS": 0, "Lat": -35.35, "Lng": 174.10})
+    for seconds in (10, 20, 30):
+        gps_time = start_utc + timedelta(seconds=seconds + 18)
+        elapsed = gps_time - GPS_EPOCH
+        week = elapsed.days // 7
+        rows.append({
+            "TimeUS": seconds * 1_000_000, "I": 0, "U": 1, "Status": 3,
+            "GWk": week,
+            "GMS": int((elapsed - timedelta(weeks=week)).total_seconds() * 1000),
+            "Lat": -35.35 + seconds / 100000, "Lng": 174.10,
+        })
+    return FlightLog(
+        messages={"GPS": pd.DataFrame(rows),
+                  "RCI2": pd.DataFrame([{"TimeUS": 1_000_000, "Flags": 1}])},
+        metadata={"last_decoded_time_us": 61_000_000},
+    )
+
+
+@pytest.mark.parametrize(
+    ("instant", "zone", "local_hour"),
+    [
+        (datetime(2026, 10, 7, 22, 0, tzinfo=timezone.utc), "NZDT", "11:00:01"),
+        (datetime(2026, 6, 7, 22, 0, tzinfo=timezone.utc), "NZST", "10:00:01"),
+    ],
+)
+def test_recording_header_uses_valid_gps_and_explicit_nz_dst(
+    instant, zone, local_hour,
+):
+    flight = _clock_log(instant, zero_week=True)
+    header = "\n".join(radio_presentation._recording_lines(flight))
+    assert f"Recording start: {local_hour} {zone}" in header
+    assert "22:00:01 UTC" in header
+    assert "extrapolated before the first valid GPS fix" in header
+    assert "Log duration: 01:00.000 (first retained to last decoded BIN record)" in header
+    assert "1980" not in header
+
+
+def test_recording_header_without_absolute_gps_keeps_bin_duration():
+    flight = FlightLog(
+        messages={"RCI2": pd.DataFrame([{"TimeUS": 2_000_000, "Flags": 1}])},
+        metadata={"last_decoded_time_us": 12_000_000},
+    )
+    header = "\n".join(radio_presentation._recording_lines(flight))
+    assert "date/start: Unavailable" in header
+    assert "Log duration: 00:10.000" in header
+
+
+def test_recording_start_within_valid_gps_span_is_not_called_extrapolated():
+    flight = _clock_log(datetime(2026, 10, 7, 22, 0, tzinfo=timezone.utc))
+    flight.messages.pop("RCI2")
+    header = "\n".join(radio_presentation._recording_lines(flight))
+    assert "within the valid GPS observation span" in header
+    assert "extrapolated" not in header
+
+
+def test_summary_distinguishes_brief_rc_invalidity_from_msg_actions():
+    flight = _log(
+        arm(1_000_000, 1), rc(2_000_000, 1),
+        rc(10_000_000, 2), msg(10_100_000, "RC Short Failsafe On"),
+        rc(13_000_000, 1), msg(13_100_000, "RC Short Failsafe Cleared"),
+        rc(20_000_000, 2), rc(20_240_000, 1),
+    )
+    result = RadioLinkDetector().detect(flight)
+    summary = radio_presentation.format_radio_link_summary(
+        result, Path("synthetic.bin"), flight,
+    )
+    assert "RC-input loss episodes: 2 confirmed armed" in summary
+    assert "Short failsafe actions observed (MSG): 1" in summary
+    assert "Long failsafe actions observed (MSG): 0" in summary
+    assert "No MSG action observed" in summary
+    assert "0.240 s" in summary
+    assert "Detailed BIN evidence" not in summary
+
+
+def test_wrapping_indents_notes_and_respects_narrow_terminal(monkeypatch):
+    text = "Notes:\n  Clock-offset sensitivity is diagnostic and not a proven bound; " \
+           "held RF values can outlive their source telemetry packets."
+    monkeypatch.setattr(
+        "analyses.presentation_text.shutil.get_terminal_size",
+        lambda fallback: type("Size", (), {"columns": 54})(),
+    )
+    wrapped = wrap_report(text)
+    lines = wrapped.splitlines()
+    assert max(map(len, lines)) <= 52
+    assert any(line.startswith("    ") for line in lines[2:])
+    assert " ".join(wrapped.split()) == " ".join(text.split())
+    assert len(wrap_report("  A longer note with several words.", width=25).splitlines()) > 1
+    assert "several words" in wrap_report("  A longer note with several words.", width=20)
+
+
+def test_suppression_labels_preserve_sampled_states():
+    assert "Active (sampled STAT.Sup" in radio_presentation._suppression_line(
+        "STAT.Sup sampled 1"
+    )
+    assert "Inactive (sampled STAT.Sup" in radio_presentation._suppression_line(
+        "STAT.Sup sampled 0"
+    )
+    assert "Active and inactive states observed" in radio_presentation._suppression_line(
+        "STAT.Sup sampled 0, 1"
+    )
 
 
 def test_single_short_long_recovery_uses_distinct_bin_evidence():
@@ -186,7 +298,7 @@ def test_valid_rc_throughout_has_no_episode_or_rf_health_verdict():
 
     assert result.episodes == []
     report = _report(result)
-    assert "Armed RC-failsafe episodes: 0" in report
+    assert "RC-input loss episodes: 0 confirmed armed" in report
     assert "RF health not assessed" in report
     assert "link healthy" not in report.lower()
 
@@ -299,7 +411,7 @@ def test_disarmed_invalid_period_is_not_numbered_as_armed_test_episode():
     ]
     assert result.omitted_unarmed == 1
     report = _report(result)
-    assert "Armed RC-failsafe episodes: 1" in report
+    assert "RC-input loss episodes: 1 confirmed armed" in report
     assert "Unarmed startup/episode evidence omitted: 1" in report
     assert "00:03.000–00:04.000" not in report
     assert "00:06.000–00:07.000" in report
@@ -310,7 +422,7 @@ def test_unknown_arm_state_is_visible_but_not_counted_as_armed():
 
     assert result.episodes[0].armed == "unknown"
     report = _report(result)
-    assert "Armed RC-failsafe episodes: 0" in report
+    assert "RC-input loss episodes: 0 confirmed armed" in report
     assert "No confirmed armed episodes" in report
     assert "00:03.000–00:04.000" in report
     assert "Episodes with unknown armed state: 1" in report
@@ -355,7 +467,8 @@ def test_commanded_throttle_uses_only_interval_samples_and_never_claims_motor_st
     assert "Commanded throttle PWM (sampled input-invalid span): 1100–1200 µs" in report
     assert "Physical motor activity: Not measurable from BIN" in report
     assert "Throttle output channel: RCOU.C3" in report
-    assert "STAT.Sup sampled 1 (aircraft BIN)" in report.split("Notes")[-1]
+    assert "Throttle suppression: Active (sampled STAT.Sup; aircraft BIN)" in report
+    assert report.index("Aircraft outputs") < report.index("Throttle suppression:")
     assert "motor running" not in report.lower()
     assert "1900" not in report and "1300" not in report
 
@@ -414,6 +527,8 @@ def test_presentation_uses_shared_single_log_selector_and_ground_log(
 
     monkeypatch.setattr(radio_presentation, "select_log_input", lambda: [selected])
     monkeypatch.setattr(radio_presentation, "FlightReader", Reader)
+    monkeypatch.setattr(radio_presentation, "_optional_csv", lambda *_: None)
+    monkeypatch.setattr("builtins.input", lambda _: "")
     config = object()
 
     radio_presentation.RadioLinkAnalysisPresentation(config=config).run()
@@ -421,9 +536,11 @@ def test_presentation_uses_shared_single_log_selector_and_ground_log(
     assert calls == [(selected, config)]
     assert log.flights == []
     output_text = capsys.readouterr().out
-    assert "Radio Link / RC Failsafe — synthetic.bin" in output_text
-    assert "Armed RC-failsafe episodes: 1" in output_text
-    assert "00:03.000–00:04.000" in output_text
+    assert "Radio Link / RC Failsafe\n" in output_text
+    assert "Log: synthetic.bin" in output_text
+    assert "RC-input loss episodes: 1 confirmed armed" in output_text
+    assert "00:03.000" in output_text and "1.000 s" in output_text
+    assert "── Episode #1 — Aircraft BIN" not in output_text
 
 
 def _timed_episode(history=None, long=True, revalid=97_966_951):
@@ -550,14 +667,18 @@ def test_report_keeps_different_event_time_configuration_with_each_episode():
         history=history,
     )
     report = _report(result)
-    first, second = report.split("Episode #1 — RC failsafe")[1].split(
-        "Episode #2 — RC failsafe"
+    first, second = report.split("Episode #1 — Aircraft BIN")[1].split(
+        "Episode #2 — Aircraft BIN"
     )
     assert "Failsafe configuration (PARM at reported episode onset)" not in report
     assert report.count("Configuration at episode onset (PARM):") == 2
     assert "Long timeout (FS_LONG_TIMEOUT): 10 s" in first
     assert "Long timeout (FS_LONG_TIMEOUT): 12 s" in second
     assert "Long failsafe: No long MSG assertion observed" in first
+    summary = radio_presentation.format_radio_link_summary(
+        result, Path("synthetic.bin"), FlightLog(),
+    )
+    assert "Failsafe configuration varies or is unavailable" in summary
 
 
 def test_late_long_observation_is_not_declared_inconsistent():
