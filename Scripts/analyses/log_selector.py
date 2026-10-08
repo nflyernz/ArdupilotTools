@@ -32,7 +32,10 @@ def select_log_input(*, allow_directory: bool = False) -> list[Path] | None:
             discovery_error = None
 
         _print_options(logs, allow_directory, discovery_error)
-        choice = input("\nSelection: ").strip()
+        all_option = "A=all, " if allow_directory else ""
+        choice = input(
+            f"\nEnter log number, {all_option}D=directory, P=path, Q=back: "
+        ).strip()
         normalized_choice = choice.casefold()
 
         if normalized_choice == "q":

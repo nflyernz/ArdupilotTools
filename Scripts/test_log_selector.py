@@ -41,6 +41,24 @@ def test_default_logs_listing_and_numbered_selection(monkeypatch, tmp_path, caps
     assert "A. Analyse all" not in output
 
 
+def test_selector_prompt_explains_number_and_available_commands(monkeypatch, tmp_path):
+    """Shared single-log and directory-capable callers see the right actions."""
+    selected = tmp_path / "flight.bin"
+    selected.touch()
+    monkeypatch.setattr(log_selector, "_current_directory", tmp_path)
+    prompts = []
+
+    def choose(prompt):
+        prompts.append(prompt)
+        return "1"
+
+    monkeypatch.setattr("builtins.input", choose)
+    assert log_selector.select_log_input() == [selected]
+    assert "Enter log number, D=directory, P=path, Q=back:" in prompts[-1]
+    assert log_selector.select_log_input(allow_directory=True) == [selected]
+    assert "Enter log number, A=all, D=directory, P=path, Q=back:" in prompts[-1]
+
+
 def test_discovery_is_nonrecursive_case_insensitive_sorted_and_unique(tmp_path):
     """One discovery path handles mixed extension case deterministically."""
     (tmp_path / "zulu.BIN").touch()

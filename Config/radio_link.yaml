@@ -1,0 +1,13 @@
+# BIN-only Plane RC-failsafe review. FlightReader also retains PARM and STAT.
+analysis:
+  name: Radio Link / RC Failsafe
+
+messages:
+  - VER
+  - GPS
+  - ARM
+  - MODE
+  - MSG
+  - RCI2
+  - RCIN
+  - RCOU
